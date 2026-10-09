@@ -34,11 +34,13 @@
 # Equipment ids are mapped by packml topic (C-PACK→CPACK), never by surrogate id: 62↔62, bijective (10-09).
 #
 # THE 10-06 EDGE: the first staging sample per machine after the restart (16:32:36–16:33:06) carried the whole
-# outage as one increment (stale upstream baseline) and was zeroed on 10-09 (ops._fix_line_scrap_20261009,
-# kind='unbacked', #1652/#1655, policy #1544). With the gap backfilled, that production now lives in the backfilled
-# rows, so those rows STAY ZERO (restoring them would count the outage twice). STEP=edge prints the comparison.
+# outage as one increment (stale upstream baseline). The big ones were zeroed on 10-09 (ops._fix_line_scrap_20261009,
+# kind='unbacked', #1652/#1655, policy #1544). With the gap backfilled that production lives in the backfilled rows,
+# and the legacy counters continue into staging's (edge Δ 0–90), so those rows STAY ZERO (restoring them would count
+# the outage twice). Catch-ups below that repair's 20,000 limit (POLYTYPE2 +7,688/+10,927, ISIMAT scrap +1,095) are
+# zeroed by STEP=edge.
 #
-# STEPS (STEP=all runs stage → merge → caggs → twin; each is resumable):
+# STEPS (STEP=all runs stage → merge → edge → caggs → twin; each is resumable):
 #   stage : app box, DuckDB. Legacy is attached READ_ONLY with default_transaction_read_only=on and
 #           statement_timeout=15min (credentials from the legacy-replicator container env, never printed).
 #           Writes ops._bf_gap_<TAG>_plan (calibration, every candidate) and ops._bf_gap_<TAG>_rows (staged rows).
@@ -48,7 +50,10 @@
 #           DRY_RUN=1: each equipment-day in a rolled-back transaction (counts only).
 #   caggs : refresh the silver continuous aggregates for every touched day (1min level before the hierarchical 1hour).
 #   twin  : ops.sbx_mirror_silver_day(lo, hi, NULL) per day, exactly the gap window (p_decompress=false), then caggs.
-#   edge  : read-only: Σ backfilled role per machine vs the zeroed 10-06 restart increments.
+#   edge  : zero the first post-gap increments that are the outage catch-up (now duplicated by the backfill): unbacked
+#           by their own counter against the backfilled one (#1544 rule), or a counter delta spanning the whole gap that
+#           the backfill already holds. Snapshot ops._fix_gap_edge_<TAG> first, guarded per-row UPDATE, read-back.
+#           DRY_RUN=1: snapshot + list only. Run after merge (it needs the backfilled counters), then STEP=caggs.
 # Gold is NOT touched here: use docs/runbooks/history-recompute.md (rows older than the engine windows).
 #
 #   On the staging app box (root):  STEP=stage bash backfill-silver-gap-from-legacy.sh
@@ -287,16 +292,77 @@ twin(){
   caggs
 }
 
+# EDGE_SQL: the first samples after the gap (TO_TS .. +15 min) whose increment is the outage catch-up (stale upstream
+# baseline) and therefore duplicates the backfilled production. A role increment (|incr| >= 100) is a catch-up when
+#   (a) it is unbacked by its own counter against the previous row, now that the gap holds legacy counters
+#       (incr - Δcounter >= 100 and Δcounter < incr / 2: the #1544 rule), or
+#   (b) it has no counter inside the gap (previous counter older than FROM_TS, or none) and it is the same order as
+#       the backfilled gap production for that role (each within 2x of the other).
+# Line rows (tp=3) get scrap = new gross - new net. The twin (eq + TWIN_OFF) gets the same values.
+EDGE_SQL="
+WITH f AS (SELECT v.*, e.tp_equipment AS tp FROM silver.equipment_values v JOIN core.equipments e USING (id_equipment)
+            WHERE v.id_enterprise = ${ENT} AND v.ts_value >= '${TO_TS}' AND v.ts_value < '${TO_TS}'::timestamptz + interval '15 minutes'),
+bf AS (SELECT id_equipment, sum(gross_production_incr) g, sum(net_production_incr) n, sum(scrap_incr) s FROM ${ROWS} GROUP BY 1),
+c AS (
+  SELECT f.id_equipment, f.ts_value, f.tp, k.role, k.incr, k.bf, k.cur - pv.val AS ctr_delta, pv.ts AS prev_ts
+    FROM f LEFT JOIN bf USING (id_equipment)
+   CROSS JOIN LATERAL (VALUES ('g', f.gross_production_incr, f.gross_production_val, bf.g),
+                              ('n', f.net_production_incr,   f.net_production_val,   bf.n),
+                              ('s', f.scrap_incr,            f.scrap_val,            bf.s)) k(role, incr, cur, bf)
+   LEFT JOIN LATERAL (
+     SELECT p.ts_value AS ts, CASE k.role WHEN 'g' THEN p.gross_production_val WHEN 'n' THEN p.net_production_val ELSE p.scrap_val END AS val
+       FROM silver.equipment_values p WHERE p.id_equipment = f.id_equipment AND p.ts_value < f.ts_value
+        AND p.ts_value > '${FROM_TS}'::timestamptz - interval '7 days'
+        AND CASE k.role WHEN 'g' THEN p.gross_production_val WHEN 'n' THEN p.net_production_val ELSE p.scrap_val END IS NOT NULL
+      ORDER BY p.ts_value DESC LIMIT 1) pv ON true
+   WHERE abs(coalesce(k.incr, 0)) >= 100)
+SELECT id_equipment, ts_value, tp, role, incr, ctr_delta, round(bf) AS bf,
+       CASE WHEN ctr_delta IS NOT NULL AND incr - ctr_delta >= 100 AND ctr_delta < incr / 2 THEN 'unbacked'
+            ELSE 'spans-gap' END AS why
+  FROM c
+ WHERE (ctr_delta IS NOT NULL AND incr - ctr_delta >= 100 AND ctr_delta < incr / 2)
+    -- no counter inside the gap for this role: a catch-up is the same order as the backfilled gap (within 2x)
+    OR ((prev_ts IS NULL OR prev_ts <= '${FROM_TS}') AND bf >= 0.5 * incr AND incr >= 0.5 * bf)"
+
 edge(){
-  Q "WITH b AS (SELECT id_equipment, sum(gross_production_incr) g, sum(net_production_incr) n FROM ${ROWS} GROUP BY 1)
-     SELECT f.id_equipment, f.ts_value, f.old_gross, round(b.g) AS backfilled_gross, f.old_net, round(b.n) AS backfilled_net
-       FROM ops._fix_line_scrap_20261009 f LEFT JOIN b USING (id_equipment)
-      WHERE f.kind = 'unbacked' AND f.id_enterprise = ${ENT} AND f.ts_value >= '${TO_TS}' AND f.ts_value < '${TO_TS}'::timestamptz + interval '5 minutes'
-      ORDER BY 1, 2"
+  local FIX="ops._fix_gap_edge_${TAG}"
+  P "CREATE TABLE IF NOT EXISTS ${FIX} (id_enterprise int, id_equipment int, ts_value timestamptz, reason text,
+       old_gross real, old_net real, old_scrap real, new_gross real, new_net real, new_scrap real,
+       snapped_at timestamptz DEFAULT now(), applied_at timestamptz, PRIMARY KEY (id_equipment, ts_value))" >/dev/null
+  log "edge: catch-up increments after ${TO_TS}"
+  Q "${EDGE_SQL} ORDER BY 1, 2, 4"
+  # snapshot: one row per (equipment, ts) for ENT and the twin; roles not caught keep their value
+  P "WITH h AS (${EDGE_SQL}), e AS (
+       SELECT id_equipment, ts_value, bool_or(role='g') g, bool_or(role='n') n, bool_or(role='s') s,
+              string_agg(role || ':' || why, ' ') why FROM h GROUP BY 1, 2)
+     INSERT INTO ${FIX} (id_enterprise, id_equipment, ts_value, reason, old_gross, old_net, old_scrap, new_gross, new_net, new_scrap)
+     SELECT v.id_enterprise, v.id_equipment, v.ts_value, 'gap catch-up ' || e.why, v.gross_production_incr, v.net_production_incr, v.scrap_incr,
+            CASE WHEN e.g THEN 0 ELSE v.gross_production_incr END, CASE WHEN e.n THEN 0 ELSE v.net_production_incr END,
+            CASE WHEN q.tp_equipment = 3 AND v.scrap_incr IS NOT NULL
+                 THEN coalesce(CASE WHEN e.g THEN 0 ELSE v.gross_production_incr END, 0) - coalesce(CASE WHEN e.n THEN 0 ELSE v.net_production_incr END, 0)
+                 WHEN e.s THEN 0 ELSE v.scrap_incr END
+       FROM e JOIN silver.equipment_values v ON v.id_equipment IN (e.id_equipment, e.id_equipment + ${TWIN_OFF}) AND v.ts_value = e.ts_value
+       JOIN core.equipments q ON q.id_equipment = e.id_equipment
+     ON CONFLICT (id_equipment, ts_value) DO NOTHING" >/dev/null
+  [ "$DRY_RUN" = 1 ] && { log "edge dry run: snapshot only"; Q "SELECT * FROM ${FIX} WHERE applied_at IS NULL ORDER BY 2"; return; }
+  while read -r eq ts; do
+    [ -n "$eq" ] || continue
+    U=$(P "UPDATE silver.equipment_values v SET gross_production_incr = f.new_gross, net_production_incr = f.new_net, scrap_incr = f.new_scrap
+             FROM (SELECT * FROM ${FIX} WHERE id_equipment = ${eq} AND ts_value = '${ts}') f
+            WHERE v.id_equipment = ${eq} AND v.ts_value = '${ts}'
+              AND v.gross_production_incr IS NOT DISTINCT FROM f.old_gross AND v.net_production_incr IS NOT DISTINCT FROM f.old_net
+              AND v.scrap_incr IS NOT DISTINCT FROM f.old_scrap")
+    RB=$(P "SELECT count(*) FROM silver.equipment_values v JOIN ${FIX} f USING (id_equipment, ts_value)
+             WHERE v.id_equipment = ${eq} AND v.ts_value = '${ts}' AND v.gross_production_incr IS NOT DISTINCT FROM f.new_gross
+               AND v.net_production_incr IS NOT DISTINCT FROM f.new_net AND v.scrap_incr IS NOT DISTINCT FROM f.new_scrap")
+    [ "$RB" = 1 ] && P "UPDATE ${FIX} SET applied_at = now() WHERE id_equipment = ${eq} AND ts_value = '${ts}'" >/dev/null
+    log "  edge eq ${eq} ${ts}: ${U}, read-back ${RB}"
+  done < <(Q "SELECT id_equipment, ts_value FROM ${FIX} WHERE applied_at IS NULL ORDER BY 1")
+  log "edge: refresh the caggs for $(date -u -d "${TO_TS%+*}" +%F) (STEP=caggs) and recompute gold"
 }
 
 case "$STEP" in
   stage) stage ;; merge) merge ;; caggs) caggs ;; twin) twin ;; edge) edge ;;
-  all) stage; merge; [ "$DRY_RUN" = 1 ] || { caggs; twin; } ;;
+  all) stage; merge; [ "$DRY_RUN" = 1 ] || { edge; caggs; twin; } ;;
   *) echo "STEP=stage|merge|caggs|twin|edge|all" >&2; exit 2 ;;
 esac
