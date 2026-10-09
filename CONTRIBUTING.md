@@ -1,11 +1,14 @@
 # Contributing to packiot-stack-alpha
 
-This repo is the **aggregator** for the Packiot stack. It pins 3 service
-repos as submodules and is the only thing deployed to AWS staging EC2. The
+This repo is the **aggregator** for the Packiot stack. It holds the in-tree Go
+services (`services/`), the analytics DB migrations (`db/migrations/`), the dev
+environment (`dev/`), compose + Terraform, and pins 5 repos as submodules
+(`edge-api`, `operator` = operator4, `csadmin`, `front4`, `edge-node-red`). It is
+the only thing deployed to the AWS staging EC2. The
 service repos do their own testing in isolation; this repo runs the
 integration via `docker compose`.
 
-If you're new to the codebase, start with [`docs/GUIDE.md`](docs/GUIDE.md)
+If you're new to the codebase, start with the wiki's **For engineers** page (`docs/wiki/for-engineers.md`, served at wiki.packiot.app)
 — the end-to-end walk through the stack (architecture, code map,
 glossary, doc routing). This file is about **workflow** — branches,
 PRs, deploys, and how the auto-bump chain wires it all together.
@@ -14,24 +17,27 @@ PRs, deploys, and how the auto-bump chain wires it all together.
 
 ## TL;DR
 
+The full, verified procedure is in the wiki: **Operations → "Branches, merging & deploying"**
+(`docs/wiki/operations/branches-and-merging.md`) and **"Local development"**
+(`docs/wiki/operations/local-development.md`).
+
 ```
-┌────────────────────────────────────────────────────────────────┐
-│  development  →  scratchpad; devs work here, NOT deployed       │
-│  staging      →  alpha-production; auto-deploys to AWS staging  │
-│  production   →  NEW production; deploys to prod EC2 (FF←staging)│
-│  main         →  frozen legacy anchor — do NOT push             │
-└────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  staging     →  integration branch; every PR targets it; auto-deploys to AWS staging │
+│  production  →  NEW production; promotion only (release branch + runbook + go)       │
+│  development →  RETIRED (last commit 2026-08-18; ADR-0060 D8) — do NOT use           │
+│  main        →  frozen legacy anchor — do NOT push                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Feature branches off `development`. PR to `development`. PR to `staging`
-  to promote (auto-deploys to staging). Promote staging→`production`
-  (fast-forward) to deploy **new-prod**.
-- Submodules track their own `staging` / `development` branches. The
-  parent repo's pointer is updated automatically by a bot workflow on each
-  submodule.
-- **Parent `staging` is protected**. Direct push is blocked. Every change
-  goes through a PR that must pass the **PR Validation** check
-  (`docker compose config`).
+- Feature branches off **`staging`**, PR back into **`staging`**, in every repo.
+- **Never push/merge/rebase/force-push `development`, `master`, `main` or `production`**
+  in any repo: in edge-api and front4 those branches deploy to customers.
+- Merge only when **every** check on the PR's head SHA is green (only
+  `Validate compose files` is required by the ruleset; the rest is our rule).
+- Submodule changes: merge in the submodule's `staging`; edge-api, operator4 and
+  edge-node-red bump the pin here automatically; csadmin is bumped by hand.
+- `db/migrations/` has no runner: dry-run → apply → verify on staging, then merge.
 
 ---
 
@@ -39,47 +45,43 @@ PRs, deploys, and how the auto-bump chain wires it all together.
 
 | Branch | Purpose | Deploys? | Protected? |
 |---|---|---|---|
-| `development` | Local scratchpad. Devs run `make` here. Integration of feature branches before promotion. | No | No |
-| `staging` | "Alpha production" — deploys to AWS staging EC2 via `deploy-staging.yml`. | Yes (auto on push) | Yes (ruleset "Protect staging") |
-| `production` | **New production** — deploys to the prod EC2 via `deploy-production.yml` on a fast-forward from `staging` (gated on a live client). | Yes (on push) | Yes |
-| `main` | **Frozen legacy anchor.** No longer the default branch (`staging` is). Do NOT push. | No | (frozen) |
+| `staging` (default) | Integration branch for all work. | Yes — `deploy-staging.yml` on push | Yes (ruleset "Protect staging") |
+| `production` | **New production.** Changed only by a planned promotion (release branch → draft PR → runbook → explicit go). | Yes (on push) | No ruleset — never push |
+| `development` | **Retired.** It was the pre-staging scratchpad; ADR-0060 D8 rejected a long-lived dev branch and it has not moved since 2026-08-18. Submodule bump bots still target it when someone pushes a submodule's `development` — another reason not to. | No | No |
+| `main` | **Frozen legacy anchor.** Do NOT push. | No | No |
 
 ### The flow
 
 ```
-Developer's feature work:
-  1. git checkout development
-  2. git checkout -b feature/<thing>
-  3. ...edit, commit...
-  4. PR → development
-  5. PR review + merge
-
-Promote to staging:
-  6. PR development → staging
-  7. PR Validation runs (required)
-  8. Squash-merge
-  9. deploy-staging.yml fires → AWS staging EC2 redeploys
+  1. git fetch origin && git switch -c <type>/<thing> origin/staging
+  2. ...edit, commit; run the service's tests + `make dev SVC=… && make dev-smoke SVC=…`
+  3. git push -u origin HEAD && gh pr create --base staging
+  4. wait until EVERY check on the head SHA is completed/success
+  5. gh pr merge <n> --squash --delete-branch --match-head-commit <sha>
+  6. deploy-staging.yml deploys; verify the running artifact, not just the green run
 ```
 
 ---
 
 ## Submodules — the auto-bump chain
 
-The 3 service repos are submodules. The parent's `.gitmodules` tracks each
-on `staging` as their default branch:
+Five repos are submodules. The parent's `.gitmodules` tracks each on
+`staging`:
 
 ```
-edge-api          → packiot/edge-api
-edge-node-red     → packiot/edge-node-red
-operator          → packiot/operator4   (note: repo name ≠ path name)
+edge-api          → packiot/edge-api        (bump bot)
+edge-node-red     → packiot/edge-node-red   (bump bot)
+operator          → packiot/operator4       (bump bot; repo name ≠ path name)
+csadmin           → packiot/csadmin         (NO bump bot — bump the pin by hand in a PR)
+front4            → packiot/front4          (deploys itself via AWS Amplify; the pin is not deployed)
 ```
 
 > Historically there was a 4th submodule, `oeecloud-node-red`. It was
 > decommissioned 2026-06-24 — replaced by `services/oeecloud-worker` (Go),
 > which lives in-repo as a regular subdir (not a submodule).
 
-Each submodule has a workflow `bump-stack-submodule.yml` that fires on push
-to its own `staging` or `development` branches. The workflow opens a PR on
+edge-api, operator4 and edge-node-red have a workflow `bump-stack-submodule.yml` that fires on push
+to their own `staging` or `development` branches. The workflow opens a PR on
 **this** parent repo bumping the submodule pointer to the new SHA. The
 flow is automatic end-to-end:
 
@@ -119,13 +121,18 @@ flow is automatic end-to-end:
 ```
 
 A push to a submodule's `development` branch follows the same chain but
-targets parent's `development` branch. There's no deploy on `development`.
+targets the parent's **retired** `development` branch (direct merge, it is unprotected).
+Do not push submodule `development` branches: in edge-api it also deploys the
+customer-facing Elastic Beanstalk `edge-api-dev-docker-env`.
+
+Auto-merge waits only for the one required check (`Validate compose files`), not
+for `dev-slices` or `go-services`: the submodule's own CI is the real gate.
 
 ### Requirements per submodule
 
 - Secret `PARENT_REPO_TOKEN` set with `contents:write` AND
   `pull-requests:write` on `packiot/packiot-stack-alpha`.
-- A `development` branch must exist before the workflow can bump there.
+- (Legacy) the workflow can also bump the retired `development` branch; do not rely on it.
 
 ### Submodule path mismatch (operator/operator4)
 
@@ -142,9 +149,9 @@ Clone with submodules:
 ```sh
 git clone --recurse-submodules https://github.com/packiot/packiot-stack-alpha.git
 cd packiot-stack-alpha
-git checkout development
-git submodule update --remote --merge   # pull the freshest staging tip
-                                          # of each submodule
+git checkout staging
+git submodule update --init --recursive   # submodules at the pinned SHAs
+docker login ghcr.io                      # token with read:packages (the dev seed is private)
 ```
 
 Then run what you need locally with the dev environment (ADR-0060, see `dev/README.md`):
@@ -187,34 +194,24 @@ weakening the ruleset.
 
 ### Why no protection on `development` or `main`?
 
-- `development` is the scratchpad — devs want fast iteration. Workflow
-  convention is "PR to development", not enforcement.
+- `development` is retired (ADR-0060 D8); nothing should target it.
 - `main` is reserved for a future production tier and isn't actively used.
 
 ---
 
 ## Hotfix protocol
 
-If `staging` is broken and you need to push a fix that doesn't go through
-`development` first:
+If `staging` is broken, the fix takes the normal path, just smaller:
 
 1. `git checkout staging && git pull`
 2. `git checkout -b hotfix/<description>`
 3. Edit, commit.
 4. PR → `staging`. PR Validation runs.
-5. Squash-merge once green.
-6. **Back-merge to `development`** to prevent regression on the next
-   promotion:
+5. Squash-merge once every check is green (edge-api: merge commit).
+6. Verify the deployed artifact.
 
-   ```sh
-   git checkout development
-   git pull
-   git merge staging
-   git push
-   ```
-
-Same pattern in a submodule repo (substitute `staging` with the
-submodule's `staging`).
+Same pattern in a submodule repo (its `staging`). There is no back-merge to
+`development`: it is retired, and in edge-api/front4 it is customer-facing.
 
 ---
 

@@ -2,7 +2,7 @@
 title: Environments
 layer: 1
 owner_area: platform
-last_verified: 2026-09-28
+last_verified: 2026-10-09
 ---
 # Environments
 
@@ -13,8 +13,8 @@ last_verified: 2026-09-28
 
 | Environment | What runs | Where | Deployed by |
 |---|---|---|---|
-| **Local** | The stack in Docker Compose (`the dev/ environment (ADR-0060; formerly compose.development.yml)`) with simulators | your machine | `make` / `docker compose` |
-| **Staging** | The full new stack with real client data (CPACK co-tee, Bispharma live box, sandbox 2000003) | AWS us-east-1, EC2 (app host + DB host + NAT) | push/merge to `staging` → `deploy-staging.yml` |
+| **Local (dev)** | Service slices in Docker Compose (`dev/`, ADR-0060) on an anonymized week of CPACK data; never deployed, never synced | your machine | `make dev SVC=…` — see [Local development](../operations/local-development.md) |
+| **Staging** | The full new stack with real client data (CPACK co-tee, Bispharma live box, sandbox 2000003) | AWS us-east-1, EC2 (app host + DB host + NAT) | PR merged into `staging` → `deploy-staging.yml` — see [Branches, merging and deploying](../operations/branches-and-merging.md) |
 | **Production (legacy)** | `packiot40` (tsp12): Postgres + Hasura + Node-RED oeecloud | legacy production hosts | outside this repo |
 | **Production (new stack)** | Single-flow deployment (`compose.production.yml`, `public` schema) | AWS, production account resources in `terraform/production` | `production` branch; promotion is gated |
 | **Edge** | Per-factory boxes (readers, sparkplug-agent, optional offline apps) | client sites; hybrid-activated SSM managed instances | edge-api box operations / SSM rail |
