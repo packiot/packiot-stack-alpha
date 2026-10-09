@@ -8,7 +8,12 @@
 | `validate.py` | fail-closed check; run it in CI and at the start of every seed build against the live schema |
 | `extract.sh` | on the staging runner: validate → tokens → DDL dump (no data) + roles (no passwords) + secret scan → per-table `COPY (SELECT …)` → `anonymize.py` → `leakgate.py` → `metadata.json` + `load.sql` |
 | `anonymize.py` / `leakgate.py` | streaming CSV anonymizer; output scanner that fails on any tenant token, e-mail or IPv4 (stdlib, unit-tested) |
-| `load.sh` + `Dockerfile` | seed image (`timescale/timescaledb:2.27.0-pg15`): at first start restores roles (dev password `dev`), DDL, then `load.sql` with Δ = whole weeks since `snapshot_end` |
+| `load.sh` + `Dockerfile` | seed image (`timescale/timescaledb:2.27.0-pg15`): at first start restores roles (dev password `dev`), DDL, then `load.sql` with Δ = whole weeks since `snapshot_end`, then `sync-sequences.sql` |
+| `sync-sequences.sql` | moves every id sequence past max(id) of the loaded rows (a schema-only dump leaves them at 1, contracts.md F11); baked into the image, idempotent |
+
+**Built weekly** by `.github/workflows/dev-seed-build.yml` (Sunday 05:00 UTC, full seed, pushes `:<date>` + `:latest`; also
+`workflow_dispatch`). The boot test fails the build if the image does not load, a generated table is empty, a sequence
+is behind its ids, or a referential/validity data invariant (`ops.job_data_invariants`) fails on the seed.
 
 **Fail-closed, three ways:** an unlisted table, an unclassified text column, or a column with an unknown data type all fail
 `validate.py`. When the schema grows, the seed build stops until someone decides what the new thing is.
