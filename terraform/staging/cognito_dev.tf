@@ -141,6 +141,22 @@ resource "aws_cognito_user" "dev" {
   }
 }
 
+# CS-Admin in dev (docs/dev/contracts.md F12): edge-api grants the cross-tenant / onboarding control plane to
+# tokens whose `cognito:groups` contains EDGE_API_CS_ADMIN_GROUP (default "cs-admin",
+# edge-api/src/shared/auth/bearer-jwt.config.ts). Only dev-admin@ is a member; dev-engineer@ and dev-viewer@ stay
+# tenant users so role/permission paths can still be exercised.
+resource "aws_cognito_user_group" "dev_cs_admin" {
+  name         = "cs-admin"
+  user_pool_id = aws_cognito_user_pool.dev.id
+  description  = "Dev CS-Admin (ADR-0060): edge-api cross-tenant + onboarding control plane"
+}
+
+resource "aws_cognito_user_in_group" "dev_admin_cs_admin" {
+  user_pool_id = aws_cognito_user_pool.dev.id
+  group_name   = aws_cognito_user_group.dev_cs_admin.name
+  username     = aws_cognito_user.dev["dev-admin"].username
+}
+
 resource "aws_secretsmanager_secret" "dev_cognito" {
   name        = "packiot/dev/cognito"
   description = "ADR-0060 dev Cognito pool: pool/client ids, issuer and the synthetic dev users' passwords (dev only)."
