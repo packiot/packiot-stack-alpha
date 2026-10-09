@@ -156,10 +156,24 @@ const cpacLinkCTE = `), linkeq AS (
     -- maps to a PLC directly. A line must NOT inherit its lead's endpoint: a line
     -- without counters of its own has no sessions, so every gap would end in a
     -- "stop" that never closes (the phantom-stop class this mode removes).
+    --
+    -- OBSERVABLE equipment only (fix 2026-10-09, S2_stale_open_stops): the same rule
+    -- applies to a MACHINE whose counter the productive-minute predicate never sees —
+    -- Bispharma's net-only, non-lead machines (gross never moves; the net/scrap
+    -- widening is for leads only). They have no sessions either, so every link gap
+    -- minted NO DATA + a resume STOP that no RUNNING transition could ever follow:
+    -- 18 ent-5 machines sat in an open stop from 10-01/10-04/10-07 while producing.
+    -- An equipment is observable when the predicate saw it produce in the last
+    -- 7 days (LATERAL + LIMIT 1: one index probe per member on the real-time cagg).
     SELECT s.id_equipment, s.id_enterprise, s.thr, pe.endpoint
       FROM scope s
       JOIN %[5]s.plc_endpoint_equipment pe
         ON pe.id_enterprise = s.id_enterprise AND pe.id_equipment = s.id_equipment
+     CROSS JOIN LATERAL (SELECT 1 FROM %[5]s.equipment_categorical_1min m
+                          WHERE m.id_equipment = s.id_equipment
+                            AND m.ts_value > now() - interval '7 days'
+                            AND %[7]s
+                          LIMIT 1) observable
 ), link_ep AS (
     SELECT DISTINCT le.id_enterprise, le.endpoint, f.since
       FROM linkeq le
@@ -410,7 +424,7 @@ func fmtCPACFull(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string
 	}
 	link, guard, arms := "", "", ""
 	if linkHealth {
-		link = strings.NewReplacer("%[2]s", refSchema, "%[5]s", silverSchema).Replace(cpacLinkCTE)
+		link = strings.NewReplacer("%[2]s", refSchema, "%[5]s", silverSchema, "%[7]s", act).Replace(cpacLinkCTE)
 		guard, arms = cpacLinkStopGuard, cpacLinkArms
 	}
 	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leads, act, link, guard, arms)

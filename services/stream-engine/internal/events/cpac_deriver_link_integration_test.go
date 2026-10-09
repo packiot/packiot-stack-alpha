@@ -153,3 +153,63 @@ func TestCPACLinkLineNotInherited(t *testing.T) {
 		}
 	}
 }
+
+// seedNetOnly gives machine 1000 NET-only productive minutes (gross NULL) — the
+// Bispharma S3/S5/PRENSA/M67x shape: an output counter, no consumed counter.
+func seedNetOnly(t *testing.T, pool *pgxpool.Pool, base time.Time, runs [][2]int) {
+	t.Helper()
+	for _, r := range runs {
+		for i := r[0]; i < r[1]; i++ {
+			if _, err := pool.Exec(context.Background(),
+				`INSERT INTO `+schema+`.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+				 VALUES (1000, $1, NULL, 5)`, base.Add(time.Duration(i)*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// S2_stale_open_stops (2026-10-09): a NET-only, non-lead machine is invisible to
+// the gross-only productive minute, so it has no sessions. The link arms still
+// minted NO DATA at the gap and a resume STOP at the link's return — and with no
+// session no RUNNING row could ever follow, so the stop stayed open while the
+// machine produced for days. Such a machine must get no link-derived rows at all
+// (its pre-link state: no events), exactly like a line without own counters.
+func TestCPACLinkNetOnlyMachineNotObservable(t *testing.T) {
+	pool := mustPool(t)
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Minute)
+	setupLinkSchema(t, pool, base, nil, 12, 34)
+	seedNetOnly(t, pool, base, [][2]int{{0, 10}, {40, 60}})
+	runLink(t, pool)
+	if got := dump(t, pool); len(got) != 0 {
+		t.Fatalf("net-only machine got link-derived rows (a stop that can never close): %+v", got)
+	}
+}
+
+// The same net-only machine as a line's LEAD in LeadActivity mode IS observable
+// (net counts as production for leads), so it keeps the full three-state stream
+// and the resume stop is followed by the RUNNING transition.
+func TestCPACLinkNetOnlyLeadStillLinkAware(t *testing.T) {
+	pool := mustPool(t)
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Minute)
+	setupLinkSchema(t, pool, base, nil, 12, 34)
+	seedNetOnly(t, pool, base, [][2]int{{0, 10}, {40, 60}})
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO `+schema+`.equipments VALUES (2000, 999, 0, 3, NULL, 1000, true)`); err != nil {
+		t.Fatal(err)
+	}
+	cfg := linkCfg
+	cfg.LeadActivity = true
+	for i := 0; i < 2; i++ {
+		if _, _, err := RunOnceCPAC(context.Background(), dest(pool), cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var m []evRow
+	for _, r := range dump(t, pool) {
+		if r.Eq == 1000 {
+			m = append(m, r)
+		}
+	}
+	expectStream(t, m, base, []tr{{0, 6}, {12, NoDataStatus}, {34, 10}, {40, 6}, {64, 10}})
+}
