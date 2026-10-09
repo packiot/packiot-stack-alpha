@@ -1929,7 +1929,9 @@ services:
       # cpack + sbxcpack. Filtering discovery through this list makes "staging =
       # these tenants only" survive the next re-cut. STAGING ONLY: prod leaves
       # WORKER_TENANT_ALLOWLIST unset → empty = allow ALL (no behavior change).
-      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging}"
+      # incoplast = ingest-shim's fixed routing key (sparkplug.data.incoplast);
+      # without it that tenant's data falls to oee-unroutable-q.
+      WORKER_TENANT_ALLOWLIST: "${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging,incoplast}"
       RETRY_EXCHANGE: oee-retry
       RETRY_QUEUE: stream-engine-q-retry-30s
       FAILED_EXCHANGE: oee-failed

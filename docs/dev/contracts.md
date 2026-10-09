@@ -113,7 +113,7 @@ Most clients set no `application_name`, so attribution comes from the per-contai
 | F2 | Grafana `19-factory-analysis` queries `FROM equipment_oee_ r`: `${grain}` suffix missing, table does not exist | code: `grafana/dashboards/library/19-factory-analysis.json:1124,1202` |
 | F3 | csadmin/customize compose pass build arg `VITE_API_BASE_URL`, which no Dockerfile declares (no-op); SPAs read `VITE_EDGE_API_URL` | code: `compose.staging.yml:1549,1596` |
 | F4 | front4 submodule pinned to `49408c1` (2026-07-23) builds against legacy endpoints (`api4.packiot.com`, `edge-dev.api4…`, `gqlpiot…`) | code: [`ui-services.md`](contracts/ui-services.md) §front4 |
-| F5 | `oee-unroutable-q` holds 482 messages: something publishes to `oee` with a key no queue binds (candidate: ingest-shim's `sparkplug.data.incoplast`, **unproven**: confirming needs a requeue-peek) | live: §3 |
+| F5 | `oee-unroutable-q` holds 482 messages: something publishes to `oee` with a key no queue binds. **Resolved 2026-10-09** by a requeue-peek of all 1,076 messages: 1,074 were `sparkplug.data.e2efixture`, the deploy's synthetic counter fixture, about 6 per deploy since 09-27. The other 2 were one `bispharmastaging` and one `sbxcpack` message from 09-25, published while those bindings were absent. ingest-shim (`incoplast`) contributed none: `ingest_shim_requests_total` has been 0 since metrics began on 09-24. Fix: the fixture has its own capped sink `e2efixture-sink-q`; `oee-unroutable-q` is capped by policy; `incoplast` is in the allow-list. | live: §3 |
 | F6 | No SPA can log in without a real IdP: Amplify gets pool id + client id only, no endpoint override; with Cognito off, csadmin falls back to Firebase | code: `csadmin/src/lib/cognito.ts:45-60`, `csadmin/src/lib/auth-token.ts:28-38` |
 | F7 | stream-engine identifies itself to Postgres as `oeecloud-worker*` (legacy name) | live: §3 |
 | F8 | `db/migrations/` (creates `core`, `config`, `gold`, `silver`, `bronze`, `serving`, `bi`) has **no runner**; `db-migrate` runs only `edge-api/migrations/` (knex, 56 files) | code: [`ui-services.md`](contracts/ui-services.md) §db-migrate; no CI/Makefile reference applies them |
@@ -148,6 +148,6 @@ Most clients set no `application_name`, so attribution comes from the per-contai
 - Values of `.env`-only settings (credentials, `CREDS_SOURCE`, feature flags, `EXTERNAL_*_CUSTOMER_ID`): keys observed
   live per container, values deliberately not read.
 - Per-table access at runtime (shared superuser role, see §0).
-- F5's routing key (needs a non-destructive `basic.get` with requeue; not done).
+- ~~F5's routing key~~: resolved 2026-10-09 (see F5).
 - barcode-app internals (source in another repo).
 - The 17 `⚠ambiguous` and 3 `⚠not-in-repo` citations in the inventories.
