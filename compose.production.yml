@@ -375,8 +375,13 @@ services:
         # no IF NOT EXISTS) is NOT re-runnable — on a re-deploy against an already
         # assembled r7g it errors "continuous aggregate already exists" (exit 3),
         # blocking db-migrate → stranding edge-api/oeecloud. Skip if F3 is present.
-        if [ "$$(psql -tAc "SELECT to_regclass('public.agg_equipment_values_1min') IS NOT NULL" 2>/dev/null)" = "t" ]; then
-          echo "F3 schema already assembled (agg_equipment_values_1min exists) — skipping (idempotent).";
+        # PROMOTION 2026-10: after the database transplant (docs/adr/reference/
+        # production-promotion-transplant-runbook.md) the cagg lives in `silver`
+        # (medallion, t231/t261) and `public.agg_equipment_values_1min` no longer
+        # exists — so the guard must accept EITHER location, or this one-shot would
+        # replay the 09-07 F3 snapshot over the transplanted schema.
+        if [ "$$(psql -tAc "SELECT to_regclass('public.agg_equipment_values_1min') IS NOT NULL OR to_regclass('silver.agg_equipment_values_1min') IS NOT NULL" 2>/dev/null)" = "t" ]; then
+          echo "F3 schema already assembled (agg_equipment_values_1min exists in public or silver) — skipping (idempotent).";
           exit 0;
         fi
         if ! ls /f3/snapshot/*.sql >/dev/null 2>&1; then

@@ -32,6 +32,12 @@
 -- FAILS if any migration file is unclassified.
 
 BEGIN;
+-- PROMOTION 2026-10: pin the ledger to `public`. After the database transplant the
+-- DB-level search_path is staging's ("$user", gold, silver, …, public), so an
+-- unqualified CREATE TABLE IF NOT EXISTS would create an EMPTY shadow
+-- gold.knex_migrations (the t231 / PR #1153 class; edge-api's knexfile pins
+-- schemaName 'public'). On today's prod (default search_path) this is a no-op.
+SET LOCAL search_path = public;
 
 -- knex's own bookkeeping tables, in knex's exact shape (knex 2.5.1
 -- lib/migrations/migrate/table-creator.js). Created here so we can seed BEFORE
