@@ -212,7 +212,7 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 | B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | **RESOLVED** (§10): 3 of 4 fixes superseded on staging; the edit-prefetch guard was ported (packiot/csadmin#120) and the release pins the result |
 | B5 | Service config parity (§5b) | **RESOLVED on the branch** (§8). Remaining: pre-go checks C1–C3, and the `READAPI_RO_PASSWORD` / `INTERNAL_API_KEY` values (§9) |
 | B6 | Services absent from prod compose (§5a) | decide per service: observability, edge-session-broker, customize, barcode, analytics-sync, fanout |
-| B7 | edge-api#297 | the release pins edge-api `8c6adfa`, reachable only from that branch until merged into edge-api `staging` |
+| B7 | edge-api#297 | the release pins edge-api **`c5061d5`** (= `8c6adfa` + prettier); it becomes reachable from edge-api `staging` once #297 merges with a merge commit (being handled by the coordinator) |
 | B8 | Transplant + runbook §6 decisions (CPACK config sync, retention, events gap since 08-12, Hasura metadata, roles/extensions) | the deploy must follow the transplant, never precede it |
 | B9 | `historian-gateway` inline definition is the 09-07 shape (DB `postgres`, no OOM guards) | harmless while the profile is off; switch to `compose.historian-gateway.yml` before enabling a prod cold tier |
 | B10 | `monitoring/prometheus/prometheus.yml` is staging's (scrapes services prod doesn't run) | targets show down; no Alertmanager on prod |
