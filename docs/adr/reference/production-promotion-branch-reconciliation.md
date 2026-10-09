@@ -392,3 +392,22 @@ that call creates `drop_chunks` policies from the catalog. With `off`:
 
 `10-policies.sql` still adds no retention policy, now ends with the same guard, and documents the decision. Compression
 policies stay. Runbook §2 (`data`, `policies`) and §6.2 are updated.
+
+## 14. CPACK config — carry staging's values (decided 2026-10-09)
+`scripts/promotion/transplant/cpack-config-sync.py` has two steps:
+- `extract`: READ ONLY on staging → JSON;
+- `emit`: no DB access → `07b-cpack-config.sql` (apply, idempotent, one transaction, ends with a report) +
+  `07b-cpack-config-diff.sql` (READ ONLY: per-column target vs staging, reason rows, link deltas, skipped rows).
+
+`build.py` emits both when `<workdir>/cpack-config.json` exists, and `xplant.sh` has the phases `cpack-diff` / `cpack`
+(after `data`, before `logic`).
+
+Coverage:
+- every drifted column from runbook §6.1, plus `ideal_speed`, `net_machine`/`scrap_machine` and
+  `downtime_from_lead_machine`;
+- the reason catalog (`core.downtime_reason` + `core.equipment_downtime_reason`).
+
+Keying: base packml topic + `tp_equipment` + `nm_equipment` (+ `cd_equipment` when both sides have one). Mismatches are
+skipped and reported. Machine references are translated through the verified map. Tested end-to-end on the dev seed:
+drift → diff → apply → idempotent re-apply → clean diff; renamed/unmapped cases reported, not written; the guard refuses
+a non-CPACK ent 3. Runbook §2, §5 step 2 and §6.1 are updated.

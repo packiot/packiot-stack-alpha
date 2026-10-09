@@ -20,6 +20,8 @@ for ph in ${@:-create pre hyper views}; do case $ph in
  repair) run 05-repairs.sql 10; grep -E "still inconsistent|overlapping" 05-repairs.sql.out;;
  checks) run 06-checks.sql 30;;
  data)   run 07-data.sql 30;;
+ cpack-diff) run 07b-cpack-config-diff.sql 10; grep -vE '^\(|^$' 07b-cpack-config-diff.sql.out | head -200;;   # READ ONLY report
+ cpack)  run 07b-cpack-config.sql 10; grep -E 'updated|inserted|deactivated|links|identity|SKIPPED|UNMAPPED' 07b-cpack-config.sql.out;;
  logic)  run 08-logic.sql 20;;
  grants) run 90-comments-grants.sql 10;;
  policies) run 10-policies.sql 10; tail -2 10-policies.sql.out;;

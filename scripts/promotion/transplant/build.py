@@ -8,7 +8,7 @@
   cat-stg.json      scripts/promotion/transplant/catalog.sql run on staging      (READ ONLY)
   cat-prod.json     the same query run on the prod DB                            (READ ONLY)
 Writes <workdir>/out/: pre.sql 02-hypertables-caggs.sql 03-hyper-keys.sql views.sql 04-data-copy.sql 05-repairs.sql
-post.sql 06-checks.sql 07-data.sql 08-logic.sql 90-comments-grants.sql 10-policies.sql 11-refresh.sql (+ xplant.sh copied).
+post.sql 06-checks.sql 07-data.sql [07b-cpack-config.sql 07b-cpack-config-diff.sql] 08-logic.sql 90-comments-grants.sql 10-policies.sql 11-refresh.sql (+ xplant.sh copied).
 
 Method and every rule below: docs/adr/reference/production-promotion-transplant-runbook.md. Each rule names the rehearsal
 finding (2026-10-08, isolated clone of the prod DB) that made it necessary.
@@ -245,6 +245,17 @@ parts.append("\\echo ===== t244 client descriptors (data statements only)")
 parts += re.findall(r'^INSERT INTO core\.client_descriptors.*?;\s*$', t244, flags=re.M | re.S)
 write('07-data.sql', '\n'.join(parts) + '\n')
 assert '\x1b' not in open(os.path.join(OUT, '07-data.sql')).read(), 'ESC byte in 07-data.sql'
+
+# ── 7b. CPACK (ent 3) config sync — staging's curated equipment config + reason catalog (decided 2026-10-09).
+#        Input <workdir>/cpack-config.json comes from `cpack-config-sync.py extract` run READ ONLY against staging on the
+#        day. Emits 07b-cpack-config.sql (apply) + 07b-cpack-config-diff.sql (read-only report); xplant phases
+#        `cpack-diff` / `cpack` run them after `data`, before `logic`. Identity by base packml topic + tp + name; mismatches
+#        are skipped and reported, never written.
+CPACK_SNAPSHOT = os.path.join(W, 'cpack-config.json')
+if os.path.exists(CPACK_SNAPSHOT):
+    subprocess.run([sys.executable, os.path.join(HERE, 'cpack-config-sync.py'), 'emit', CPACK_SNAPSHOT, '-o', OUT], check=True)
+else:
+    print(f'NOTE: {CPACK_SNAPSHOT} absent — 07b-cpack-config*.sql NOT generated (run cpack-config-sync.py extract first)')
 
 # ── 8. canonical logic re-apply: staging's functions + views win over anything phase D redefined
 fn_sql = open(os.path.join(OUT, 'fn.raw.sql'), newline='').read()

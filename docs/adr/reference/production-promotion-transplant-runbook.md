@@ -34,6 +34,7 @@ those findings). The transplant reaches the target **by construction**:
 | `post` | indexes, constraints, FKs, `EXCLUDE`, triggers, RLS, policies | 2 s |
 | `checks` | 32 CHECKs `NOT VALID` → `VALIDATE` | 1 s |
 | `data` | 16 business-keyed data migrations (`t-retention-catalog` with the raw tier forced to keep-forever while `PROD_RAW_RETENTION=off`); (CPACK line meters, ideal speeds, defaults, retention catalog, i18n, ADR-0061 bindings, ADR-0062 P1) + 2 client descriptors | 2 s |
+| `cpack-diff` / `cpack` | **CPACK (ent 3) config sync** (decided 2026-10-09): `cpack-diff` is a READ-ONLY report of what changes and what is skipped; `cpack` applies it (idempotent, one transaction). Input = `cpack-config.json` from `cpack-config-sync.py extract` (READ ONLY on staging). See §6.1 | new |
 | `logic` | **canonical re-apply**: staging's 121 functions/procedures + views `CREATE OR REPLACE`, so staging's definitions win | <1 s |
 | `grants` | all comments/grants again (idempotent) | 4 s |
 | `policies` | refresh + compression policies and the two compute jobs = staging's; **no raw retention** (`PROD_RAW_RETENTION=off`, §6.2); ends with a guard query (want 0) | <1 s |
@@ -75,7 +76,8 @@ serve real-time unions.
    - `build.py`.
    Re-run the rehearsal on a fresh AMI clone and the parity check. Snapshot the prod DB volume.
 1. Announce the window. Drain and archive RabbitMQ first (§5a, "before step 1"), then stop the writers (ingest, stream-engine, edge-api, read-api, oeecloud-worker, Hasura) on the app box.
-2. Run `xplant.sh create pre hyper views copy repair post checks data logic grants policies` on the prod DB host
+2. Run `xplant.sh create pre hyper views copy repair post checks data cpack-diff` on the prod DB host. **Review the
+   cpack-diff report** (skipped rows, unmapped references), then run `xplant.sh cpack logic grants policies`
    (about 2.5 min).
 3. Verify (catalog + data checks from §4) and **stop if anything differs**.
 4. Swap: terminate connections, then
@@ -231,16 +233,34 @@ those base events never went through `user_logs`. That is a follow-up (a topic-m
 `COMPOSE_PROFILES`. Replayed rows are ordinary idempotent upserts. Nothing in legacy is ever written.
 
 ## 6. Decisions and follow-ups before the real run (user)
-1. **CPACK configuration differs from staging on 10 columns** of `core.equipments`:
-   - `event_should_be_displayed`: staging `true`, prod `NULL`. With `NULL`, the downtime list is **empty**.
-   - `stop_threshold_time`: 301 vs none.
-   - `minimum_*_threshold`: 30/85 vs none.
-   - `downtime_reasons`: the legacy catalog vs an older shape.
-   - `lead_machine` (4 lines), `gross_machine` (3), `production_speed` (13 machines).
-   - `position` (display order).
+1. **CPACK configuration: DECIDED 2026-10-09: carry staging's values.** Prod differs from staging on 10 columns of
+   `core.equipments` (`event_should_be_displayed`, staging `true` vs prod `NULL`, which empties the downtime list;
+   `stop_threshold_time`; `minimum_*_threshold`; `downtime_reasons`; `lead_machine` on 4 lines; `gross_machine` on 3;
+   `production_speed` on 13 machines; `position`) and in the reason catalog.
+   - **Generator:** `scripts/promotion/transplant/cpack-config-sync.py`.
+   - **On the day:**
+     ```bash
+     # READ ONLY on staging (BEGIN READ ONLY … ROLLBACK; SELECT only)
+     scripts/promotion/transplant/cpack-config-sync.py extract \
+       --psql 'psql "host=<staging-db> dbname=packiot_analytics user=<ro-user>"' -o <workdir>/cpack-config.json
+     scripts/promotion/transplant/build.py <workdir>     # emits out/07b-cpack-config.sql + out/07b-cpack-config-diff.sql
+     ```
+   - **Phases `cpack-diff` (read-only) and `cpack`** run after `data`, before `logic`, on `packiot_next`.
+   - **What it carries:** the value columns `event_should_be_displayed`, `stop_threshold_time`,
+     `minimum_performance_threshold`, `minimum_ideal_performance_threshold`, `downtime_reasons`, `production_speed`,
+     `ideal_speed`, `position`, `downtime_from_lead_machine`. Also `lead_machine`/`gross_machine`/`net_machine`/
+     `scrap_machine`, translated to the target's ids. Plus the reason catalog: `core.downtime_reason`, keyed by `code`
+     (changed rows updated, missing ones inserted, extras **deactivated**, never deleted), and
+     `core.equipment_downtime_reason` links.
+   - **Safe keying:** an equipment matches by its base packml topic (shortest active topic, enterprise prefix stripped)
+     **and** the same `tp_equipment` **and** the same `nm_equipment` (`cd_equipment` too when both are non-empty; prod's
+     is often empty). Anything else is **skipped and reported**, never written. A machine reference whose target doesn't
+     verify keeps the target's value and is reported.
+   - **Guard:** apply refuses unless ent 3 on the target is named like `c-?pack`.
+   - **Tested on the dev seed** (a copy of `packiot_analytics`, simulated prod drift): the diff listed every drifted
+     column plus the 3 reason changes; apply updated 61 equipments, skipped the renamed one, and reported an unmapped
+     `lead_machine`; a second apply changed 0 rows; the diff after apply showed only the skipped row.
 
-   Staging's values are months of curated fixes verified against legacy. **Recommended:** carry staging's CPACK config
-   (a reviewed sync step), plus `t-cpack-reason-catalog`.
 2. **Retention. DECIDED 2026-10-09: no raw drop on prod for now.** Staging drops raw values after 90 days because history
    lives in the historian cold tier. Prod has no cold tier; its raw history starts 2026-08-07.
    - **Switch:** `build.py` `PROD_RAW_RETENTION`, default **`off`**.
