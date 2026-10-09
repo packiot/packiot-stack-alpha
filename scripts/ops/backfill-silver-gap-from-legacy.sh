@@ -50,6 +50,7 @@
 #           DRY_RUN=1: each equipment-day in a rolled-back transaction (counts only).
 #   caggs : refresh the silver continuous aggregates for every touched day (1min level before the hierarchical 1hour).
 #   twin  : ops.sbx_mirror_silver_day(lo, hi, NULL) per day, exactly the gap window (p_decompress=false), then caggs.
+#   holes : (opt-in, not in all) fill legacy's own outage holes from counter movement — see HOLES below.
 #   edge  : zero the first post-gap increments that are the outage catch-up (now duplicated by the backfill): unbacked
 #           by their own counter against the backfilled one (#1544 rule), or a counter delta spanning the whole gap that
 #           the backfill already holds. Snapshot ops._fix_gap_edge_<TAG> first, guarded per-row UPDATE, read-back.
@@ -267,6 +268,8 @@ caggs(){
   d0=$(date -u -d "${FROM_TS%+*}" +%F); d1=$(date -u -d "${TO_TS%+*}" +%F)
   d="$d0"
   while [[ ! "$d" > "$d1" ]]; do
+    # TWIN_DAYS also limits the refresh to those days
+    if [ -n "${TWIN_DAYS:-}" ] && [[ " ${TWIN_DAYS} " != *" ${d} "* ]]; then d=$(date -u -d "$d + 1 day" +%F); continue; fi
     for cagg in silver.ca_discrete_changes_1s silver.ca_equipment_boxes_1s silver.agg_equipment_values_1min \
                 silver.equipment_metrics_1min silver.equipment_categorical_1min \
                 silver.agg_equipment_values_1hour silver.equipment_categorical_1hour; do
@@ -285,11 +288,13 @@ twin(){
     [ "$d" = "$d1" ] && hi="${TO_TS}"
     # the gap's first instant is exclusive: shift lo by 1 s (the proc's lower bound is inclusive)
     [ "$d" = "$d0" ] && lo="$(date -u -d "${FROM_TS%+*} UTC + 1 second" '+%F %T')+00"
+    # TWIN_DAYS="2026-10-04 2026-10-05": mirror only those days (still clipped to the gap)
+    if [ -n "${TWIN_DAYS:-}" ] && [[ " ${TWIN_DAYS} " != *" ${d} "* ]]; then d=$(date -u -d "$d + 1 day" +%F); continue; fi
     PSQL -c "SET statement_timeout='30min'; SET lock_timeout='10s'" \
          -c "CALL ops.sbx_mirror_silver_day('${lo}', '${hi}', NULL, ${TWIN_OFF}, ${ENT}, ${TWIN_ENT}, false)" 2>&1 | grep -E 'NOTICE|ERROR' || true
     log "twin mirrored: [${lo}, ${hi})"; d=$(date -u -d "$d + 1 day" +%F)
   done
-  caggs
+  [ -n "${TWIN_DAYS:-}" ] || caggs   # with TWIN_DAYS, refresh the caggs yourself for those days (STEP=caggs)
 }
 
 # EDGE_SQL: the first samples after the gap (TO_TS .. +15 min) whose increment is the outage catch-up (stale upstream
@@ -323,6 +328,86 @@ SELECT id_equipment, ts_value, tp, role, incr, ctr_delta, round(bf) AS bf,
  WHERE (ctr_delta IS NOT NULL AND incr - ctr_delta >= 100 AND ctr_delta < incr / 2)
     -- no counter inside the gap for this role: a catch-up is the same order as the backfilled gap (within 2x)
     OR ((prev_ts IS NULL OR prev_ts <= '${FROM_TS}') AND bf >= 0.5 * incr AND incr >= 0.5 * bf)"
+
+# HOLES (user decision 2026-10-09: "use counter movement"): legacy itself had outages inside the gap (CPACK ~10-04
+# 00:00 and 10-05 02:00–11:00, up to 27 h) where its counters moved but it wrote almost no increments, so legacy's
+# increments undercount those hours. For every backfilled row/role that HAS a counter (*_val), the row that ends a
+# hole (>= HOLE_MIN since the previous reading of that role) gets extra = counter movement - its own increment, when
+# that is >= 100. The new increment equals the counter movement, so it is backed by the totalizer (#1544/V3) by
+# construction. Skipped: counter went down (reset/rollover across the hole), or the movement is above 1.5x the
+# role's peak clean-day hour x hole hours (never invent production). Derived line rows carry their source machine's
+# counter, so they get the same extra; line scrap (tp=3) is re-derived as gross - net on touched rows (#1650).
+HOLE_MIN="${HOLE_MIN:-10 minutes}"
+RATE_WINDOWS="${RATE_WINDOWS:-(c.ts_value >= '2026-10-01 00:00:00+00' AND c.ts_value < '2026-10-02 17:00:00+00') OR (c.ts_value >= '2026-10-07 00:00:00+00' AND c.ts_value < '2026-10-09 00:00:00+00')}"
+HOLES_SQL="
+WITH v AS (
+  SELECT x.id_equipment, x.ts_value, k.role, k.incr, k.val
+    FROM silver.equipment_values x
+   CROSS JOIN LATERAL (VALUES ('g', x.gross_production_incr, x.gross_production_val::float8),
+                              ('n', x.net_production_incr,   x.net_production_val::float8),
+                              ('s', x.scrap_incr,            x.scrap_val::float8)) k(role, incr, val)
+   WHERE x.id_enterprise = ${ENT} AND x.ts_value > '${FROM_TS}' AND x.ts_value < '${TO_TS}' AND k.val IS NOT NULL),
+w AS (SELECT v.*, lag(v.ts_value) OVER p AS prev_ts, lag(v.val) OVER p AS prev_val
+        FROM v WINDOW p AS (PARTITION BY v.id_equipment, v.role ORDER BY v.ts_value)),
+cap AS (SELECT c.id_equipment, k.role, max(k.h) AS peak_hour
+          FROM silver.equipment_categorical_1hour c
+         CROSS JOIN LATERAL (VALUES ('g', c.gross_production_incr), ('n', c.net_production_incr), ('s', c.scrap_incr)) k(role, h)
+         WHERE c.id_enterprise = ${ENT} AND (${RATE_WINDOWS})
+         GROUP BY 1, 2)
+SELECT w.id_equipment, e.tp_equipment, w.role, w.prev_ts AS hole_start, w.ts_value, w.incr AS old_incr,
+       (w.val - w.prev_val) AS ctr_move, (w.val - w.prev_val) - coalesce(w.incr, 0) AS extra, cap.peak_hour,
+       CASE WHEN w.val < w.prev_val THEN 'skip: counter reset'
+            WHEN cap.peak_hour IS NULL OR cap.peak_hour <= 0 THEN 'skip: no clean-day rate'
+            WHEN (w.val - w.prev_val) > 1.5 * cap.peak_hour * greatest(1, ceil(extract(epoch FROM w.ts_value - w.prev_ts) / 3600.0))
+                 THEN 'skip: above 1.5x peak rate'
+            ELSE 'apply' END AS decision
+  FROM w JOIN core.equipments e USING (id_equipment)
+  LEFT JOIN cap ON cap.id_equipment = w.id_equipment AND cap.role = w.role
+ WHERE w.prev_ts IS NOT NULL AND w.ts_value - w.prev_ts >= interval '${HOLE_MIN}'
+   AND ((w.val - w.prev_val) - coalesce(w.incr, 0) >= 100 OR w.val < w.prev_val - 100)"
+
+holes(){
+  local FIX="ops._fix_gap_holes_${TAG}"
+  P "CREATE TABLE IF NOT EXISTS ${FIX} (id_enterprise int, id_equipment int, ts_value timestamptz, role text, tp int,
+       hole_start timestamptz, old_incr real, ctr_move float8, extra float8, new_incr real, decision text,
+       old_scrap real, new_scrap real, snapped_at timestamptz DEFAULT now(), applied_at timestamptz,
+       PRIMARY KEY (id_equipment, ts_value, role))" >/dev/null
+  # snapshot every decision (skips too, for the record); never touch a row already applied
+  P "INSERT INTO ${FIX} (id_enterprise, id_equipment, ts_value, role, tp, hole_start, old_incr, ctr_move, extra, new_incr, decision)
+     SELECT ${ENT}, h.id_equipment, h.ts_value, h.role, h.tp_equipment, h.hole_start, h.old_incr, h.ctr_move, h.extra,
+            CASE WHEN h.decision = 'apply' THEN (coalesce(h.old_incr, 0) + h.extra)::real END, h.decision FROM (${HOLES_SQL}) h
+     ON CONFLICT (id_equipment, ts_value, role) DO NOTHING" >/dev/null
+  log "holes plan (apply / skip):"
+  Q "SELECT decision, tp, role, count(*), round(sum(extra)) FROM ${FIX} WHERE applied_at IS NULL GROUP BY 1,2,3 ORDER BY 1,2,3"
+  [ "$DRY_RUN" = 1 ] && { log "holes dry run: snapshot only (re-run without DRY_RUN to apply)"; return; }
+  # one guarded UPDATE per row and role, literal key (row-level locks only; correct on compressed chunks too)
+  P "DO \$\$ DECLARE r record; col text; BEGIN
+       SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 0;
+       FOR r IN SELECT * FROM ${FIX} WHERE decision = 'apply' AND applied_at IS NULL ORDER BY ts_value LOOP
+         col := CASE r.role WHEN 'g' THEN 'gross_production_incr' WHEN 'n' THEN 'net_production_incr' ELSE 'scrap_incr' END;
+         EXECUTE format('UPDATE silver.equipment_values SET %I = %L::real WHERE id_equipment = %s AND ts_value = %L::timestamptz AND %I IS NOT DISTINCT FROM %L::real',
+                        col, r.new_incr, r.id_equipment, r.ts_value, col, r.old_incr);
+       END LOOP; END \$\$" >/dev/null
+  # line rows: scrap = gross - net on the touched rows (only where the row carries line scrap)
+  P "UPDATE ${FIX} f SET old_scrap = v.scrap_incr, new_scrap = coalesce(v.gross_production_incr, 0) - coalesce(v.net_production_incr, 0)
+       FROM silver.equipment_values v
+      WHERE f.tp = 3 AND f.decision = 'apply' AND f.applied_at IS NULL AND f.role <> 's' AND f.new_scrap IS NULL
+        AND v.id_equipment = f.id_equipment AND v.ts_value = f.ts_value AND v.scrap_incr IS NOT NULL
+        AND v.ts_value > '${FROM_TS}' AND v.ts_value < '${TO_TS}'" >/dev/null
+  P "DO \$\$ DECLARE r record; BEGIN
+       FOR r IN SELECT DISTINCT ON (id_equipment, ts_value) * FROM ${FIX} WHERE new_scrap IS NOT NULL AND applied_at IS NULL LOOP
+         EXECUTE format('UPDATE silver.equipment_values SET scrap_incr = %L::real WHERE id_equipment = %s AND ts_value = %L::timestamptz AND scrap_incr IS NOT DISTINCT FROM %L::real',
+                        r.new_scrap, r.id_equipment, r.ts_value, r.old_scrap);
+       END LOOP; END \$\$" >/dev/null
+  # applied = read back
+  P "UPDATE ${FIX} f SET applied_at = now() FROM silver.equipment_values v
+      WHERE f.decision = 'apply' AND f.applied_at IS NULL AND v.id_equipment = f.id_equipment AND v.ts_value = f.ts_value
+        AND v.ts_value > '${FROM_TS}' AND v.ts_value < '${TO_TS}'
+        AND CASE f.role WHEN 'g' THEN v.gross_production_incr WHEN 'n' THEN v.net_production_incr ELSE v.scrap_incr END IS NOT DISTINCT FROM f.new_incr
+        AND (f.new_scrap IS NULL OR v.scrap_incr IS NOT DISTINCT FROM f.new_scrap)" >/dev/null
+  log "holes applied: $(P "SELECT count(*) FILTER (WHERE applied_at IS NOT NULL) || ' of ' || count(*) FROM ${FIX} WHERE decision = 'apply'")"
+  log "holes: next STEP=caggs, then STEP=twin (mirror), then the gold recompute for the touched days"
+}
 
 edge(){
   local FIX="ops._fix_gap_edge_${TAG}"
@@ -362,7 +447,7 @@ edge(){
 }
 
 case "$STEP" in
-  stage) stage ;; merge) merge ;; caggs) caggs ;; twin) twin ;; edge) edge ;;
+  stage) stage ;; merge) merge ;; caggs) caggs ;; twin) twin ;; edge) edge ;; holes) holes ;;
   all) stage; merge; [ "$DRY_RUN" = 1 ] || { edge; caggs; twin; } ;;
-  *) echo "STEP=stage|merge|caggs|twin|edge|all" >&2; exit 2 ;;
+  *) echo "STEP=stage|merge|caggs|twin|edge|holes|all" >&2; exit 2 ;;
 esac
