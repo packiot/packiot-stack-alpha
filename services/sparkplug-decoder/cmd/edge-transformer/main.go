@@ -72,6 +72,22 @@ import (
 	"strings"
 )
 
+// calcStateRestored / calcStateCheckpointFailures make the durable Calc
+// baselines (CALC_STATE_DURABLE) observable: after a restart the gauge shows
+// how many baselines were restored (0 on a fresh volume ⇒ that restart seeds,
+// i.e. loses one reading's delta per stream); a non-zero failure rate means
+// checkpoints are not being written and the next restart will lose deltas.
+var (
+	calcStateRestored = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "calc_state_restored_entries",
+		Help: "Calc baselines restored from the outbox calc_state checkpoint at boot (CALC_STATE_DURABLE).",
+	})
+	calcStateCheckpointFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "calc_state_checkpoint_failures_total",
+		Help: "Outbox transactions (envelopes + Calc baseline checkpoint) that failed to commit.",
+	})
+)
+
 // emittedByFlow counts envelopes enqueued to the outbox per destination
 // flow (triple-emit). Package-level: the emit loop lives outside main.
 var emittedByFlow = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -303,7 +319,7 @@ func main() {
 	// SetMetrics / RegisterXCollector callback pattern so amqp/handlers
 	// stay decoupled from prometheus.
 	mx := metrics.New()
-	mx.Registry.MustRegister(emittedByFlow)
+	mx.Registry.MustRegister(emittedByFlow, calcStateRestored, calcStateCheckpointFailures)
 	mx.RegisterConsumerCollector(func() metrics.ConsumerSnapshot {
 		return metrics.ConsumerSnapshot{
 			Delivered:         consumer.DeliveredCount(),
@@ -1883,6 +1899,7 @@ func restoreCalcState(ctx context.Context, store *outbox.Store, tracked *calc_pr
 			slog.Int("restored", n), slog.String("err", err.Error()))
 		return
 	}
+	calcStateRestored.Set(float64(n))
 	logger.Info("calc state: restored durable baselines (CALC_STATE_DURABLE)",
 		slog.Int("entries", n))
 }
@@ -1902,6 +1919,7 @@ func commitOutboxBatch(ctx context.Context, store *outbox.Store, tracked *calc_p
 		if tracked != nil {
 			tracked.Requeue(taken)
 		}
+		calcStateCheckpointFailures.Inc()
 		logger.Warn("outbox: enqueue failed",
 			slog.String("publisher", publisher),
 			slog.Int("envelopes", len(batch)),

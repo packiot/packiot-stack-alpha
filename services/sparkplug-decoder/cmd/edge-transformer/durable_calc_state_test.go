@@ -18,6 +18,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/outbox"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/transforms/calc_production_counters"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -133,5 +134,21 @@ func TestDecoderRestartLosesNoIncrement(t *testing.T) {
 	}
 	if got := runRestartScenario(t, true); got != movement {
 		t.Fatalf("durable Calc state: Σ increments=%d, want counter movement %d", got, movement)
+	}
+}
+
+func TestRestoreCalcStateSetsGauge(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.db")
+	store, err := outbox.Open(outbox.Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.EnqueueBatch(context.Background(), nil, []outbox.StateRow{{Kind: "int", Key: "a", Int: 1}, {Kind: "time_ms", Key: "b", Int: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	restoreCalcState(context.Background(), store, calc_production_counters.NewTrackedState(calc_production_counters.NewMemState()), testLogger())
+	if got := testutil.ToFloat64(calcStateRestored); got != 2 {
+		t.Fatalf("calc_state_restored_entries = %v, want 2", got)
 	}
 }
