@@ -21,7 +21,8 @@ package replicate
 // WHAT IT DOES, each tick, window ts_event >= now - lookback:
 //  1. fetch legacy fcs=false rows for the resolver's legacy equipment (SELECT-only;
 //     id_equipment = ANY + ts_event range = the legacy (id_equipment, ts_event) key);
-//  2. map through the resolver (packml base topic), drop unresolved/NULL-status rows;
+//  2. map through the resolver (the same legacy→twin equipment map the replay uses),
+//     drop unresolved/NULL-status rows;
 //  3. INSERT the ones the twin lacks — ON CONFLICT (id_equipment, ts_event) DO NOTHING,
 //     AND skip when the twin already has an event within ±1 s: the user_logs payload
 //     carries milliseconds, legacy stores whole seconds (10-06: 132 of 1,418 twin
