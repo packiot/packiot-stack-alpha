@@ -134,8 +134,12 @@ raw_tag_map:
   - {metric_suffix: /CELULA1/DUBUTI2/DUBUTI2/Admin/ProdProcessedCount/97/Unit, type: double}
   - {metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Admin/ProdConsumedCount/99/Unit, type: double}
   - {metric_suffix: /CELULA1/HOTMADAG/HOTMADAG/Admin/ProdProcessedCount/99/Unit, type: double}
+  # ISIMAT: ProdProcessedCount is the TOTAL (legacy gross == processed; net = processed - defective;
+  # 7 d to 2026-10-09: legacy 192,562 / 191,449). processed_is_gross emits gross := processed and
+  # net := processed - defective, and the agent drops the raw Processed so it never publishes as net.
+  - {metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdConsumedCount/335/Unit, type: double}
   - {metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdDefectiveCount/335/Unit, type: double}
-  - {metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdProcessedCount/335/Unit, type: double}
+  - {metric_suffix: /CELULA1/ISIMAT/ISIMAT/Admin/ProdProcessedCount/335/Unit, type: double, counter_derive: processed_is_gross}
   - {metric_suffix: /CELULA2/BREYER1/BREYER1/Admin/ProdConsumedCount/26/Unit, type: double}
   - {metric_suffix: /CELULA2/BREYER1/BREYER1/Admin/ProdProcessedCount/26/Unit, type: double}
   - {metric_suffix: /CELULA2/BREYER2/BREYER2/Admin/ProdConsumedCount/101/Unit, type: double}
@@ -200,5 +204,12 @@ raw_tag_map:
   - {metric_suffix: /LINHAS/L8/PTH/Admin/ProdConsumedCount/220/Unit, type: double}
   - {metric_suffix: /LINHAS/L8/TCX/Admin/ProdProcessedCount/221/Unit, type: double}
   - {metric_suffix: /LINHAS/L8/TEXA/Admin/ProdProcessedCount/222/Unit, type: double}
-  - {metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdProcessedCount/763/Unit, type: double}
-  - {metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdProcessedCount/823/Unit, type: double}
+  # SLEEVE1/2 sense ONE counter (ProdProcessedCount). counter_derive infeed_only (as the
+  # descriptor declares) synthesizes gross := net, scrap := 0, matching legacy (gross == net).
+  # The synthesized siblings travel the same allowlist, so they are listed too (2026-10-09).
+  - {metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdConsumedCount/763/Unit, type: double}
+  - {metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdDefectiveCount/763/Unit, type: double}
+  - {metric_suffix: /SLEEVE/SLEEVE1/SLEEVE1/Admin/ProdProcessedCount/763/Unit, type: double, counter_derive: infeed_only}
+  - {metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdConsumedCount/823/Unit, type: double}
+  - {metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdDefectiveCount/823/Unit, type: double}
+  - {metric_suffix: /SLEEVE/SLEEVE2/SLEEVE2/Admin/ProdProcessedCount/823/Unit, type: double, counter_derive: infeed_only}

@@ -958,6 +958,13 @@ func buildPipeline(cfg *agentcfg.Config, deps pipelineDeps) (*pipeline, error) {
 			// recorder is read atomically so the multi-tenant capture controller can
 			// flip the posture ON/OFF post-boot without racing this hot path.
 			p.rec.Load().Observe(cfg.Sparkplug.PackMLTopic + t.Metric)
+			// A sensed count the counter-derive stage REPLACES (processed_is_gross: the
+			// arriving Processed is the gross, net is re-derived): never publish the raw
+			// value under the net leaf — its derived twin is stored below. Observed
+			// above on purpose, so live capture still sees what really arrived.
+			if cderive.Overrides(t.Metric) {
+				continue
+			}
 
 			// Parameter decomposition (flag-gated): rewrite a bare, id-carrying
 			// "/Status/Parameter" tag to its canonical numbered leaf BEFORE the

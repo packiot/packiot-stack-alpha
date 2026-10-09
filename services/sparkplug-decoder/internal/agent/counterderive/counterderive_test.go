@@ -38,6 +38,11 @@ func TestApply(t *testing.T) {
 		// gross_derived: net+scrap → gross:=net+scrap.
 		{"gross_derived", ModeGrossDerived, sentinel, 200, 15, 215, 200, 15},
 
+		// processed_is_gross: processed (in the net slot) is the total → gross:=processed, net:=processed-defective.
+		{"processed_is_gross", ModeProcessedIsGross, sentinel, 1000, 30, 1000, 970, 30},
+		// floors net at 0 when defective > processed (out-of-order totalizers).
+		{"processed_is_gross_floor", ModeProcessedIsGross, sentinel, 10, 40, 10, 0, 40},
+
 		// outfeed_derived (APPROXIMATION): gross+scrap → net:=max(gross-scrap,0).
 		{"outfeed_derived", ModeOutfeedDerived, 400, sentinel, 25, 400, 375, 25},
 		{"outfeed_derived_floor", ModeOutfeedDerived, 10, sentinel, 40, 10, 0, 40},
@@ -156,5 +161,62 @@ func TestStage_EmptyWhenNoDeriveModes(t *testing.T) {
 	}
 	if synth := st.Process([]rawtag.RawTag{countTag("/L5/M1/Admin/ProdConsumedCount/5/Unit", 10, 1)}); synth != nil {
 		t.Errorf("empty stage Process must be a no-op, got %v", synth)
+	}
+}
+
+// TestStage_ProcessedIsGrossReplacesNet: the one mode that REPLACES a sensed count.
+// The raw Processed (the total) must be dropped by the caller (Overrides) and its
+// derived twin emitted under the net leaf; gross is synthesized; the sensed
+// Defective passes through untouched (not overridden).
+func TestStage_ProcessedIsGrossReplacesNet(t *testing.T) {
+	const head = "/CELL/M/M/Admin"
+	proc := head + "/ProdProcessedCount/7/Unit"
+	def := head + "/ProdDefectiveCount/7/Unit"
+	cons := head + "/ProdConsumedCount/7/Unit"
+	st := New([]Entry{{Suffix: proc, Mode: ModeProcessedIsGross}, {Suffix: def}})
+
+	if !st.Overrides(proc) {
+		t.Errorf("Overrides(%s) = false, want true (raw processed must not publish as net)", proc)
+	}
+	if st.Overrides(def) || st.Overrides(cons) || st.Overrides("/CELL/M/M/Status/MachSpeed") {
+		t.Errorf("Overrides must be true only for the replaced sensed leaf")
+	}
+
+	got := map[string]float64{}
+	for _, s := range st.Process([]rawtag.RawTag{
+		{Metric: proc, Value: 1000.0, TsMillis: 5, Quality: true},
+		{Metric: def, Value: 30.0, TsMillis: 5, Quality: true},
+	}) {
+		got[s.Metric] = s.Value.(float64)
+	}
+	if got[cons] != 1000 || got[proc] != 970 || len(got) != 2 {
+		t.Errorf("synth = %v, want gross(%s)=1000 and net(%s)=970 only", got, cons, proc)
+	}
+
+	// Partial batch (no Defective): hold — nothing derived, and the original is
+	// still overridden, so no raw total ever publishes as net.
+	if out := st.Process([]rawtag.RawTag{{Metric: proc, Value: 1001.0, TsMillis: 6, Quality: true}}); len(out) != 0 {
+		t.Errorf("partial group emitted %v, want a hold", out)
+	}
+}
+
+// TestStage_OverridesNilAndNonReplacingModes: a nil Stage (no derive declared) and
+// the purely additive modes never suppress an arriving tag.
+func TestStage_OverridesNilAndNonReplacingModes(t *testing.T) {
+	var nilStage *Stage
+	if nilStage.Overrides("/X/Admin/ProdProcessedCount/1/Unit") {
+		t.Error("nil Stage must override nothing")
+	}
+	sfx := "/X/X/Admin/ProdProcessedCount/1/Unit"
+	for _, m := range []string{ModeInfeedOnly, ModeGrossDerived, ModeScrapDerived} {
+		if New([]Entry{{Suffix: sfx, Mode: m}}).Overrides(sfx) {
+			t.Errorf("%s: additive mode must not override its sensed input", m)
+		}
+	}
+	// nor a real tag that arrives for one of their DERIVED siblings (behaviour unchanged)
+	for _, sib := range []string{"/X/X/Admin/ProdConsumedCount/1/Unit", "/X/X/Admin/ProdDefectiveCount/1/Unit"} {
+		if New([]Entry{{Suffix: sfx, Mode: ModeInfeedOnly}}).Overrides(sib) {
+			t.Errorf("infeed_only must not suppress an arriving derived sibling %s", sib)
+		}
 	}
 }

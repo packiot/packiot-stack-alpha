@@ -288,7 +288,7 @@ plc:
       packml_topic: CPACK/SC/CELULA1/ISIMAT/ISIMAT
       id_equipment: 90
       tags:
-        - { metric: /Admin/ProdProcessedCount/335/Unit, db: 1, offset: 8, type: dint, counter_derive: gross_derived }
+        - { metric: /Admin/ProdProcessedCount/335/Unit, db: 1, offset: 8, type: dint, counter_derive: processed_is_gross }   # 2026-10-09: was gross_derived (gross = net + defective), but legacy reports gross == processed and net = processed - defective (7 d: 192,562 / 191,449), so this counter is the total.
         - { metric: /Admin/ProdDefectiveCount/335/Unit, db: 1, offset: 12, type: dint }
     - endpoint: S7 116
       packml_topic: CPACK/SC/CELULA2/BREYER1/BREYER1
