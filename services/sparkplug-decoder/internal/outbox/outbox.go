@@ -178,6 +178,18 @@ func createSchema(db *sql.DB) error {
 		)`,
 		// Index for drain-ordered scan + age diagnostics
 		`CREATE INDEX IF NOT EXISTS idx_outbox_next_attempt ON outbox (next_attempt_at, id)`,
+		// Calc counter-baseline checkpoint (2026-10-09 deploy-loss fix). Written
+		// in the SAME transaction as the envelopes built from that state (see
+		// EnqueueBatch), so after a restart the restored baseline is exactly
+		// the last counter whose delta was emitted. One row per State key.
+		`CREATE TABLE IF NOT EXISTS calc_state (
+			kind TEXT NOT NULL,
+			key TEXT NOT NULL,
+			ival INTEGER NOT NULL DEFAULT 0,
+			fval REAL NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (kind, key)
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -195,43 +207,104 @@ func createSchema(db *sql.DB) error {
 // The write is atomic in a single transaction so callers can trust either
 // the message is durably enqueued OR nothing changed.
 func (s *Store) Enqueue(ctx context.Context, msg Message) (int64, error) {
+	ids, err := s.EnqueueBatch(ctx, []Message{msg}, nil)
+	if err != nil {
+		return 0, err
+	}
+	return ids[0], nil
+}
+
+// StateRow is one checkpointed Calc State value (see calc_state table).
+// Kind is the State map ("int" | "float" | "time_ms"); Int carries int and
+// time_ms values, Float carries float values.
+type StateRow struct {
+	Kind  string
+	Key   string
+	Int   int64
+	Float float64
+}
+
+// EnqueueBatch writes msgs AND upserts state rows in ONE transaction: either
+// every envelope is durably enqueued together with the Calc baselines they
+// were computed from, or nothing changed. This atomicity is what makes the
+// restored baseline exact after a restart — a crash can never leave a
+// baseline that is ahead of (delta lost) or behind (delta counted twice) the
+// emitted envelopes. Either slice may be empty. Returns the ids of msgs.
+func (s *Store) EnqueueBatch(ctx context.Context, msgs []Message, state []StateRow) ([]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("outbox: begin tx: %w", err)
+		return nil, fmt.Errorf("outbox: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op if committed
 
 	// FIFO drop-oldest overflow policy — check capacity BEFORE insert
 	// so we never exceed. Not exactly-once but bounded above.
-	if s.cap > 0 {
-		if err := trimToCapacity(ctx, tx, s.cap-1); err != nil {
-			return 0, err
+	if s.cap > 0 && len(msgs) > 0 {
+		if err := trimToCapacity(ctx, tx, s.cap-len(msgs)); err != nil {
+			return nil, err
 		}
 	}
 
-	if msg.EnqueuedAt.IsZero() {
-		msg.EnqueuedAt = time.Now().UTC()
+	ids := make([]int64, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg.EnqueuedAt.IsZero() {
+			msg.EnqueuedAt = time.Now().UTC()
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO outbox (tenant, topic, payload, enqueued_at, attempts, next_attempt_at)
+			 VALUES (?, ?, ?, ?, 0, 0)`,
+			msg.Tenant, msg.Topic, msg.Payload, msg.EnqueuedAt.UnixNano(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("outbox: insert: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("outbox: last insert id: %w", err)
+		}
+		ids = append(ids, id)
 	}
 
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO outbox (tenant, topic, payload, enqueued_at, attempts, next_attempt_at)
-		 VALUES (?, ?, ?, ?, 0, 0)`,
-		msg.Tenant, msg.Topic, msg.Payload, msg.EnqueuedAt.UnixNano(),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("outbox: insert: %w", err)
+	if len(state) > 0 {
+		now := time.Now().UTC().UnixNano()
+		for _, r := range state {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO calc_state (kind, key, ival, fval, updated_at) VALUES (?, ?, ?, ?, ?)
+				 ON CONFLICT (kind, key) DO UPDATE SET ival = excluded.ival, fval = excluded.fval, updated_at = excluded.updated_at`,
+				r.Kind, r.Key, r.Int, r.Float, now,
+			); err != nil {
+				return nil, fmt.Errorf("outbox: upsert calc_state: %w", err)
+			}
+		}
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("outbox: last insert id: %w", err)
-	}
+
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("outbox: commit: %w", err)
+		return nil, fmt.Errorf("outbox: commit: %w", err)
 	}
-	return id, nil
+	return ids, nil
+}
+
+// LoadState returns every checkpointed Calc State row (for restore at boot).
+func (s *Store) LoadState(ctx context.Context) ([]StateRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, key, ival, fval FROM calc_state ORDER BY kind, key`)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: load calc_state: %w", err)
+	}
+	defer rows.Close()
+	var out []StateRow
+	for rows.Next() {
+		var r StateRow
+		if err := rows.Scan(&r.Kind, &r.Key, &r.Int, &r.Float); err != nil {
+			return nil, fmt.Errorf("outbox: scan calc_state: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // trimToCapacity deletes the oldest rows until COUNT(*) <= maxRows.

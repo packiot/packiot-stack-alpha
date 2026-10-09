@@ -413,13 +413,22 @@ func main() {
 	//   calc_state_mutations_total{tenant, mutation_kind}
 	//   calc_errors_total{tenant, reason}
 	var calcState calc_production_counters.State
+	// trackedCalcState is non-nil when CALC_STATE_DURABLE is on: it records
+	// which baselines changed so the handler can checkpoint them atomically
+	// with the outbox envelopes (restored at boot once the outbox is open).
+	var trackedCalcState *calc_production_counters.TrackedState
 	var calcEvals *prometheus.CounterVec
 	var calcMutations *prometheus.CounterVec
 	var calcErrors *prometheus.CounterVec
 	var calcMetricsEmitted *prometheus.CounterVec
 	var calcStateSeeds *prometheus.CounterVec
 	if cfg.UseGoPort {
-		calcState = calc_production_counters.NewMemState()
+		if cfg.CalcStateDurable && cfg.OutboxEnabled {
+			trackedCalcState = calc_production_counters.NewTrackedState(calc_production_counters.NewMemState())
+			calcState = trackedCalcState
+		} else {
+			calcState = calc_production_counters.NewMemState()
+		}
 		calcEvals = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "calc_evaluations_total",
 			Help: "Calc Production Counters port evaluations (ADR-0010 Phase 3 shadow mode).",
@@ -647,6 +656,7 @@ func main() {
 
 		calcHooks := calcHooks{
 			state:                  calcState,
+			tracked:                trackedCalcState,
 			evals:                  calcEvals,
 			mutations:              calcMutations,
 			errors:                 calcErrors,
@@ -710,6 +720,7 @@ func main() {
 						slog.String("path", cfg.OutboxPath),
 						slog.Int("capacity", cfg.OutboxCap),
 						slog.String("adr", "ADR-0011 P2"))
+					restoreCalcState(context.Background(), outboxStore, trackedCalcState, logger)
 				}
 			}
 		} else if cfg.OutboxEnabled {
@@ -1019,7 +1030,11 @@ func main() {
 // to sparkplugHandler as a struct so the signature stays small even as
 // we add more shadow-mode signals.
 type calcHooks struct {
-	state     calc_production_counters.State
+	state calc_production_counters.State
+	// tracked is the same object as state when CALC_STATE_DURABLE is on (nil
+	// otherwise). The handler drains its dirty baselines into the outbox
+	// transaction that enqueues the envelopes computed from them.
+	tracked   *calc_production_counters.TrackedState
 	evals     *prometheus.CounterVec
 	mutations *prometheus.CounterVec
 	errors    *prometheus.CounterVec
@@ -1824,6 +1839,77 @@ func analyticsRoutingKey(perTenant bool, tenant string) string {
 	return "sparkplug.data"
 }
 
+// calcStateToRows / rowsToCalcState convert between the Calc package's
+// checkpoint entries and the outbox's storage rows (kept as two types so the
+// outbox package stays independent of Calc).
+func calcStateToRows(entries []calc_production_counters.StateEntry) []outbox.StateRow {
+	if len(entries) == 0 {
+		return nil
+	}
+	rows := make([]outbox.StateRow, len(entries))
+	for i, e := range entries {
+		rows[i] = outbox.StateRow{Kind: string(e.Kind), Key: e.Key, Int: e.Int, Float: e.Float}
+	}
+	return rows
+}
+
+func rowsToCalcState(rows []outbox.StateRow) []calc_production_counters.StateEntry {
+	entries := make([]calc_production_counters.StateEntry, len(rows))
+	for i, r := range rows {
+		entries[i] = calc_production_counters.StateEntry{
+			Kind: calc_production_counters.StateEntryKind(r.Kind), Key: r.Key, Int: r.Int, Float: r.Float,
+		}
+	}
+	return entries
+}
+
+// restoreCalcState loads the checkpointed Calc baselines into tracked at boot
+// (before the MQTT subscriber starts). No-op when tracked or store is nil. A
+// load failure is logged and the decoder continues with empty state — the
+// pre-fix behavior (first-observation seed), never a crash.
+func restoreCalcState(ctx context.Context, store *outbox.Store, tracked *calc_production_counters.TrackedState, logger *slog.Logger) {
+	if store == nil || tracked == nil {
+		return
+	}
+	rows, err := store.LoadState(ctx)
+	if err != nil {
+		logger.Error("calc state: restore failed — starting with empty baselines",
+			slog.String("err", err.Error()))
+		return
+	}
+	n, err := tracked.Restore(rowsToCalcState(rows))
+	if err != nil {
+		logger.Error("calc state: restore apply failed — partial baselines",
+			slog.Int("restored", n), slog.String("err", err.Error()))
+		return
+	}
+	logger.Info("calc state: restored durable baselines (CALC_STATE_DURABLE)",
+		slog.Int("entries", n))
+}
+
+// commitOutboxBatch enqueues batch and checkpoints the Calc baselines that
+// changed while it was built, in ONE outbox transaction. On failure the
+// baselines are re-marked dirty so the next successful commit persists them.
+func commitOutboxBatch(ctx context.Context, store *outbox.Store, tracked *calc_production_counters.TrackedState, batch []outbox.Message, publisher string, logger *slog.Logger) {
+	var taken []calc_production_counters.StateEntry
+	if tracked != nil {
+		taken = tracked.TakeDirty()
+	}
+	if len(batch) == 0 && len(taken) == 0 {
+		return
+	}
+	if _, err := store.EnqueueBatch(ctx, batch, calcStateToRows(taken)); err != nil {
+		if tracked != nil {
+			tracked.Requeue(taken)
+		}
+		logger.Warn("outbox: enqueue failed",
+			slog.String("publisher", publisher),
+			slog.Int("envelopes", len(batch)),
+			slog.Int("calc_state_entries", len(taken)),
+			slog.String("err", err.Error()))
+	}
+}
+
 func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, binder *birthBinder, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
@@ -1994,6 +2080,7 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 			routingKey := analyticsRoutingKey(perTenantRouting, tenant)
 
 			sourceTypes := emittedSourceTypes(emitGo, emitRefactored, emitProduction)
+			batch := make([]outbox.Message, 0, len(sourceTypes))
 			for _, st := range sourceTypes {
 				flow := "f2_shadow_go_port"
 				switch st {
@@ -2072,17 +2159,17 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 				if err != nil {
 					continue
 				}
-				if _, err := outboxStore.Enqueue(ctx, outbox.Message{
+				batch = append(batch, outbox.Message{
 					Tenant:  tenant,
 					Topic:   key.String(),
 					Payload: payload,
-				}); err != nil {
-					logger.Warn("outbox: enqueue failed",
-						slog.String("publisher", key.String()),
-						slog.String("source_type", st),
-						slog.String("err", err.Error()))
-				}
+				})
 			}
+			// One transaction for every envelope of this payload PLUS the Calc
+			// baselines they were computed from (CALC_STATE_DURABLE). Either all
+			// of it is durable or none of it is — so a restart restores exactly
+			// the baseline whose delta was emitted (no loss, no double count).
+			commitOutboxBatch(ctx, outboxStore, calc.tracked, batch, key.String(), logger)
 		} else if publisher != nil {
 			// Direct-publish path (legacy — pre-outbox).
 			if err := publisher.Publish(ctx, resolved); err != nil {

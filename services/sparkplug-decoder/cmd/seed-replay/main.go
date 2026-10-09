@@ -37,6 +37,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -387,9 +388,15 @@ func run(logger *slog.Logger, broker, group, edgeNode, dsn string, tick, lag tim
 	}
 
 	var seq uint64
+	// mu serializes the births (paho callback goroutines) with the replay loop:
+	// both read st and advance seq.
+	var mu sync.Mutex
 	birthTopic := "spBv1.0/" + group + "/NBIRTH/" + edgeNode
 	dataTopic := "spBv1.0/" + group + "/NDATA/" + edgeNode
+	cmdTopic := "spBv1.0/" + group + "/NCMD/" + edgeNode
 	publishBirth := func(c paho.Client) {
+		mu.Lock()
+		defer mu.Unlock()
 		ms, err := buildBirth(bs, st)
 		if err != nil {
 			logger.Error("build NBIRTH", "err", err)
@@ -403,10 +410,21 @@ func run(logger *slog.Logger, broker, group, edgeNode, dsn string, tick, lag tim
 		c.Publish(birthTopic, 0, false, body).Wait()
 		logger.Info("NBIRTH published", "equipments", len(bs), "metrics", len(ms))
 	}
+	// Honor the decoder's NCMD "Node Control/Rebirth" (task #31) like the real
+	// edge agent: a restarted decoder has an empty alias table and asks for a
+	// rebirth. Without this a decoder restart in dev stalled until seed-replay
+	// itself restarted — which resets its counters and hides restart behavior.
+	onConnect := func(c paho.Client) {
+		publishBirth(c)
+		c.Subscribe(cmdTopic, 1, func(c paho.Client, _ paho.Message) {
+			logger.Info("NCMD received — re-publishing NBIRTH")
+			go publishBirth(c)
+		})
+	}
 	opts := paho.NewClientOptions().AddBroker(broker).
 		SetClientID(fmt.Sprintf("seed-replay-%d", os.Getpid())).
 		SetAutoReconnect(true).SetConnectRetry(true).
-		SetOnConnectHandler(publishBirth)
+		SetOnConnectHandler(onConnect)
 	client := paho.NewClient(opts)
 	if tok := client.Connect(); tok.Wait() && tok.Error() != nil {
 		return fmt.Errorf("mqtt connect: %w", tok.Error())
@@ -425,16 +443,20 @@ func run(logger *slog.Logger, broker, group, edgeNode, dsn string, tick, lag tim
 		case now := <-t.C:
 			to := now.Add(-lag)
 			rs, err := loadWindow(ctx, db, cursor, to, ids)
+			mu.Lock()
 			if err != nil {
+				mu.Unlock()
 				logger.Error("load window", "err", err, "from", cursor, "to", to)
 				continue // retry the same window next tick
 			}
 			cursor = to
 			ms := step(bs, idx, st, rs)
 			if len(ms) == 0 {
+				mu.Unlock()
 				continue
 			}
 			body, err := sparkplug.EncodeSim(ms, &seq, false)
+			mu.Unlock()
 			if err != nil {
 				logger.Error("encode NDATA", "err", err)
 				continue
