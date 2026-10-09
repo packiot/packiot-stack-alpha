@@ -158,7 +158,7 @@ run on staging and are **absent** from the promoted prod compose: `edge-session-
 `customize`, `barcode-service` + `barcode-app`, `analytics-sync`, `oeecloud-fanout`, observability
 (`postgres-exporter`, `node-exporter`, `redis-exporter`, `cadvisor`, `blackbox-exporter`, `alloy`, `tempo`,
 `alertmanager`), `cloudbeaver`, `pgweb-analytics`, `ollama`; plus staging-only rigs (plc-sim, s7, agents, twins,
-sandbox operators, legacy-replicator(-sbx), mirror-worker-go, simulator, edge-nodered). Decided 2026-10-09: all stay off in this release (B6, §12).
+sandbox operators, legacy-replicator-sbx (legacy-replicator itself is in, B11), mirror-worker-go, simulator, edge-nodered). Decided 2026-10-09: all stay off in this release (B6, §12).
 
 ### 5b. Config the promoted services read with **different values than staging** (as first merged — resolved in §8)
 The staging-maintained prod compose lags staging's own service config. With no env set, code defaults apply:
@@ -379,3 +379,16 @@ This release promotes the **core** app tier only: the 25 services of today's pro
 | Staging-only, never on prod | `plc-sim`, `simulator`, `s7-softplc`, `s7-reader`, `edge-nodered` (simulation); `sparkplug-agent-cpack`, `sparkplug-agent-shared` (factory-side agents); `bispharma-twin`, `bispharma-box-scan-mock`, `operator-bispharma` (Bispharma staging tenant); `legacy-replicator-sbx`, `operator-sbx`, `oeecloud-fanout` (sandbox twin); `mirror-worker-go`, `analytics-sync` (retired comparator / superseded by legacy-replicator) | no |
 
 (§5a's earlier "24" was a rough count; this table is the exact diff of the two compose files.)
+
+## 13. Retention — no raw drop on prod (decided 2026-10-09)
+`scripts/promotion/transplant/build.py` adds the named switch **`PROD_RAW_RETENTION`** (default `off`; `on` = staging's
+production profile, for when a prod cold tier exists). Review finding: the transplant would have armed the 90-day raw
+drop despite "retention held". Phase `data` runs `t-retention-catalog`, which ends with `CALL ops.apply_retention()`, and
+that call creates `drop_chunks` policies from the catalog. With `off`:
+- that call is deferred;
+- `tier = 'hot_raw'` relations are set `keep = NULL`;
+- `apply_retention()` runs once with the raw tier at forever;
+- a guard query prints the count of raw retention policies (want 0).
+
+`10-policies.sql` still adds no retention policy, now ends with the same guard, and documents the decision. Compression
+policies stay. Runbook §2 (`data`, `policies`) and §6.2 are updated.

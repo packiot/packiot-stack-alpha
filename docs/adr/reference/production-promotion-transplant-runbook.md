@@ -33,10 +33,10 @@ those findings). The transplant reaches the target **by construction**:
 | `repair` | `t-shift-end-range` data repairs (prod has the same drift) | <1 s |
 | `post` | indexes, constraints, FKs, `EXCLUDE`, triggers, RLS, policies | 2 s |
 | `checks` | 32 CHECKs `NOT VALID` → `VALIDATE` | 1 s |
-| `data` | 16 business-keyed data migrations (CPACK line meters, ideal speeds, defaults, retention catalog, i18n, ADR-0061 bindings, ADR-0062 P1) + 2 client descriptors | 2 s |
+| `data` | 16 business-keyed data migrations (`t-retention-catalog` with the raw tier forced to keep-forever while `PROD_RAW_RETENTION=off`); (CPACK line meters, ideal speeds, defaults, retention catalog, i18n, ADR-0061 bindings, ADR-0062 P1) + 2 client descriptors | 2 s |
 | `logic` | **canonical re-apply**: staging's 121 functions/procedures + views `CREATE OR REPLACE`, so staging's definitions win | <1 s |
 | `grants` | all comments/grants again (idempotent) | 4 s |
-| `policies` | refresh + compression policies and the two compute jobs = staging's; **retention HELD** (§6) | <1 s |
+| `policies` | refresh + compression policies and the two compute jobs = staging's; **no raw retention** (`PROD_RAW_RETENTION=off`, §6.2); ends with a guard query (want 0) | <1 s |
 | `refresh` | every cagg over the full range in **month windows**, then the 150-day downtime materialization | 367 s |
 | `hasura` | carry Hasura's `hdb_catalog` from the old DB (`pg_dump -n hdb_catalog`), so prod's Hasura keeps its metadata | <1 s |
 
@@ -241,9 +241,20 @@ those base events never went through `user_logs`. That is a follow-up (a topic-m
 
    Staging's values are months of curated fixes verified against legacy. **Recommended:** carry staging's CPACK config
    (a reviewed sync step), plus `t-cpack-reason-catalog`.
-2. **Retention.** Staging drops raw values after 90 days because history lives in the historian cold tier. Prod has no
-   cold tier; its raw history starts 2026-08-07, so a 90-day policy would start deleting it around 2026-11-05.
-   Held until decided.
+2. **Retention. DECIDED 2026-10-09: no raw drop on prod for now.** Staging drops raw values after 90 days because history
+   lives in the historian cold tier. Prod has no cold tier; its raw history starts 2026-08-07.
+   - **Switch:** `build.py` `PROD_RAW_RETENTION`, default **`off`**.
+   - **The trap it closes:** phase `data` runs `t-retention-catalog`, whose final `CALL ops.apply_retention()` *adds* the
+     90-day `drop_chunks` policies. The rehearsal's "retention held" covered `10-policies.sql` only.
+   - **With `off`:** the catalog is seeded, every `tier = 'hot_raw'` relation gets `keep = NULL` (forever) before the first
+     `apply_retention()`, and no raw retention policy is ever created. These are silver/bronze raw values + events_raw, and
+     the 1-s/1-min caggs.
+   - **Unchanged:** compression policies, and the `hot_agg` (13-month hourly) / business / ops tiers. Those match staging's
+     production profile; the 13-month hourly limit can't touch prod data before 2027-09.
+   - **Verify:** `SELECT * FROM ops.retention_policy WHERE tier = 'hot_raw'` → every `keep` is NULL; the `policies` phase
+     prints `raw retention policies (want 0)`.
+   - **Enable when a prod cold tier exists** (historian + daily cold copy): run `build.py` with `PROD_RAW_RETENTION=on`, or
+     apply `db/retention/profiles/production.sql` on prod later.
 3. **Prod has recorded no CPACK downtime events since 2026-08-12** (`equipment_events` max, while values are current).
    This predates the promotion; investigate the prod event path.
 4. **Roles.** Prod lacks `readapi_ro`; its historian role is named `hist_gw_ro` (staging: `histgw_ro`). The rehearsal used

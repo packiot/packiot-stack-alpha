@@ -208,10 +208,37 @@ PHASE_D = ['t-backfill-equipment-config-defaults/01-backfill.sql', 't-backfill-c
            't-backfill-production-targets-default/01-backfill.sql', 't-retention-catalog/01-up.sql',
            't-i18n-ptbr-missing-desktop-keys/01-up.sql', 't-i18n-availability-states/01-up.sql', 't-device-bindings/01-up.sql',
            't-descriptor-device-keys/01-up.sql', 't-adr0061-p3d-bindings-backfill/01-up.sql', 't-adr0062-p1-po-number-expand/01-up.sql']
+# PROD_RAW_RETENTION (decided 2026-10-09: "off"). Staging drops raw/1-s/1-min data after 90 days because the historian
+# cold tier keeps it; PROD HAS NO COLD TIER, so dropping it there deletes history for good. t-retention-catalog ends
+# with CALL ops.apply_retention(), which ADDS Timescale drop_chunks policies from its catalog — i.e. running it as-is
+# in phase D would silently arm the 90-day raw drop (the rehearsal's "retention held" covered 10-policies.sql only).
+#   off (default) → the catalog is seeded, then every tier='hot_raw' relation is set keep = NULL (forever) BEFORE the
+#                   first apply_retention(); no raw retention policy is ever created. Compression policies are
+#                   unaffected (10-policies.sql), hot_agg/business/ops tiers keep staging's production profile.
+#   on            → staging's production profile verbatim (90-day raw drop). Enable ONLY when a prod cold tier
+#                   (historian + daily cold copy) exists, then re-apply db/retention/profiles/production.sql.
+PROD_RAW_RETENTION = os.environ.get('PROD_RAW_RETENTION', 'off').strip().lower()
+assert PROD_RAW_RETENTION in ('off', 'on'), f'PROD_RAW_RETENTION must be off|on, got {PROD_RAW_RETENTION!r}'
+RAW_RETENTION_OFF_SQL = """
+-- PROD_RAW_RETENTION=off (build.py): keep raw history forever on prod until a cold tier exists.
+UPDATE ops.retention_policy
+   SET keep = NULL, updated_at = now(),
+       rationale = rationale || ' [prod: keep forever — PROD_RAW_RETENTION=off until a prod cold tier exists]'
+ WHERE tier = 'hot_raw' AND keep IS NOT NULL;
+CALL ops.apply_retention();   -- removes any raw retention policy; adds none for hot_raw
+SELECT 'raw retention policies (want 0)', count(*)
+  FROM timescaledb_information.jobs j JOIN ops.retention_policy p ON p.relation = j.hypertable_schema || '.' || j.hypertable_name
+ WHERE j.proc_name = 'policy_retention' AND p.tier = 'hot_raw';
+"""
 parts = ["\\set ON_ERROR_STOP 0"]
 for f in PHASE_D:
     body = subprocess.run(['git', 'show', f'origin/staging:db/migrations/{f}'], check=True, capture_output=True, text=True).stdout
-    parts += [f"\\echo ===== {f}", body.replace('\\set ON_ERROR_STOP 1', '\\set ON_ERROR_STOP 0')]
+    body = body.replace('\\set ON_ERROR_STOP 1', '\\set ON_ERROR_STOP 0')
+    if f == 't-retention-catalog/01-up.sql' and PROD_RAW_RETENTION == 'off':
+        assert body.count('CALL ops.apply_retention();') == 1, 't-retention-catalog changed shape — re-check the raw-retention switch'
+        body = body.replace('CALL ops.apply_retention();',
+                            '-- CALL ops.apply_retention(); deferred: PROD_RAW_RETENTION=off override follows') + RAW_RETENTION_OFF_SQL
+    parts += [f"\\echo ===== {f}", body]
 t244 = subprocess.run(['git', 'show', 'origin/staging:db/migrations/t244-enterprise-0613-parameterize/01-expand.sql'],
                       check=True, capture_output=True, text=True).stdout
 parts.append("\\echo ===== t244 client descriptors (data statements only)")
@@ -229,7 +256,8 @@ write('08-logic.sql', logic)
 # ── 90. every COMMENT/GRANT of pre-data again, now that views and caggs exist (idempotent)
 write('90-comments-grants.sql', '\n'.join(re.findall(r'^(?:COMMENT ON|GRANT|REVOKE)\b.*?;\s*$', pre_sql, flags=re.M | re.S)) + '\n')
 
-# ── 10/11. policies (retention HELD) + month-windowed catch-up refresh
+# ── 10/11. policies (no retention policy added here; raw retention governed by PROD_RAW_RETENTION in phase D)
+#          + month-windowed catch-up refresh
 shutil.copy(os.path.join(HERE, '10-policies.sql'), os.path.join(OUT, '10-policies.sql'))
 months = [f'{y}-{m:02d}-01' for y in range(2021, 2028) for m in range(1, 13)]
 lines = ["\\set ON_ERROR_STOP 0", "SELECT 'refresh start', now();"]

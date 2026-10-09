@@ -1,5 +1,9 @@
--- transplant phase: Timescale background jobs = staging's, EXCEPT retention (held for a user decision: prod has no cold tier
--- yet; staging's 90-day raw retention would start deleting prod history ~2026-11-05) and purge_analytics_plain (deletes data).
+-- transplant phase: Timescale background jobs = staging's, EXCEPT retention and purge_analytics_plain (deletes data).
+-- RAW RETENTION: decided 2026-10-09 = OFF on prod (no cold tier; staging's 90-day raw drop would delete prod history
+-- from ~2026-11-05). Governed by build.py PROD_RAW_RETENTION (default off), which keeps tier='hot_raw' at keep=NULL in
+-- ops.retention_policy during phase D. This file never adds a retention policy; the check at the end proves none exists
+-- on a raw relation. Compression policies below STAY (they delete nothing). Enable raw retention only when a prod cold
+-- tier exists: PROD_RAW_RETENTION=on, or re-apply db/retention/profiles/production.sql afterwards.
 \set ON_ERROR_STOP 0
 -- compression settings (staging's)
 ALTER TABLE silver.equipment_values      SET (timescaledb.compress, timescaledb.compress_segmentby = 'id_equipment', timescaledb.compress_orderby = 'ts_value DESC');
@@ -29,3 +33,11 @@ SELECT add_job('serving.job_refresh_downtime_events_resolved', schedule_interval
 SELECT add_job('ops.job_data_invariants', schedule_interval => interval '30 minutes')
  WHERE NOT EXISTS (SELECT 1 FROM timescaledb_information.jobs WHERE proc_name = 'job_data_invariants');
 SELECT 'jobs', count(*) FROM timescaledb_information.jobs WHERE proc_schema NOT LIKE '\_timescaledb%';
+-- guard: no drop_chunks policy on raw relations (PROD_RAW_RETENTION=off) — want 0
+SELECT 'raw retention policies (want 0)', count(*)
+  FROM timescaledb_information.jobs j
+ WHERE j.proc_name = 'policy_retention'
+   AND j.hypertable_schema || '.' || j.hypertable_name IN (
+       'silver.equipment_values', 'bronze.equipment_values_raw', 'bronze.equipment_events_raw',
+       'silver.ca_discrete_changes_1s', 'silver.ca_equipment_boxes_1s', 'silver.agg_equipment_values_1min',
+       'silver.equipment_metrics_1min', 'silver.equipment_categorical_1min');
