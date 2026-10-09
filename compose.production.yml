@@ -82,6 +82,7 @@ volumes:
   rabbitmq-data:
   mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
+  hist_gateway_data:         # D3: pg_duckdb gateway state (fdw defs + hist cutover cache)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura          .3  edge-api          .5  rabbitmq
@@ -89,7 +90,7 @@ volumes:
 # .10 pgbouncer       .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init     .16 db-migrate        .17 adminer
 # .19 operator        .20 oeecloud-worker   .22 prometheus
-# .23 edge-transformer  .24 mosquitto       .26 refdata-api
+# .23 edge-transformer  .24 mosquitto       .26 refdata-api        .27 hist-gateway
 # .29 ingest-shim     .30 db-init-bootstrap .31 operator-adapter   .35 app-redis
 #
 # DELIBERATELY ABSENT vs staging (see header):
@@ -519,6 +520,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: pgbouncer
+      # Operator super-admin cross-tenant WRITE escalation (RS256/JWKS verifier,
+      # #188). Enabled per prod decision (2026-09-07). Gated by construction: an
+      # exclusive single super_user + email allowlist. NOTE: only takes effect once
+      # the dev super-admin user is PROVISIONED in prod (a seed step, cutover-gated).
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -670,8 +676,18 @@ services:
       OAUTH2_PROXY_OIDC_GROUPS_CLAIM: "cognito:groups"
       OAUTH2_PROXY_SCOPE: openid email profile
       OAUTH2_PROXY_EMAIL_DOMAINS: "*"
-      OAUTH2_PROXY_COOKIE_DOMAINS: .prod.packiot.app
-      OAUTH2_PROXY_WHITELIST_DOMAINS: .prod.packiot.app
+      # Cookie + redirect scope BROADENED from .prod.packiot.app to .packiot.app
+      # (2026-08) so the oauth2 gate can cover dash.packiot.app + wiki.packiot.app,
+      # which live on the packiot.app APEX (siblings of prod.packiot.app), not under
+      # *.prod.packiot.app. A cookie scoped to .prod.packiot.app is NOT sent by the
+      # browser to dash/wiki, and .prod-only whitelist rejects the post-login rd=
+      # → the nginx auth_request gate on those hosts would infinite-loop. Setting a
+      # single broadest domain .packiot.app makes the callback (on auth.prod.…) set
+      # Domain=.packiot.app, readable by every packiot.app subdomain (existing *.prod
+      # admin SSO still works — they are subdomains of packiot.app too). MUST land
+      # together with the dash/wiki nginx vhost gates (nginx_setup.sh).
+      OAUTH2_PROXY_COOKIE_DOMAINS: .packiot.app
+      OAUTH2_PROXY_WHITELIST_DOMAINS: .packiot.app
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_SAMESITE: lax
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
@@ -831,9 +847,17 @@ services:
       # fallback for lines (mutually exclusive per client — do NOT also enable
       # COUNTERS_ONLY_AVAILABILITY for a line-metered tenant, or lines double-write).
       COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
+      # Greenfield: tenant list stays minimal — each line-metered client is added
+      # to this list at ITS onboarding (staging pattern). Do NOT pre-bake staging's
+      # tenants (e.g. ent 5).
       COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
       COUNTERS_ONLY_AVAILABILITY_ENABLED: "false"
+      # Client-agnostic hardening (forward-port): the oldest-first backfill drain
+      # that recomputes stranded recalc_needed hour rows (stream-engine
+      # internal/rollup/backfill.go, dedicated advisory key). Safe on all tenants.
+      ROLLUP_BACKFILL_ENABLED: "true"
+      ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
       # ── Strategy D — shared worker pool + dynamic tenant discovery ─────────
       # Onboard a new client (packml_register active=true) with NO worker
       # restart — the worker picks it up within this interval. 0 = boot-only.
@@ -1077,14 +1101,13 @@ services:
       # (never client-supplied). # FILL AT DEPLOY from packiot/production/refdata-query-keys
       # (e.g. "prod-<client>-key:<enterprise_id>").
       QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:-}
-      # Dual JWT verify. front4 sends a Firebase JWT (fbpackiot project — PUBLIC
-      # id, not a secret) OR a Cognito ID token. Cognito is now LIVE on prod
-      # (front4 W1 read-cutover: front4 reads the bootstrap + analytics via
-      # refdata under the shared Cognito pool). Default ON so a fresh re-provision
-      # keeps it (was ${..:-false} → refdata silently rejected Cognito → front4
-      # Cognito login white-paged; flipped live 2026-08-07, codified here).
-      # Override to false only for a deliberate Firebase-only rollback.
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
+      # #159: Firebase IdP RETIRED on the new-stack plane — refdata-api trusts
+      # ONLY the Cognito issuer now. FIREBASE_PROJECT_ID is removed (the binary no
+      # longer reads it nor constructs a Firebase verifier — see main.go). front4
+      # authenticates the /v1 read plane with a Cognito ID token; a stale Firebase
+      # token matches no verifier and is rejected (401). Mirrors staging (#1130).
+      # COGNITO_AUTH_ENABLED is now inert for refdata (Cognito is unconditional);
+      # kept for parity with other services that still read it.
       COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-true}
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
@@ -1209,10 +1232,133 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── Operator ──────────────────────────────────────────────────────────────────
-  # NOT included in the central cloud stack (deliberately removed — first-dry-run
-  # boot lesson). The operator SPA's nginx reverse-proxies API routes to
-  # `edge-nodered`, which does NOT run in the cloud stack (per-factory only, per
-  # ADR-0005). With no such upstream in the compose network the container
-  # crash-loops on "host not found in upstream edge-nodered". Operator deploys
-  # alongside edge-nodered per-factory — its .19 address (172.18.0.19) is freed.
+  # ── Operator SPA ────────────────────────────────────────────────────────────
+  # CPACK PO-control cutover (docs/clients/cpack-po-cutover-runbook.md, gap B1).
+  # The operator PWA served at operator.prod.packiot.app. Host nginx operator.conf
+  # already proxies operator.prod → 127.0.0.1:8083 (behind the oauth2/Cognito
+  # outer gate — runbook B4, a separate USER decision); this service is what
+  # finally listens there.
+  #
+  # ⚠ WHY Dockerfile.edge (NOT Dockerfile.staging): the staging image bakes
+  # nginx.staging.conf.template, whose legacy `location` block hard-proxies
+  # /machines,/set-event,/downtime-reasons,… to `http://edge-nodered:1880`.
+  # edge-nodered does NOT run in the cloud stack (per-factory only, ADR-0005), so
+  # nginx resolves that literal upstream at startup and emerg-fails
+  # ("host not found in upstream edge-nodered") → crash-loop. That is exactly why
+  # this service was removed on the first dry-run boot. Dockerfile.edge bakes
+  # nginx.edge.conf.template — the clean post-ADR-0018 surface with NO edge-nodered
+  # proxy: writes+/session → edge-api:8080, reads → refdata-api:9104 (both exist
+  # here), upstreams envsubst-configurable, so nginx starts cleanly. PO control
+  # (the cutover's scope) rides /api/production-orders/* → edge-api and the PO
+  # list/current-production reads ride /v1/operator-* → refdata — both resolve on
+  # new-prod. (Residual legacy-only SPA features — machine list, manual-event
+  # justify, language packs — 404 to the SPA catch-all until those routes migrate
+  # off edge-nodered; harmless while no kiosk/operator is pointed here yet — B3.)
+  #
+  # Secrets (deploy-filled into /opt/packiot/.env; NEVER committed):
+  #   EDGE_API_KEY    = OPERATOR_EDGE_API_KEY    = CPACK (ent 3) enterprises.api_key (B2)
+  #   REFDATA_API_KEY = OPERATOR_REFDATA_API_KEY = CPACK refdata read key, also in
+  #                     refdata's QUERY_API_KEYS map → ent 3 (B5)
+  # nginx injects both server-side (envsubst) on /api|/v1 — the browser NEVER
+  # holds a key. Reuses the .19 address freed when the old comment-only entry was
+  # removed. Kiosk repoint + operator provisioning stay OUT of this change.
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.edge
+    container_name: operator
+    restart: unless-stopped
+    environment:
+      # CPACK ent-3 enterprises.api_key — nginx injects it as x-api-key on /api/*.
+      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
+      # CPACK refdata read key — nginx injects it as x-api-key on /v1/*; refdata
+      # resolves customer_id (=3) from it server-side (ADR-0027 Surface-1).
+      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:-}
+      # Clean-surface upstreams (defaults baked in Dockerfile.edge; pinned here
+      # for clarity — both are live services in this compose network).
+      EDGE_API_UPSTREAM: http://edge-api:8080
+      REFDATA_UPSTREAM: http://read-api:9104   # renamed from refdata-api (alias still resolves)
+    ports:
+      - "127.0.0.1:8083:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.19
+    depends_on:
+      # Ordering only — nginx needs the upstream NAMES to resolve at startup,
+      # which requires the containers to exist on the network. Neither gates on
+      # health (nginx tolerates a briefly-unready upstream at request time).
+      edge-api:
+        condition: service_started
+      read-api:            # renamed from refdata-api (alias kept on read-api)
+        condition: service_started
+    healthcheck:
+      # nginx serves the SPA index on :80; busybox wget ships in nginx:alpine.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── historian-gateway (D3 — transparent hot+cold query layer) ─────────────────
+  # Exposes `ev_all`: live timescaledb (HOT, postgres_fdw to the r7g) UNION S3
+  # Parquet historian (COLD, pg_duckdb). Consumers (read-api, Superset, tools)
+  # query plain Postgres SQL; old timestamps resolve to S3 and prune to the
+  # relevant partition file. Cold-store infra = terraform/production/historian.tf
+  # (S3 + Athena + partition-projection, Approach B3). Proven on staging (CPACK):
+  # one query spans 2021→today; old-timestamp lookups scan 1/181 files.
+  # NOT a dependency of read-api (loose coupling, like staging) — read-api
+  # tolerates the gateway being unready so it never gates on the 20m first boot.
+  # First boot on a fresh hist_gateway_data volume runs refresh_hist_cutover() (a
+  # full one-pass parquet scan — minutes on the 336M-row CPACK partition) inside
+  # initdb before Postgres accepts TCP; start_period 20m suppresses false
+  # "unhealthy" during that window. Only the first boot on a fresh volume pays it.
+  historian-gateway:
+    image: pgduckdb/pgduckdb:16-main
+    container_name: hist-gateway
+    restart: unless-stopped
+    # OPT-IN: the gateway serves COLD (S3 parquet) history — a greenfield first
+    # cutover has none, so it does NOT auto-start. Enable once the historian is
+    # configured (SM secrets present + bucket populated) with:
+    #   docker compose -f compose.production.yml --profile historian up -d historian-gateway
+    # (or COMPOSE_PROFILES=historian). Being profiled keeps it OUT of the default
+    # `up -d --remove-orphans` deploy AND safe from orphan-removal.
+    profiles: ["historian"]
+    environment:
+      # gateway-ONLY vars use safe defaults (NOT :?): an unconfigured historian
+      # must never fail compose interpolation and block the whole 25-service deploy
+      # (compose evaluates :? even for inactive profiles). Override in .env when live.
+      POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:-hist_gw_local_changeme}   # gateway's own PG (packiot-net only, no host port)
+      # live timescaledb (HOT) — the same external r7g every other service uses
+      # (bare, like the rest of compose: app_init.sh always sets POSTGRES_HOST_UPSTREAM)
+      FDW_HOST: ${POSTGRES_HOST_UPSTREAM}
+      FDW_PORT: "5432"
+      FDW_DB: ${POSTGRES_DB}
+      FDW_USER: ${POSTGRES_USER:-postgres}
+      FDW_PASS: ${POSTGRES_PASSWORD}
+      # S3 historian (COLD) — scoped read-only key (svc-historian-gateway).
+      # Empty defaults so the stack never blocks; the gateway simply has no cold
+      # store until these are set (then re-create it on a fresh hist_gateway_data vol).
+      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      HIST_AWS_KEY: ${HIST_AWS_KEY:-}
+      HIST_AWS_SECRET: ${HIST_AWS_SECRET:-}
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.27
+    volumes:
+      - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      - hist_gateway_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20m
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

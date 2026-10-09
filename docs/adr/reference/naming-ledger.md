@@ -35,6 +35,7 @@ USER DIRECTIVE: the legacy names are awful (typos shipped to prod,
 | piot_uns_* refresh family | matrix as 14 fns | uns package (provision + refresh matrix) |
 | proc_create_jobs_enterprsie_10 | typo + tenant | (at port) jobs provisioning descriptor |
 | ca_agg_equipment_values_1hour vs agg_* | two CAgg dialects | flows carry agg_* only |
+| v_operator_entities_2 | version suffix (never promoted) | **v_operator_entities** (R2 promote; `_2` kept as compat view — see migrations/0012-r2-promote-v-operator-entities.sql, applied prod 2026-08-12) |
 
 ## Enforcement
 

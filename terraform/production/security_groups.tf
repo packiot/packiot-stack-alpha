@@ -102,6 +102,19 @@ resource "aws_security_group" "db" {
     security_groups = [aws_security_group.app.id]
   }
 
+  # Superset metadata DB + bi.* views connect UPSTREAM-DIRECT to the r7g
+  # (compose.superset.yml: POSTGRES_HOST_UPSTREAM). This adopts the rule
+  # applied out-of-band at Superset bring-up (superset.tf follow-up 1). It
+  # MUST match the live rule (sgr-0a45147c78615a67d) exactly so terraform
+  # reconciles to a no-op rather than creating a duplicate.
+  ingress {
+    description     = "PostgreSQL from Superset box (metadata + bi.* views)"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.superset.id]
+  }
+
   egress {
     description = "OS updates, SSM, Docker pulls, Secrets Manager via NAT"
     from_port   = 0

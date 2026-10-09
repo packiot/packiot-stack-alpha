@@ -268,24 +268,19 @@ server {
     ssl_ciphers         HIGH:!aNULL:!MD5;
     include snippets/origin-verify.conf;
 
-    # Cognito forward-auth (oauth2-proxy) — replaces Authentik. operator serves
-    # client factory users, so it gates on ANY authenticated pool user (not
-    # cs-admin). Client logins are provisioned via CS Admin.
-    include snippets/oauth2-proxy.conf;
-
+    # B4 (2026-08-12): Cognito oauth2 outer gate REMOVED. operator is a factory
+    # kiosk with its OWN /session login (operator_pw_hash + JWT_SECRET — see
+    # edge-api login.service.ts). That local auth is the sole gate; CloudFront +
+    # WAF + origin-verify (above) remain the edge protection. Floor operators are
+    # provisioned as operator-DB users (operator_pw_hash) via CS Admin, NOT in the
+    # Cognito pool — so the outer Cognito gate would 302 them to a login they have
+    # no account for (the "blue Cognito page" go-live blocker).
     location / {
-        auth_request /oauth2/auth;
-        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
-        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
-        error_page 401 = @oauth2_signin;
-
         proxy_pass         http://127.0.0.1:8083;
         proxy_set_header   Host                 \$host;
         proxy_set_header   X-Real-IP            \$remote_addr;
         proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto    https;
-        proxy_set_header   X-Auth-Request-User  \$auth_user;
-        proxy_set_header   X-Auth-Request-Email \$auth_email;
         proxy_read_timeout 300s;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           \$http_upgrade;
@@ -478,10 +473,160 @@ echo "oauth2-proxy SSO vhost configured at https://auth.$PRODUCTION_DOMAIN"
 
 # ── dash vhost (static SPA on the packiot.app apex — hand-managed cert) ────────
 # dash.packiot.app is a static SPA served from /var/www/dash on a SEPARATE
-# certificate (HTTP-01 webroot, NOT the *.$PRODUCTION_DOMAIN wildcard). No auth,
-# no origin-verify — untouched by the oauth2 posture. Its cert is provisioned
-# out-of-band; write the vhost only if the cert already exists so a fresh boot
-# never fails `nginx -t` on a missing cert (chicken-and-egg with HTTP-01).
+# certificate (HTTP-01 webroot, NOT the *.$PRODUCTION_DOMAIN wildcard). Its cert
+# is provisioned out-of-band; write the vhost only if the cert already exists so a
+# fresh boot never fails `nginx -t` on a missing cert (chicken-and-egg HTTP-01).
+#
+# SECURITY (2026-08): dash is now oauth2-gated (cs-admin group) — same Cognito
+# forward-auth as the internal admin UIs. Previously it was UNGATED (open to
+# anyone who reached it via CloudFront). The auth_request runs before try_files,
+# so an unauthenticated hit gets 401 → @oauth2_signin → auth.$PRODUCTION_DOMAIN.
+# The acme-challenge + http→https redirect on :80 stay UNGATED so certbot renewal
+# never 302s to login.
+# ⚠ COOKIE DOMAIN: this gate only works if oauth2-proxy's OAUTH2_PROXY_COOKIE_DOMAINS
+# + OAUTH2_PROXY_WHITELIST_DOMAINS include `.packiot.app` (dash is on the apex, NOT
+# *.prod.packiot.app). See compose.production.yml — must land together with this.
+# ── dash static content (codified 2026-09-03) ──────────────────────────
+# The service-directory page at dash.packiot.app. Was a hand-placed /var/www/dash/
+# index.html that drifted (dead Hasura links + pre-rename service names). Codified
+# here so nginx_setup.sh reproduces it; written unconditionally because the
+# acme-challenge webroot below is /var/www/dash (dir must exist before the cert).
+mkdir -p /var/www/dash
+cat > /var/www/dash/index.html <<'DASHHTML'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packiot — Service Dashboard</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#282d38;
+    --text:#e7eaf0; --muted:#9aa3b2; --accent:#4f8cff; --ok:#37b26b; --warn:#e0a53b;
+    --int:#7c86f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  header{padding:28px 32px 18px;border-bottom:1px solid var(--border);
+    display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  header h1{margin:0;font-size:22px;font-weight:800;letter-spacing:-.02em}
+  header .sub{color:var(--muted);font-size:13.5px}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 32px 60px}
+  .env{margin-top:30px}
+  .env h2{display:flex;align-items:center;gap:10px;margin:0 0 4px;font-size:18px;font-weight:800}
+  .badge{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em}
+  .b-prod{background:rgba(55,178,107,.15);color:var(--ok);border:1px solid rgba(55,178,107,.3)}
+  .b-stg{background:rgba(224,165,59,.14);color:var(--warn);border:1px solid rgba(224,165,59,.3)}
+  .b-dev{background:rgba(124,134,240,.14);color:var(--int);border:1px solid rgba(124,134,240,.3)}
+  .env .dom{color:var(--muted);font-size:13px;margin:2px 0 16px}
+  .env .dom code{color:var(--text);background:var(--panel2);padding:1px 6px;border-radius:5px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:11px;
+    padding:14px 15px;text-decoration:none;color:inherit;display:block;transition:.12s}
+  a.card:hover{border-color:var(--accent);background:var(--panel2);transform:translateY(-1px)}
+  .card .name{font-weight:700;font-size:14.5px;display:flex;align-items:center;gap:7px}
+  .card .name .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .card .desc{color:var(--muted);font-size:12.5px;margin-top:4px}
+  .card .url{color:var(--accent);font-size:12px;margin-top:8px;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .sect-label{margin:20px 0 9px;font-size:11.5px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.06em;color:var(--muted)}
+  .infra{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    padding:7px 11px;font-size:12.5px;display:flex;align-items:center;gap:7px}
+  .chip .dot{width:6px;height:6px;border-radius:50%;background:var(--int)}
+  .chip b{font-weight:650}
+  .chip span{color:var(--muted)}
+  .note{color:var(--muted);font-size:13px;background:var(--panel);border:1px solid var(--border);
+    border-radius:9px;padding:12px 14px;margin-top:12px}
+  footer{color:var(--muted);font-size:12px;text-align:center;padding:26px 0 8px;border-top:1px solid var(--border);margin-top:44px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12.5px;margin-top:6px}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .lg-web{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+  .lg-int{width:8px;height:8px;border-radius:50%;background:var(--int)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Packiot · Service Dashboard</h1>
+  <span class="sub">All services, by environment</span>
+</header>
+<div class="wrap">
+  <div class="legend">
+    <span><i class="lg-web"></i> Web UI (clickable, behind SSO)</span>
+    <span><i class="lg-int"></i> Internal service (no public vhost)</span>
+  </div>
+
+  <!-- PRODUCTION -->
+  <section class="env">
+    <h2>Production <span class="badge b-prod">live</span></h2>
+    <div class="dom">Web services at <code>&lt;service&gt;.prod.packiot.app</code> · new-prod stack (F3-native) · behind CloudFront + WAF + Cognito SSO</div>
+    <div class="grid">
+      <a class="card" href="https://csadmin.prod.packiot.app" target="_blank"><div class="name"><i class="dot"></i>CS Admin</div><div class="desc">Client onboarding + edge deploy button</div><div class="url">csadmin.prod.packiot.app</div></a>
+      <a class="card" href="https://grafana.prod.packiot.app" target="_blank"><div class="name"><i class="dot"></i>Grafana</div><div class="desc">OEE dashboards + observability</div><div class="url">grafana.prod.packiot.app</div></a>
+      <a class="card" href="https://operator.prod.packiot.app" target="_blank"><div class="name"><i class="dot"></i>Operator</div><div class="desc">Operator UI (PO control, downtimes)</div><div class="url">operator.prod.packiot.app</div></a>
+      <a class="card" href="https://api.prod.packiot.app" target="_blank"><div class="name"><i class="dot"></i>edge-api</div><div class="desc">Control plane / write plane (NestJS)</div><div class="url">api.prod.packiot.app</div></a>
+      <a class="card" href="https://adminer.prod.packiot.app" target="_blank"><div class="name"><i class="dot"></i>Adminer</div><div class="desc">Postgres admin</div><div class="url">adminer.prod.packiot.app</div></a>
+      <a class="card" href="https://rabbitmq.prod.packiot.app" target="_blank"><div class="name"><i class="dot"></i>RabbitMQ</div><div class="desc">Broker management UI</div><div class="url">rabbitmq.prod.packiot.app</div></a>
+    </div>
+    <div class="sect-label">Infrastructure &amp; data plane (internal)</div>
+    <div class="infra">
+      <div class="chip"><i class="dot"></i><b>sparkplug-decoder</b><span>SparkPlug decode · Calc · fmr edge-transformer</span></div>
+      <div class="chip"><i class="dot"></i><b>refdata-api</b><span>read plane</span></div>
+      <div class="chip"><i class="dot"></i><b>stream-engine</b><span>OEE compute · fmr oeecloud-worker</span></div>
+      <div class="chip"><i class="dot"></i><b>mosquitto</b><span>:8883 mTLS MQTT ingest (primary)</span></div>
+      <div class="chip"><i class="dot"></i><b>ingest-shim · operator-adapter</b><span>legacy HTTP ingest (ports retired, internal only)</span></div>
+      <div class="chip"><i class="dot"></i><b>pgbouncer → TimescaleDB</b><span>database</span></div>
+      <div class="chip"><i class="dot"></i><b>app-redis</b><span>cache</span></div>
+      <div class="chip"><i class="dot"></i><b>oauth2-proxy</b><span>Cognito SSO gate (:4180)</span></div>
+      <div class="chip"><i class="dot"></i><b>prometheus · loki · promtail</b><span>metrics + logs</span></div>
+    </div>
+  </section>
+
+  <!-- STAGING -->
+  <section class="env">
+    <h2>Staging <span class="badge b-stg">test</span></h2>
+    <div class="dom">Web services at <code>&lt;service&gt;.staging.packiot.app</code> · behind CloudFront + WAF + Cognito SSO</div>
+    <div class="grid">
+      <a class="card" href="https://grafana.staging.packiot.app" target="_blank"><div class="name"><i class="dot"></i>Grafana</div><div class="desc">OEE dashboards + observability</div><div class="url">grafana.staging.packiot.app</div></a>
+      <a class="card" href="https://operator.staging.packiot.app" target="_blank"><div class="name"><i class="dot"></i>Operator</div><div class="desc">Operator UI</div><div class="url">operator.staging.packiot.app</div></a>
+      <a class="card" href="https://api.staging.packiot.app" target="_blank"><div class="name"><i class="dot"></i>edge-api</div><div class="desc">Control plane API</div><div class="url">api.staging.packiot.app</div></a>
+      <a class="card" href="https://adminer.staging.packiot.app" target="_blank"><div class="name"><i class="dot"></i>Adminer</div><div class="desc">Postgres admin</div><div class="url">adminer.staging.packiot.app</div></a>
+      <a class="card" href="https://rabbitmq.staging.packiot.app" target="_blank"><div class="name"><i class="dot"></i>RabbitMQ</div><div class="desc">Broker management UI</div><div class="url">rabbitmq.staging.packiot.app</div></a>
+    </div>
+    <div class="note"><b>Legacy / retiring:</b> <code>oeecloud-nodered</code> (the old cloud OEE engine) is
+      <b>decommissioned</b> — OEE now runs in the Go worker <code>stream-engine</code> (F3 flow), not Node-RED;
+      <code>sparkplug-decoder</code> does the SparkPlug decode + Calc one hop upstream.
+      <code>edge-nodered</code> (factory low-code, :1880) still runs on staging but is superseded by the
+      config-as-data <code>sparkplug-agent</code> + generated reader flow; it is not deployed on production.</div>
+    <div class="sect-label">Infrastructure &amp; data plane (internal)</div>
+    <div class="infra">
+      <div class="chip"><i class="dot"></i><b>sparkplug-decoder</b><span>SparkPlug decode · Calc · fmr edge-transformer</span></div>
+      <div class="chip"><i class="dot"></i><b>refdata-api</b><span>read plane</span></div>
+      <div class="chip"><i class="dot"></i><b>stream-engine</b><span>OEE compute · fmr oeecloud-worker</span></div>
+      <div class="chip"><i class="dot"></i><b>ingest-shim · operator-adapter</b><span>ingest tees</span></div>
+      <div class="chip"><i class="dot"></i><b>mosquitto</b><span>MQTT bus</span></div>
+      <div class="chip"><i class="dot"></i><b>pgbouncer → TimescaleDB</b><span>database</span></div>
+      <div class="chip"><i class="dot"></i><b>oauth2-proxy</b><span>Cognito SSO gate</span></div>
+      <div class="chip"><i class="dot"></i><b>prometheus · loki</b><span>observability</span></div>
+    </div>
+  </section>
+
+  <!-- DEVELOPMENT -->
+  <section class="env">
+    <h2>Development <span class="badge b-dev">branch</span></h2>
+    <div class="dom">Integration branch — <code>compose.development.yml</code></div>
+    <div class="note">The <code>development</code> branch is now synced to the same git HEAD as staging &amp; production.
+      There is no standing <code>*.dev.packiot.app</code> deployment; development runs locally via
+      <code>docker compose -f compose.development.yml up</code> (same service set as staging).</div>
+  </section>
+
+  <footer>Packiot service directory · built for quick navigation across environments</footer>
+</div>
+</body>
+</html>
+DASHHTML
+
 if [ -d /etc/letsencrypt/live/dash.packiot.app ]; then
 cat > /etc/nginx/conf.d/dash.conf <<NGINX
 server {
@@ -497,17 +642,79 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/dash.packiot.app/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Cognito forward-auth (oauth2-proxy) — staff-only, same gate as admin UIs.
+    include snippets/oauth2-proxy.conf;
+
     root /var/www/dash;
     index index.html;
-    location / { try_files \$uri \$uri/ /index.html; }
+    location / {
+        auth_request /oauth2/auth-csadmin;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        try_files \$uri \$uri/ /index.html;
+    }
 }
 NGINX
 nginx -t && nginx -s reload
-echo "dash static SPA vhost configured at https://dash.packiot.app"
+echo "dash static SPA vhost configured at https://dash.packiot.app (oauth2-gated)"
 else
 echo "SKIP: /etc/letsencrypt/live/dash.packiot.app absent — dash vhost not written" \
      "(hand-managed HTTP-01 cert; obtain it then re-run this script)"
 fi
+
+# ── wiki vhost (internal docs SPA on the packiot.app apex — oauth2-gated) ──────
+# wiki.packiot.app is an internal, staff-only static site served from /var/www/wiki.
+# It is reached ONLY via CloudFront (edge.tf: cert SAN + alias + wiki_edge ALIAS).
+# CloudFront dials the origin at origin.$PRODUCTION_DOMAIN, so the origin TLS
+# handshake SNI is origin.$PRODUCTION_DOMAIN — covered by the *.$PRODUCTION_DOMAIN
+# wildcard cert already obtained above. We therefore reuse that wildcard cert here
+# (NOT a separate wiki.packiot.app cert like dash), so the vhost serves as soon as
+# /var/www/wiki is populated — no extra out-of-band cert step. Host-header routing
+# (server_name wiki.packiot.app) selects this block after TLS terminates.
+#
+# Protection = the same posture as the internal *.prod service vhosts:
+#   * origin-verify (CloudFront-only; direct-to-EIP hits 403)
+#   * oauth2-proxy cs-admin forward-auth (Cognito, staff-only)
+# Content is owned by a separate markdown→HTML pipeline; this only creates the
+# vhost + gate so /var/www/wiki serves once populated.
+# ⚠ COOKIE DOMAIN: like dash, the gate only works if oauth2-proxy's
+# OAUTH2_PROXY_COOKIE_DOMAINS + OAUTH2_PROXY_WHITELIST_DOMAINS include `.packiot.app`
+# (wiki is on the apex, NOT *.prod.packiot.app) — see compose.production.yml.
+cat > /etc/nginx/conf.d/wiki.conf <<NGINX
+server {
+    listen 80;
+    server_name wiki.packiot.app;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name wiki.packiot.app;
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    include snippets/origin-verify.conf;
+
+    # Cognito forward-auth (oauth2-proxy) — staff-only, same gate as admin UIs.
+    include snippets/oauth2-proxy.conf;
+
+    root /var/www/wiki;
+    index index.html;
+    location / {
+        auth_request /oauth2/auth-csadmin;
+        auth_request_set \$auth_user  \$upstream_http_x_auth_request_user;
+        auth_request_set \$auth_email \$upstream_http_x_auth_request_email;
+        error_page 401 = @oauth2_signin;
+
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+NGINX
+nginx -t && nginx -s reload
+echo "wiki internal vhost configured at https://wiki.packiot.app (oauth2-gated)"
 
 # NOTE: Staging's AMQPS stream proxy (port 5671), RabbitMQ mgmt (mq.<domain>),
 # refdata + cpack-ingest carve-outs, and node-red editor vhosts are DELIBERATELY

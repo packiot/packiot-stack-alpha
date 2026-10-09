@@ -118,6 +118,21 @@ resource "aws_secretsmanager_secret_version" "app" {
     rabbitmq_user      = "packiot"
     rabbitmq_password  = random_password.rabbitmq.result
     grafana_admin_pass = random_password.grafana_admin.result
+    # ── Operator SPA keys (CPACK PO-control cutover — cpack-po-cutover-runbook.md
+    #    B2/B5). The `operator` compose service's nginx injects both server-side;
+    #    the browser never holds a key. Both default EMPTY and are HAND-FILLED at
+    #    client onboarding (ignore_changes below preserves the hand-set values),
+    #    the same out-of-band pattern as the oauth2/superset/onboard keys:
+    #      operator_edge_api_key    (B2) = the operator client's enterprises.api_key
+    #        (a DB-generated randomUUID from onboarding — NOT terraform-random).
+    #        For CPACK this is enterprise 3's api_key.
+    #      operator_refdata_api_key (B5) = the opaque refdata read key. MUST match
+    #        the token in the refdata_query_keys secret's api_keys map (which maps
+    #        it → the client's enterprise id). app_init.sh reads both into .env
+    #        (OPERATOR_EDGE_API_KEY / OPERATOR_REFDATA_API_KEY). Populate via a
+    #        put-secret-value merge on the box (values never printed).
+    operator_edge_api_key    = ""
+    operator_refdata_api_key = ""
   })
   lifecycle { ignore_changes = [secret_string] }
 }
@@ -184,6 +199,14 @@ resource "aws_secretsmanager_secret" "refdata_query_keys" {
 
 resource "aws_secretsmanager_secret_version" "refdata_query_keys" {
   secret_id = aws_secretsmanager_secret.refdata_query_keys.id
+  # Empty default — the per-tenant map is hand-filled at client onboarding via
+  # `aws secretsmanager put-secret-value` (a fresh env can't know a client's read
+  # key until the client exists). ignore_changes preserves the hand-set map.
+  # Format: "key:enterprise_id,key2:cid2". For the CPACK PO-control cutover
+  # (docs/clients/cpack-po-cutover-runbook.md B5) this holds the operator read key
+  # mapped to enterprise 3 — the SAME token stored as app.operator_refdata_api_key
+  # (the two MUST agree; refdata resolves customer_id from the key server-side).
+  # app_init.sh reads .api_keys → .env REFDATA_QUERY_API_KEYS.
   secret_string = jsonencode({
     api_keys = ""
   })

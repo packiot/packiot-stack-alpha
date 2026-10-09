@@ -124,15 +124,17 @@ resource "random_password" "origin_verify" {
 # 1. ACM certificate (us-east-1 — CloudFront viewer certs must be us-east-1)
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# One DNS-validated cert covering the wildcard + the apex + dash. The wildcard
-# `*.prod.packiot.app` matches api/hasura/grafana/... and origin.prod; the apex
-# `prod.packiot.app` and `dash.packiot.app` are explicit SANs.
+# One DNS-validated cert covering the wildcard + the apex + dash + wiki. The
+# wildcard `*.prod.packiot.app` matches api/hasura/grafana/... and origin.prod;
+# the apex `prod.packiot.app`, `dash.packiot.app` and `wiki.packiot.app` are
+# explicit SANs (dash + wiki live in the PARENT packiot.app zone, not *.prod).
 resource "aws_acm_certificate" "edge" {
   provider    = aws.us_east_1
   domain_name = "*.${var.production_domain}"
   subject_alternative_names = [
     var.production_domain, # prod.packiot.app (apex)
     "dash.packiot.app",    # lives in the PARENT packiot.app zone
+    "wiki.packiot.app",    # internal wiki — also in the PARENT packiot.app zone
   ]
   validation_method = "DNS"
 
@@ -155,6 +157,7 @@ locals {
     "*.${var.production_domain}" = aws_route53_zone.production.zone_id
     (var.production_domain)      = aws_route53_zone.production.zone_id
     "dash.packiot.app"           = data.aws_route53_zone.packiot_app.zone_id
+    "wiki.packiot.app"           = data.aws_route53_zone.packiot_app.zone_id
   }
 }
 
@@ -318,8 +321,9 @@ resource "aws_cloudfront_distribution" "edge" {
   price_class     = var.cloudfront_price_class
 
   # Wildcard alias covers api/hasura/grafana/rabbitmq/adminer/operator/csadmin/
-  # auth.prod; dash.packiot.app is the one non-*.prod name and needs its own alias.
-  aliases = ["*.${var.production_domain}", "dash.packiot.app"]
+  # auth.prod; dash.packiot.app + wiki.packiot.app are the non-*.prod names and
+  # each needs its own alias (CloudFront 403s a Host not in this set).
+  aliases = ["*.${var.production_domain}", "dash.packiot.app", "wiki.packiot.app"]
 
   # Single origin — the nginx host, reached over its OWN (non-fronted) hostname
   # origin.prod.packiot.app so the App EIP is never a CloudFront alias (avoids a
@@ -412,15 +416,48 @@ resource "aws_route53_record" "services_edge" {
 
 # RISKY (var.edge_cutover) — dash.packiot.app cutover. dash lives in the PARENT
 # packiot.app zone (Z05633042U07OEHROHZCX), not the prod child zone, so it needs
-# its own resource. Created ONLY when cutover=true. If a manual dash A-record
-# already exists in the parent zone, remove it first (an ALIAS and an A record for
-# the same name conflict) — see runbook.
+# its own resource. Created ONLY when cutover=true.
+#
+# allow_overwrite=true — dash.packiot.app already exists in the parent zone as a
+# LIVE manual A record → 3.232.9.118 (the App EIP), which is why this resource was
+# held: creating an ALIAS for a name that already has an A record errors ("Tried
+# to create resource record set but it already exists"). Route53 ChangeResource
+# RecordSets is an atomic UPSERT, so overwriting the A record with the ALIAS is a
+# single in-place swap — there is NO dangling window where dash fails to resolve.
+# The ALIAS target (aws_cloudfront_distribution.edge = d3j5uz0jkgzea0.cloudfront.net)
+# is the SAME edge distribution that already carries dash.packiot.app in its alias
+# set + cert SAN, so this is the intended, cert-covered destination.
 resource "aws_route53_record" "dash_edge" {
   count = var.edge_cutover ? 1 : 0
 
-  zone_id = data.aws_route53_zone.packiot_app.zone_id
-  name    = "dash.packiot.app"
-  type    = "A"
+  zone_id         = data.aws_route53_zone.packiot_app.zone_id
+  name            = "dash.packiot.app"
+  type            = "A"
+  allow_overwrite = true
+
+  alias {
+    name                   = aws_cloudfront_distribution.edge.domain_name
+    zone_id                = "Z2FDTNDATAQYW2"
+    evaluate_target_health = false
+  }
+}
+
+# RISKY (var.edge_cutover) — wiki.packiot.app cutover. Mirrors dash_edge: wiki
+# also lives in the PARENT packiot.app zone (Z05633042U07OEHROHZCX), so it needs
+# its own resource. Created ONLY when cutover=true → ALIAS to the SAME edge
+# CloudFront distribution (which now carries wiki in its alias set + cert SAN).
+#
+# Unlike dash, wiki.packiot.app has NO pre-existing manual A record in the parent
+# zone (it is a brand-new internal host), so there is no A→ALIAS conflict to
+# overwrite. allow_overwrite=true is kept for parity with dash_edge and to make
+# re-applies idempotent — it is harmless when no prior record exists.
+resource "aws_route53_record" "wiki_edge" {
+  count = var.edge_cutover ? 1 : 0
+
+  zone_id         = data.aws_route53_zone.packiot_app.zone_id
+  name            = "wiki.packiot.app"
+  type            = "A"
+  allow_overwrite = true
 
   alias {
     name                   = aws_cloudfront_distribution.edge.domain_name
