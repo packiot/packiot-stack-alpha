@@ -188,6 +188,15 @@ type Config struct {
 	// confirmed OEE-correctness fault; set CALC_RESET_HEAL_ENABLED=false to
 	// restore the legacy emit-cur behavior. See calc.go Message.ResetHeal.
 	ResetHealEnabled bool
+
+	// CalcStateDurable (2026-10-09 deploy-loss fix) checkpoints the Calc
+	// counter baselines into the outbox SQLite DB in the same transaction as
+	// the envelopes built from them, and restores them at boot. Without it a
+	// decoder restart (every deploy) wipes the in-memory baselines, the first
+	// post-restart reading is first-observation-seeded and one reading's
+	// delta per counter stream is lost. Requires the outbox (OUTBOX_ENABLED).
+	// Default true; CALC_STATE_DURABLE=false restores the in-memory-only path.
+	CalcStateDurable bool
 	// NoSpeedGuardFallbackEnabled (ADR-0049 count-loss guard) rescues a machine
 	// that reports NO MachSpeed sensor AND is absent from the counters-only
 	// rated-speed map: Phase 8's `prodSpeed < 3*machSpeed` bound collapses to 0
@@ -387,6 +396,7 @@ func Load() (*Config, error) {
 
 		// Reset/rebirth heal (ADR-0048 count-spike guard) — default ON.
 		ResetHealEnabled:            getenvBool("CALC_RESET_HEAL_ENABLED", true),
+		CalcStateDurable:            getenvBool("CALC_STATE_DURABLE", true),
 		NoSpeedGuardFallbackEnabled: getenvBool("CALC_NO_SPEED_GUARD_FALLBACK", false),
 
 		// Counters-only OEE mode (default OFF — no behavior change)
