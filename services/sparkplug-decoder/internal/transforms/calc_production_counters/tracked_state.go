@@ -52,8 +52,17 @@ type dirtyKey struct {
 
 // TrackedState wraps a State and records which NUMERIC keys (Int, Float,
 // TimeMs) changed since the last TakeDirty. Bool/Strings/UnitMode are not
-// tracked: they are configuration re-seeded from NBIRTH and packml_register at
-// boot, not running totals, so restoring a stale copy could only do harm.
+// tracked: they are configuration re-seeded from NBIRTH and the equipment
+// register at boot, not running totals, so restoring a stale copy could only
+// do harm.
+//
+// INVARIANT — single drainer: the dirty set is process-wide, so TakeDirty
+// assumes ONE goroutine runs Calc + checkpoint per message (the MQTT
+// subscriber's single drainQueue goroutine). With parallel drainers one
+// message's commit could carry another message's baselines before that
+// message's envelopes are enqueued (baseline ahead of emission ⇒ lost delta on
+// restart). Parallelizing needs per-publisher dirty sets (and per-publisher
+// Calc state) first.
 type TrackedState struct {
 	State
 	mu    sync.Mutex
