@@ -206,7 +206,7 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 ## 6. Blockers and open decisions before the go
 | # | Item | Why it blocks |
 |---|---|---|
-| B1 | Create SM secrets `rabbitmq-stream-engine-creds` + `rabbitmq-sparkplug-decoder-creds` **and** the RabbitMQ users/permissions | stream-engine and the decoder cannot authenticate to AMQP → no ingest/OEE |
+| B1 | Create SM secrets `rabbitmq-stream-engine-creds` + `rabbitmq-sparkplug-decoder-creds` **and** the RabbitMQ users/permissions | **AUTHORED on the branch** (§9): TF secrets + least-priv users via `load_definitions`. Remaining: **`terraform apply`** of `terraform/production` (user) before the deploy |
 | B2 | Queue rename: `oeecloud-worker-q*` → `stream-engine-q*` | old queues stay bound to `oee` and fill up unconsumed; drain then delete after cutover |
 | B3 | Prod runner PAT cannot fetch `csadmin` (`30e7a31b`); the release pins csadmin `a0ab759` (+ new operator/edge-api shas) | `Fetch submodules` fails → deploy aborts before build. Grant the PAT csadmin access first |
 | B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | possible regression of a prod fix; port or prove superseded |
@@ -291,3 +291,35 @@ retire every other CPACK event writer first. Either way it needs a decision; fli
 - **C2:** `readapi_ro` has LOGIN + the password from `packiot/production/internal-keys`.
 - **C3:** after deploy, `stream-engine` logs `shadow pool ready` with `analytics_db=packiot` and no
   `falling back to main pool` warnings.
+
+## 9. B1 — RabbitMQ least-privilege users and internal keys (authored, not applied)
+- **`terraform/production/secrets.tf`:** adds `random_password` + `aws_secretsmanager_secret(_version)` (with `ignore_changes`,
+  the prod pattern) for:
+  - `packiot/production/rabbitmq-stream-engine-creds` (`username = "stream-engine"`)
+  - `packiot/production/rabbitmq-sparkplug-decoder-creds` (`username = "sparkplug-decoder"`)
+  - `packiot/production/internal-keys` (`internal_api_key`, `readapi_ro_password`; B5)
+
+  The app box role already reads `packiot/production/*` (`ec2.tf`). Staging hand-created its equivalents; prod's are codified.
+  Offline `terraform validate` passes.
+- **Broker users:** prod's broker had no definitions, and every client used the admin `packiot` user. The promoted
+  `rabbitmq` service now mounts `monitoring/rabbitmq/{enabled_plugins,rabbitmq.conf}` and
+  `/opt/packiot/rabbitmq/definitions.json`, like staging. `load_definitions` re-creates admin + `stream-engine` +
+  `sparkplug-decoder` on every boot. Permission regexes are staging's `definitions.template.json` (unchanged; one
+  template for both envs):
+
+  | user | configure | write | read |
+  |---|---|---|---|
+  | stream-engine | `^(oee\|oee-retry\|oee-failed\|stream-engine-q.*\|oeecloud-fanout.*)$` | same | same |
+  | sparkplug-decoder | `^(edge-transformer.*\|outbox.*\|edge\.plc-normalized.*\|dlx\.edge\.plc-normalized.*)$` | `^(edge-transformer.*\|outbox.*\|edge\.plc-normalized.*\|oee)$` | `^(edge\.plc-normalized.*\|dlx\.edge\.plc-normalized.*\|edge-transformer.*\|outbox.*\|oee)$` |
+
+  It also carries staging's `oee-ae` alternate-exchange policy (`oee-unroutable` → `oee-unroutable-q`).
+- **Rendering:** `scripts/render-rabbitmq-definitions.sh production` (same jq logic as `deploy-staging.yml`). It runs in a
+  new `deploy-production.yml` step before build/up and in `app_init.sh` before the boot-time `compose up`. It refuses to
+  write a file with any empty password. It was tested with a stubbed `aws` (3 users, 3 permission sets).
+- **app_init.sh** writes `READAPI_RO_USER`, `READAPI_RO_PASSWORD` and `INTERNAL_API_KEY` into a **new** `.env`.
+  `app_init.sh` skips `.env` generation on an existing box, so on today's prod box those three lines must be appended
+  once at deploy, from `packiot/production/internal-keys` (values never printed).
+- **Broker recreate caveat:** adding the mounts recreates the `rabbitmq` container. The image keeps Mnesia under
+  `rabbit@<container hostname>`, and compose gives a new hostname on recreate, so the broker can come up with an empty
+  queue set. Users come back from the definitions, and clients re-declare their exchanges/queues/bindings. **Messages
+  still queued at that moment are lost**, so drain first (runbook §5a).

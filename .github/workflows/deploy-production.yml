@@ -64,6 +64,14 @@ jobs:
         # picks them up via variable substitution + env_file references.
         run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
 
+      - name: Generate RabbitMQ definitions (durable least-priv users)
+        # PROMOTION 2026-10 (B1). rabbitmq.conf sets load_definitions; the file must
+        # exist BEFORE compose up or the broker can't boot. Rendered from the
+        # committed template + packiot/production/rabbitmq-{stream-engine,
+        # sparkplug-decoder}-creds (self-hosted runner = app box instance role).
+        # Fails the deploy (before build/up) if any password is missing.
+        run: bash scripts/render-rabbitmq-definitions.sh production
+
       - name: Build images
         # No `-p`: the compose file pins a top-level `name: stack`, so the
         # project name is stable regardless of cwd (this workflow runs from the

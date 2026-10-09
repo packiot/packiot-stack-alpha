@@ -230,6 +230,17 @@ services:
       - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      # PROMOTION 2026-10 (B1) — same as staging: rabbitmq_prometheus plugin +
+      # load_definitions, which re-creates the least-priv users (stream-engine,
+      # sparkplug-decoder; permission regexes in
+      # monitoring/rabbitmq/definitions.template.json) on EVERY boot. The file is
+      # rendered before `up` by scripts/render-rabbitmq-definitions.sh (deploy
+      # workflow + app_init.sh) from Secrets Manager; it holds secrets, lives
+      # outside the repo and is mounted read-only. With definitions loaded,
+      # RABBITMQ_DEFAULT_USER/PASS are ignored — the admin user is in the file.
+      - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./monitoring/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - /opt/packiot/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.5
