@@ -37,6 +37,7 @@ tables:
   core.equipment_validation_shift: {mode: rows, where: "id_enterprise = :tenant AND ts_value_production >= :since"}
   core.equipments: {mode: rows, where: "id_enterprise = :tenant"}
   core.product_families: {mode: rows, where: "id_enterprise = :tenant"}
+  core.po_number_corrections: {mode: schema_only}  # ADR-0062 reviewed PO-number fixes keyed by environment-specific ids; the seed's POs already carry the corrected (pseudonymized) text, so an empty table is correct (2026-10-09)
   core.production_orders: {mode: rows, where: "id_enterprise = :tenant AND (ts_end IS NULL OR ts_end >= :since)"}  # POs open or ending inside the window
   core.products: {mode: rows, where: "id_enterprise = :tenant"}
   core.scrap_reason: {mode: rows, where: "id_enterprise = :tenant"}
@@ -66,6 +67,7 @@ tables:
   identity.user_roles: {mode: rows, where: "id_enterprise = :tenant"}
   identity.user_screen_config: {mode: schema_only}  # per-user UI state
   identity.users: {mode: replace}  # synthetic dev users (emails, phones, names)
+  ops._fix_line_scrap_20261009: {mode: schema_only}  # plumbing/audit state: L6 scrap repair snapshot (old/new values for the undo), same rule as ops._bkp_* (2026-10-09)
   ops._bkp_bis_l58_open_event_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_l60_cfg_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_l60_sim_events_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
