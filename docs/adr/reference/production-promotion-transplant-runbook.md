@@ -275,7 +275,7 @@ those base events never went through `user_logs`. That is a follow-up (a topic-m
      prints `raw retention policies (want 0)`.
    - **Enable when a prod cold tier exists** (historian + daily cold copy): run `build.py` with `PROD_RAW_RETENTION=on`, or
      apply `db/retention/profiles/production.sql` on prod later.
-3. **Prod has recorded no CPACK downtime events since 2026-08-12** (`equipment_events` max, while values are current).
+3. **DECIDED 2026-10-09 → legacy-replicator on prod + backfill (§5b).** Prod has recorded no CPACK downtime events since 2026-08-12 (`equipment_events` max, while values are current).
    This predates the promotion; investigate the prod event path.
 4. **Roles.** Prod lacks `readapi_ro`; its historian role is named `hist_gw_ro` (staging: `histgw_ro`). The rehearsal used
    `NOLOGIN` placeholders; logins and passwords come from the prod secrets at deploy.
