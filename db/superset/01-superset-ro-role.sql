@@ -85,8 +85,8 @@ GRANT USAGE ON SCHEMA public TO bi_owner;
 --     production_orders (PO metadata), production_targets (reference lines).
 GRANT SELECT ON
     equipments,
-    equipment_runtime_shift,
-    equipment_runtime_1hour,
+    equipment_oee_shift,
+    equipment_oee_hourly,
     production_orders_runtime,
     equipment_events,
     equipment_values,
@@ -98,10 +98,13 @@ GRANT SELECT ON
 GRANT USAGE ON SCHEMA bi TO superset_ro;
 
 -- ── 3. Curated views (every row carries id_enterprise) ───────────────────────
+-- RENAMED 2026-09-28: equipment_runtime_shift/_1hour → equipment_oee_shift/_hourly
+-- (live: gold.*, resolved via the DB search_path like every other base table here;
+-- the old names no longer exist, so a fresh apply failed with 42P01).
 -- SCHEMA-RECONCILED to the live F3 analytics schema (2026-08): OEE ratio columns
 -- are oee_a/oee_p/oee_q (NOT oee_availability/…); time bounds are ts_value/ts_end
 -- (NOT begin_time/end_time); counts are gross/net (there is NO `count` column);
--- equipment_runtime_1hour buckets on ts_value (NOT `bucket`); production_orders_runtime
+-- equipment_oee_hourly buckets on ts_value (NOT `bucket`); production_orders_runtime
 -- has NO id_enterprise (derived via the equipments dimension) and bounds its run with
 -- runtime_timerange (a tstzrange); the downtimes table does not exist (source is
 -- equipment_events). Every view still GUARANTEES an id_enterprise column (the RLS key).
@@ -110,7 +113,7 @@ GRANT USAGE ON SCHEMA bi TO superset_ro;
 -- equipments dimension) so both isolation layers have a tenant key.
 --
 -- ⚠ DATA-CORRECTNESS FILTER (audit F1/F2/F3, 2026-08-10). The shift-calendar
--- pre-expands FUTURE, zero-activity buckets (equipment_runtime_shift ranges a
+-- pre-expands FUTURE, zero-activity buckets (equipment_oee_shift ranges a
 -- MONTH into the future — 5 518 of 7 750 rows). The KPI charts AVG(oee) with no
 -- time filter, so those empty buckets dragged a real ~60% OEE down to ~2%. Two
 -- guards make every consumer honest without per-chart config:
@@ -137,7 +140,7 @@ SELECT
     eq.nm_equipment || CASE eq.tp_equipment
              WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
-FROM equipment_runtime_shift rs
+FROM equipment_oee_shift rs
 JOIN equipments eq ON eq.id_equipment = rs.id_equipment  -- id_enterprise source
 WHERE rs.ts_value <= now()      -- F3: never expose future calendar buckets
   AND rs.running_time > 0;      -- F1/F2: only shifts that actually operated
@@ -160,7 +163,7 @@ SELECT
     eq.nm_equipment || CASE eq.tp_equipment
              WHEN 3 THEN ' (line)' WHEN 1 THEN ' (machine)'
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
-FROM equipment_runtime_1hour rh
+FROM equipment_oee_hourly rh
 JOIN equipments eq ON eq.id_equipment = rh.id_equipment
 WHERE rh.ts_value <= now()      -- F3: never expose future calendar buckets
   AND rh.running_time > 0;      -- F1/F2: only hours that actually operated
@@ -201,24 +204,18 @@ JOIN equipments eq ON eq.id_equipment = por.id_equipment;  -- id_enterprise sour
 -- gives every stop a legible label even before the operator is live to justify it
 -- on new-prod (desc_category is NULL until then) — NULL → 'Unjustified' (or 'Planned'
 -- / 'Changeover' from the flags). status_label and equipment_label are display aids.
+-- LINE attribution branch: see db/migrations/t-line-downtime-from-lead-machine.
+-- Requires equipments.downtime_from_lead_machine (added by that migration).
+ALTER TABLE equipments ADD COLUMN IF NOT EXISTS downtime_from_lead_machine boolean NOT NULL DEFAULT false;
 CREATE OR REPLACE VIEW bi.downtimes AS
 SELECT
-    eq.id_enterprise,               -- tenant key from the RLS-protected dimension
+    eq.id_enterprise,
     ev.id_equipment_event AS id_downtime,
     ev.id_equipment,
     eq.nm_equipment,
-    ev.cd_category,
-    ev.cd_subcategory,
-    ev.desc_category,
-    ev.desc_subcategory,
-    ev.ts_event AS ts_value,
-    ev.ts_end,
-    ev.duration,
-    ev.planned_downtime,
-    ev.change_over,
-    ev.status,
-    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
-         ELSE ev.status::text END AS status_label,
+    ev.cd_category, ev.cd_subcategory, ev.desc_category, ev.desc_subcategory,
+    ev.ts_event AS ts_value, ev.ts_end, ev.duration, ev.planned_downtime, ev.change_over, ev.status,
+    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped' ELSE ev.status::text END AS status_label,
     COALESCE(ev.desc_category,
              CASE WHEN ev.planned_downtime THEN 'Planned'
                   WHEN ev.change_over      THEN 'Changeover'
@@ -228,7 +225,26 @@ SELECT
              WHEN 2 THEN ' (sector)' ELSE '' END AS equipment_label
 FROM equipment_events ev
 JOIN equipments eq ON eq.id_equipment = ev.id_equipment
-WHERE ev.status <> 6;               -- Downtimes = non-running events (exclude Running=6)
+WHERE ev.status <> 6
+UNION ALL
+-- line attribution of lead-machine stops (flagged lines only)
+SELECT
+    ln.id_enterprise,
+    ev.id_equipment_event AS id_downtime,
+    ln.id_equipment,
+    ln.nm_equipment,
+    ev.cd_category, ev.cd_subcategory, ev.desc_category, ev.desc_subcategory,
+    ev.ts_event AS ts_value, ev.ts_end, ev.duration, ev.planned_downtime, ev.change_over, ev.status,
+    CASE ev.status WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped' ELSE ev.status::text END AS status_label,
+    COALESCE(ev.desc_category,
+             CASE WHEN ev.planned_downtime THEN 'Planned'
+                  WHEN ev.change_over      THEN 'Changeover'
+                  ELSE 'Unjustified' END) AS reason,
+    ln.nm_equipment || ' (line)' AS equipment_label
+FROM equipments ln
+JOIN equipment_events ev ON ev.id_equipment = ln.lead_machine
+WHERE ln.tp_equipment = 3 AND ln.downtime_from_lead_machine
+  AND ev.status <> 6;
 
 -- Equipment dimension (for joins/filters in the authoring UI). Active only.
 CREATE OR REPLACE VIEW bi.equipments AS
@@ -352,7 +368,13 @@ SELECT DISTINCT ON (s.id_equipment)
     -- Track A: state enum 6=Running, 10=Stopped (NULL/other = no fresh signal).
     -- Gives the live-status card a legible status instead of a bare int/blank.
     CASE s.state WHEN 6 THEN 'Running' WHEN 10 THEN 'Stopped'
-         ELSE 'Idle / no signal' END AS state_label
+         ELSE 'Idle / no signal' END AS state_label,
+    -- Exact float8 totalizers (t-counter-totals-readers, 2026-10-07). Appended LAST on purpose:
+    -- CREATE OR REPLACE VIEW can only add columns at the end, and the live view already has them.
+    -- *_val above is float4 (exact only to 2^24); chart these instead.
+    s.net_production_total,
+    s.gross_production_total,
+    s.scrap_total
 FROM (
     SELECT
         eq.id_enterprise,
@@ -374,7 +396,11 @@ FROM (
         ev.id_order,
         ev.net_production_val,
         ev.gross_production_val,
-        ev.scrap_val
+        ev.scrap_val,
+        -- exact when stream-engine wrote *_total (dual-write since 2026-10-07), else the float4 value
+        COALESCE(ev.net_production_total, ev.net_production_val::double precision) AS net_production_total,
+        COALESCE(ev.gross_production_total, ev.gross_production_val::double precision) AS gross_production_total,
+        COALESCE(ev.scrap_total, ev.scrap_val::double precision) AS scrap_total
     FROM equipment_values ev
     JOIN equipments eq ON eq.id_equipment = ev.id_equipment
     WHERE ev.ts_value > now() - interval '6 hours'

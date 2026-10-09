@@ -48,12 +48,14 @@ variable "app_instance_type" {
 
 variable "db_volume_size_gb" {
   type    = number
-  default = 64 # gp3 → $5.12/mo. Grown 32 → 64 in session 64 (was 71% used). Requires SSM-side growpart + xfs_growfs post-apply.
+  default = 128 # gp3 → ~$10.24/mo. Grown 32→64 (session 64), 64→128 on 2026-09-23 (T0 grain-tiered retention; was 79% used) via targeted `aws ec2 modify-volume` + SSM growpart/xfs_growfs (pre-resize snapshot snap-0f535e3c42d4e2ae0). EBS cannot shrink — never lower this.
 }
 
 variable "app_volume_size_gb" {
   type    = number
-  default = 64 # gp3 → $5.12/mo. Grown from 32 → 64 after 2026-06-22 disk-full incident.
+  default = 128 # gp3 → $10.24/mo. 32 → 64 after the 2026-06-22 disk-full incident; 64 → 128 on 2026-10-06
+  # (disk 97 %: Loki retention never loaded + cold rebuild → ENOSPC). Resized online via
+  # `aws ec2 modify-volume` + growpart/xfs_growfs; this value keeps state in sync. EBS cannot shrink.
 }
 
 # ── DNS / Domain ───────────────────────────────────────────────────────────────
@@ -69,15 +71,22 @@ variable "services" {
   description = "Nginx virtual-host names; each maps to a local Docker port"
   type        = map(number)
   default = {
-    api              = 8080
-    hasura           = 8081
-    grafana          = 3000
-    edge-nodered     = 1880
-    oeecloud-nodered = 1881  # OEECloud Node-RED (mapped to host port 1881, container port 1880)
-    rabbitmq         = 15672 # RabbitMQ management UI
-    adminer          = 8082  # PostgreSQL web UI (Adminer)
-    operator         = 8083  # Dev operator SPA (Vite + nginx, container port 80)
-    csadmin          = 8084  # CS-Admin SPA (staging tier; same image as prod)
+    api       = 8080
+    grafana   = 3000
+    rabbitmq  = 15672 # RabbitMQ management UI
+    db        = 8093  # CloudBeaver web DB IDE — ONE IDE with two connections: packiot_analytics (hot, read-only cloudbeaver_ro) + historian gateway (cold, cloudbeaver_histro). Replaced both pgweb instances; pgweb-analytics (8082) kept unrouted in compose as a fallback. (histdb.staging was fully retired 2026-09-14 — vhost + DNS removed; the historian is the 2nd CloudBeaver connection here.)
+    barcode   = 8092  # barcode-scanner-v2 SPA cloud instance (barcode-app; nginx injects SANDBOX api-key → edge-api)
+    operator  = 8083  # Dev operator SPA (Vite + nginx, container port 80)
+    csadmin   = 8084  # CS-Admin SPA (staging tier; same image as prod)
+    customize = 8086  # Customization Hub SPA (Vite + nginx, container port 80) — dedicated customization/integration UI
+    # RETIRED vhosts (audit 2026-08-21):
+    #   hasura (8081)           — GraphQL engine retired: front4/edge-api moved off
+    #                             it (0 /v1/graphql ops observed); service removed
+    #                             from compose.staging.yml.
+    #   edge-nodered (1880)     — Node-RED retired (compose profile "legacy-sim",
+    #                             off by default); vhost 502'd for staff.
+    #   oeecloud-nodered (1881) — decommissioned 2026-06-23 (replaced by
+    #                             oeecloud-worker); no container ever ran here.
   }
 }
 
@@ -96,15 +105,15 @@ variable "service_auth" {
   description = "oauth2-proxy auth tier per nginx vhost (csadmin|any|api|none-originverify)"
   type        = map(string)
   default = {
-    api              = "api"
-    hasura           = "csadmin"
-    grafana          = "csadmin"
-    edge-nodered     = "csadmin"
-    oeecloud-nodered = "csadmin"
-    rabbitmq         = "csadmin"
-    adminer          = "csadmin"
-    operator         = "any"
-    csadmin          = "none-originverify"
+    api       = "api"
+    grafana   = "csadmin"
+    rabbitmq  = "csadmin"
+    db        = "csadmin" # CloudBeaver (cloudbeaver_ro + cloudbeaver_histro) — staff-only DB browser (db.staging.packiot.app)
+    barcode   = "csadmin" # barcode-app cloud instance — staff-only demo/test (barcode.staging.packiot.app)
+    operator  = "any"
+    csadmin   = "none-originverify"
+    customize = "none-originverify" # Customization Hub SPA owns its own Cognito login (same tier as csadmin)
+    # hasura / edge-nodered / oeecloud-nodered retired — see `services` above.
   }
 }
 

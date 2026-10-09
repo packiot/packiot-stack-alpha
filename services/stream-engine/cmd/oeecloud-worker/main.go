@@ -12,6 +12,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/birthverify"
+	"github.com/prometheus/client_golang/prometheus"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,8 +33,8 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/health"
 	logp "github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/metrics"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/oeeprofile"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/pocontrol"
-	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/refsync"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollup"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/secrets"
@@ -52,13 +54,11 @@ func main() {
 		os.Exit(runHealthcheck())
 	}
 
-	// F2/F3 identity + int-overflow SENTINEL path (Task #21). A one-shot,
-	// SELECT-only deploy gate: connect both DB planes, run internal/bake's
-	// RunSentinel, print a PASS/FAIL report, exit non-zero on any determinism
-	// regression or overflow. Invoked in CI via
-	//   docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
-	// so it reuses the SAME creds path, pool config and schema routing as the
-	// running worker. Never starts the AMQP consumer.
+	// F3 int-overflow deploy gate (SELECT-only, one-shot). The F2/F3 comparison
+	// gates were retired with the shadow apparatus (#252); this per-plane
+	// invariant (no running_time exceeds its bucket span × 1.05 — caught the L8 P0
+	// overflow) survives, run on F3 only. Invoked in CI:
+	//   docker exec stream-engine /usr/local/bin/stream-engine --identity-sentinel
 	if len(os.Args) > 1 && os.Args[1] == "--identity-sentinel" {
 		os.Exit(runIdentitySentinel())
 	}
@@ -167,9 +167,8 @@ func main() {
 	// SHADOW_GO_PORT_ENABLED=false so the jobs target `public` (the collapsed
 	// F3-native flow) instead — otherwise every tick errors 42P01 on the absent
 	// shadow_go_port schema and nothing writes to `public` (ADR-0045 G3).
-	bgDests := flows.StandardFiltered(pool, analyticsPool, cfg.ShadowGoPortEnabled)
+	bgDests := flows.Standard(pool, analyticsPool)
 	logger.Info("background-job destinations resolved",
-		slog.Bool("shadow_go_port_enabled", cfg.ShadowGoPortEnabled),
 		slog.Int("dest_count", len(bgDests)))
 
 	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
@@ -248,7 +247,19 @@ func main() {
 		cfg.IncrementSanityClampK,
 		cfg.IncrementSanityClampMinDtSec,
 		cfg.IncrementSanityClampSpikeFloor,
+		cfg.IncrementSanityClampSpikeFraction,
 	)
+	if cfg.IncrementSanityClampEnabled {
+		// Seed the counter-movement catch from the database once per stream, so the
+		// first sample after a restart is covered too. "public" lives on the main
+		// pool; the medallion schemas on the analytics pool (when configured).
+		equipmentValuesWriter.SetTotalizerSeeder(writers.PGTotalizerSeeder(func(schema string) *pgxpool.Pool {
+			if schema == "public" || analyticsPool == nil {
+				return pool
+			}
+			return analyticsPool
+		}, logger))
+	}
 	if cfg.IncrementSanityClampEnabled {
 		logger.Info("increment sanity clamp ENABLED (ADR-0037/ADR-0045 P1) — K·rated_speed·Δt bound + delta-from-zero spike floor",
 			slog.Float64("k", cfg.IncrementSanityClampK),
@@ -261,6 +272,12 @@ func main() {
 	// every merged equipment_values UPSERT (and event mint) is shadowed by an
 	// append-only INSERT into the immutable equipment_values_raw/_events_raw.
 	equipmentValuesWriter.SetBronzeRawAppend(cfg.BronzeRawAppend)
+	// float8 *_total on the public route (COUNTER_TOTALS_PUBLIC). Default OFF; enable only after
+	// t-counter-totals-float8-public is applied to the main DB.
+	writers.SetPublicCounterTotals(cfg.CounterTotalsPublic)
+	if cfg.CounterTotalsPublic {
+		logger.Info("exact float8 *_total counters ENABLED on the public route (COUNTER_TOTALS_PUBLIC)")
+	}
 	if cfg.BronzeRawAppend {
 		logger.Info("Bronze raw append ENABLED (ADR-0036 B1) — dual-write to *_raw immutable landing zone")
 	}
@@ -273,10 +290,9 @@ func main() {
 	// One observer for every scheduled job → jobs_ticks_total{job,outcome}.
 	jobObs := func(job, outcome string) { mx.JobTicks.WithLabelValues(job, outcome).Inc() }
 
-	// ADR-0012 Wave 2 port #1 — customer_reports.speed writer (cust 33).
-	if cfg.Speed33ReportEnabled {
-		go reports.LoopSpeed33(ctx, pool, cfg.Speed33CustomerID, time.Duration(cfg.Speed33IntervalMinutes)*time.Minute, logger, jobObs)
-	}
+	// #263: the customer_reports.speed writer (cust 33) was removed — enterprise-33
+	// does not exist on the new stack (legacy Incoplast remapped to id 4, which has no
+	// speed feed); the pool + writer were dead-keyed. See db/migrations/t272.
 
 	// ADR-0012 Wave 2 port #2 — customer_reports.shift writer (cust 6).
 	if cfg.Shift06ReportEnabled {
@@ -290,38 +306,86 @@ func main() {
 		go reports.LoopSap13(ctx, pool, cfg.Sap13CustomerID, cfg.Sap13ReasonsFromDim, time.Duration(cfg.Sap13IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
-	// ADR-0014 P4 — enterprise-6 production data sync (main flow).
+	// ADR-0014 P4 / t244 — production data sync (main flow); reads
+	// serving.data_sync, writes customer_reports.production_data_sync pool.
 	if cfg.Sync06ReportEnabled {
-		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, cfg.Sync06Target, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
-	}
-
-	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
-	// closes the loop pocontrol opens).
-	if cfg.PORecalcEnabled {
-		go rollup.LoopRefresh(ctx, bgDests,
-			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
-			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute, logger, jobObs,
-			uns.RefreshCurrentJobs)
-	}
-
-	// ADR-0016 — side-by-side bake comparator (legacy F1 vs Go F2).
-	if cfg.BakeComparatorEnabled {
-		bake.Register(mx.Registry)
-		go bake.Loop(ctx, pool, analyticsPool, 10*time.Minute, config.CSVInts(cfg.BakeEnterpriseIDs), logger, jobObs)
+		go reports.LoopSync06(ctx, pool, cfg.Sync06EnterpriseID, time.Duration(cfg.Sync06IntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// Shared OEE-fallback config — the live rollup AND the stranded-hour backfill
 	// must run the identical decomposition finalize (canonical A·P·Q reconcile vs
 	// legacy oee_p residual), so build it once and pass it to both.
-	countersAvail := rollup.CountersAvail{
-		Enabled:             cfg.CountersOnlyAvailEnabled,
-		Equipments:          config.CSVInts(cfg.CountersOnlyAvailEquipments),
-		IdleTimeoutSec:      cfg.CountersOnlyAvailIdleTimeoutSec,
-		LineLeadEnabled:     cfg.CountersOnlyLineLeadEnabled,
-		LineLeadEnterprises: config.CSVInts(cfg.CountersOnlyLineLeadEnterprises),
-		AvailFloorEnabled:   cfg.OeeAvailFloorEnabled,
-		OeeCanonicalAPQ:     cfg.OeeCanonicalAPQEnabled,
+	// WS3 Phase 2a (FU#4): union the env line-lead enterprises with those a client
+	// authored in its OEE profile (availability_mode=count_silence / ideal_source=
+	// lead_machine). Env stays the floor; a profile only ADDS its enterprise; no
+	// profiles ⇒ exactly the env set (parity). Boot-time load against the medallion
+	// pool (client_descriptors lives in analytics), fail-open to env on any error.
+	lineLeadEnts := config.CSVInts(cfg.CountersOnlyLineLeadEnterprises)
+	var lineOptIn, lineOptOut []int
+	profileDB := analyticsPool
+	if profileDB == nil {
+		profileDB = pool
 	}
+	if sets, err := oeeprofile.Load(ctx, profileDB); err != nil {
+		logger.Warn("oee-profile: boot load failed — using env line-lead set only", slog.String("err", err.Error()))
+	} else {
+		if len(sets.LineLeadEnterprises) > 0 {
+			before := len(lineLeadEnts)
+			lineLeadEnts = oeeprofile.UnionInts(lineLeadEnts, sets.LineLeadEnterprises)
+			logger.Info("oee-profile: line-lead enterprises unioned from client descriptors (WS3 Phase 2)",
+				slog.Int("env", before), slog.Int("profile", len(sets.LineLeadEnterprises)), slog.Int("total", len(lineLeadEnts)))
+		}
+		// Per-line overrides (oee_profile.lines) — empty for every tenant without
+		// them, which keeps the rendered rollup SQL byte-identical.
+		lineOptIn, lineOptOut = sets.LineLeadOptIn, sets.LineLeadOptOut
+		if len(lineOptIn)+len(lineOptOut) > 0 {
+			logger.Info("oee-profile: per-line overrides loaded",
+				slog.Int("opt_in_lines", len(lineOptIn)), slog.Int("opt_out_lines", len(lineOptOut)))
+		}
+	}
+	countersAvail := rollup.CountersAvail{
+		Enabled:                cfg.CountersOnlyAvailEnabled,
+		Equipments:             config.CSVInts(cfg.CountersOnlyAvailEquipments),
+		IdleTimeoutSec:         cfg.CountersOnlyAvailIdleTimeoutSec,
+		LineLeadEnabled:        cfg.CountersOnlyLineLeadEnabled,
+		LineLeadEnterprises:    lineLeadEnts,
+		LineLeadOptIn:          lineOptIn,
+		LineLeadOptOut:         lineOptOut,
+		AvailFloorEnabled:      cfg.OeeAvailFloorEnabled,
+		OeeCanonicalAPQ:        cfg.OeeCanonicalAPQEnabled,
+		AvailabilityExclusions: cfg.AvailabilityExclusionsEnabled,
+	}
+	// ADR-0014 P3b — po-runtime-recalc (the recalc_needed consumer;
+	// closes the loop pocontrol opens). Started after the line-lead set is built:
+	// PO counters on line-lead lines are lead-sourced like the hour/shift grains.
+	if cfg.PORecalcEnabled {
+		var poLineLead rollup.LineLeadScope
+		if cfg.CountersOnlyLineLeadEnabled {
+			poLineLead = countersAvail.LineLead()
+		}
+		go rollup.LoopRefresh(ctx, bgDests,
+			cfg.PORecalcWindow, config.CSVInts(cfg.PORecalcExcludedEnterprises),
+			cfg.POAvailabilityEnabled, cfg.AvailabilityExclusionsEnabled, poLineLead,
+			time.Duration(cfg.PORecalcIntervalMinutes)*time.Minute,
+			time.Duration(cfg.PORecomputeSweepHours)*time.Hour, logger, jobObs,
+			uns.RefreshCurrentJobs)
+	}
+
+	// Stranded-flag sweep (2026-10-01): flags no consumer can ever drain (PO rows
+	// closed before the window, shift > 30 d or out of scope, hour > backfill
+	// horizon or tp=1) are cleared hourly with a WARN, so a stranded repair is seen.
+	if cfg.StrandedFlagSweepEnabled && (cfg.PORecalcEnabled || cfg.RuntimeRollupEnabled) {
+		hourHorizon := ""
+		if cfg.RollupBackfillEnabled {
+			hourHorizon = "10 days"
+		}
+		go rollup.LoopStrandedSweep(ctx, bgDests, rollup.StrandedScope{
+			POWindow:                cfg.PORecalcWindow,
+			MachineLevelEnterprises: config.CSVInts(cfg.RollupMachineLevelEnterprises),
+			HourHorizon:             hourHorizon,
+		}, logger, jobObs)
+	}
+
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
 		go rollup.LoopGrains(ctx, bgDests,
@@ -340,13 +404,6 @@ func main() {
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			cfg.RollupBackfillLimit, countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
-	}
-
-	// F3 reference-plane sync — mirror master tables main→packiot_analytics so F3
-	// rollups read the same reference plane as F2 (F2/F3 identity requirement).
-	if analyticsPool != nil && cfg.RefSyncEnabled {
-		go refsync.Loop(ctx, pool, analyticsPool,
-			time.Duration(cfg.RefSyncIntervalMinutes)*time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 P3b — runtime-provision (bucket matrix). Cadence configurable;
@@ -423,6 +480,35 @@ func main() {
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}
 
+	// ADR-0010 §10.4 PROMOTION — LIVE minting for counters-only clients that have
+	// NO other event writer (e.g. Bispharma ent5: counters-only, no MachSpeed /
+	// StateCurrent, so nothing else mints its downtimes). A SECOND deriver instance
+	// targeting the LIVE equipment_events, gated on CPAC_EVENT_LIVE_ENTERPRISES
+	// (default empty ⇒ not scheduled). CPACK stays SHADOW above — its speed-based
+	// events are owned by the mirror fan-out, so a live CPAC write there would
+	// double-write (the #456 two-writer class). Per-equipment stop_threshold_time
+	// (set high for lossy-feed clients via migration) tunes out count-cadence false
+	// stops; the upsert is idempotent on (id_equipment, ts_event) + never clobbers
+	// an operator-touched row, so live-minting is safe as the SOLE writer.
+	if cfg.CPACEventDerivationEnabled && cfg.CPACEventLiveEnterprises != "" {
+		go events.LoopCPAC(ctx, bgDests,
+			events.CPACConfig{
+				Enterprises:     config.CSVInts(cfg.CPACEventLiveEnterprises),
+				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
+				TargetTable:     "equipment_events",
+				// A net-only lead (Bispharma L18 + BISNAGO leads) has no gross
+				// increments, so the gross-only rule minted NOTHING for those lines.
+				// Use the line-lead OEE model's activity (gross|net|scrap) for the
+				// lead machine only. The CPACK shadow instance above stays gross-only.
+				LeadActivity: true,
+				// PLC-link aware (2026-10-01): silence while the reader could not
+				// read the PLC (silver.plc_link_minutes) is NO DATA (status 20),
+				// not a stop. Inert until an endpoint reports link health.
+				LinkHealth: true,
+			},
+			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
+	}
+
 	// Stale-open events closer — bounds/closes never-closed CPACK (status_type=0)
 	// open equipment_events on the LIVE table (mirror fan-out mints them but never
 	// closes them; the CPAC deriver that would bound them is still shadow-only).
@@ -434,6 +520,7 @@ func main() {
 				Enterprises:     config.CSVInts(cfg.EventsCloseStaleEnterprises),
 				ThresholdDefSec: cfg.EventsCloseStaleThresholdSec,
 				HorizonHours:    cfg.EventsCloseStaleHorizonHours,
+				LongHorizonDays: cfg.EventsCloseStaleLongHorizonDays,
 			},
 			time.Duration(cfg.EventsCloseStaleIntervalSec)*time.Second, logger, jobObs)
 	}
@@ -447,6 +534,20 @@ func main() {
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
 	sparkplugHandler.SetWriteMetric(mx.BatchWrites)
 	sparkplugHandler.SetLegacyIngest(cfg.LegacyIngestEnabled)
+	if cfg.BirthBindVerify {
+		sparkplugHandler.SetVerifier(birthverify.New(resolver, mx.Registry, logger))
+		logger.Info("birth-bound verification ENABLED (ADR-0061 D7): oeecloud_worker_birthbind_verify_total, count-only")
+	}
+	if switched := config.CSVInts(cfg.BirthBoundSwitchedEnterprises); len(switched) > 0 {
+		bbOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "oeecloud_worker_birthbound_resolve_total",
+			Help: "ADR-0061 P2c: counters of SWITCHED tenants resolved by birth-bound id (bound) or quarantined (no usable stamp).",
+		}, []string{"tenant", "result"})
+		mx.Registry.MustRegister(bbOutcomes)
+		sparkplugHandler.SetBirthBound(resolver, switched, bbOutcomes)
+		logger.Warn("birth-bound resolution SWITCHED ON for enterprises (ADR-0061 P2c) — their counters resolve by stamped id_equipment",
+			slog.Any("enterprises", switched))
+	}
 
 	if cfg.POControlEnabled {
 		pc := pocontrol.NewHandler(resolver, logger)
@@ -621,19 +722,14 @@ func runHealthcheck() int {
 	return 0
 }
 
-// runIdentitySentinel is the one-shot F2/F3 identity + int-overflow deploy gate
-// (Task #21). SELECT-only. It connects the two DB planes exactly as the worker
-// does (same creds path, same pool builders), runs internal/bake.RunSentinel
-// over the configured enterprises, prints a compact PASS/FAIL report, and
-// returns a process exit code:
-//
-//	0  — every surface PASS or SKIP, no overflow (gate green)
-//	1  — a determinism regression, an overflow violation, OR the check itself
-//	     could not run (fail-closed: a sentinel that cannot execute must never
-//	     silently pass a deploy)
-//
-// SKIP (no data / one side entirely empty on a cold, unconverged stack) never
-// fails the gate — the live bake gauge tracks sustained one-sidedness.
+// runIdentitySentinel is the one-shot F3 int-overflow deploy gate (Task #21,
+// ADR-0032 Step 5). SELECT-only. The F2==F3 identity gates were retired with the
+// shadow apparatus (#252); this per-plane invariant (no row's running_time may
+// exceed its bucket wall-clock span × 1.05 — the guard that caught the L8 P0
+// overflow) survives, run on the F3 plane (public in packiot_analytics) only.
+// Returns 0 = gate green (PASS or SKIP), 1 = overflow violation OR the check
+// could not run (fail-closed: a sentinel that cannot execute must never silently
+// pass a deploy).
 func runIdentitySentinel() int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -644,7 +740,7 @@ func runIdentitySentinel() int {
 
 	if cfg.PGAnalyticsDBName == "" {
 		// No F3 plane configured → nothing to gate. Not a failure: on a plain
-		// prod-shaped deploy without the shadow DB the sentinel is a no-op.
+		// prod-shaped deploy without the analytics DB the sentinel is a no-op.
 		logger.Warn("identity-sentinel: POSTGRES_ANALYTICS_DB_NAME unset — no F3 plane to check; skipping (exit 0)")
 		return 0
 	}
@@ -657,9 +753,6 @@ func runIdentitySentinel() int {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: fetch db creds: %v\n", err)
 		return 1
 	}
-	// ADR-0032 Step 5: the F2 (shadow_go_port) plane is gone. Only the F3 plane
-	// (public in packiot_analytics) is opened; the sentinel is now the per-plane
-	// int-overflow gate on F3 (GATE 2 survived; the F2==F3 identity gates 1/3 did not).
 	f3, err := db.NewForDatabase(ctx, dbCreds, cfg.PGAnalyticsDBName, "identity-sentinel-analytics", 2, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "identity-sentinel: F3 pool: %v\n", err)
@@ -667,14 +760,12 @@ func runIdentitySentinel() int {
 	}
 	defer f3.Close()
 
-	enterprises := config.CSVInts(cfg.BakeEnterpriseIDs)
+	enterprises := config.CSVInts(cfg.SentinelEnterpriseIDs)
 	logger.Info("identity-sentinel running", slog.Any("enterprises", enterprises),
 		slog.String("f3_db", cfg.PGAnalyticsDBName))
 
 	rep, err := bake.RunSentinel(ctx, f3, enterprises)
 	if err != nil {
-		// Query-level failure: the gate could not evaluate. Fail closed — print
-		// whatever partial report we have plus the error.
 		fmt.Fprintf(os.Stderr, "identity-sentinel: check could not run (FAIL-CLOSED): %v\n", err)
 		fmt.Println(rep.String())
 		return 1

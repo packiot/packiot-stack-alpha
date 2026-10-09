@@ -30,30 +30,39 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
 )
 
+// The fixture publishes under a SYNTHETIC group that no tenant registers in
+// packml_register, so its counters exercise the full decoder path (NBIRTH alias
+// table, Calc port, line aggregation, shadow publish, outbox) but resolve to NO
+// equipment downstream.
+//
+// It used to publish under CPACK's real L5 topics, which wrote into the live
+// CPACK feed on every staging deploy: each burst (value 100..600) reset the
+// BREYER totalizer and the next real reading came back as a huge increment,
+// and its Parameter30700="61" told the decoder that L5 was a one-machine line,
+// so line net was metered from the infeed machine until the next register
+// re-seed. See fixtureGroupAllowed for the guard that keeps it off real groups.
 const (
 	// Topic anatomy: spBv1.0/<GroupID>/<MessageType>/<EdgeNodeID>
-	groupID    = "CPACK"
+	groupID    = "E2EFIXTURE"
 	edgeNodeID = "inject-test"
 
 	// Counter metric name mirrors the production topic shape the port expects.
 	// State machine doc §2 confirms 5+ segment convention:
 	// Enterprise/Site/Area/Line/Unit/Admin/<CounterName>/<idx>/Unit
-	consumedMetricName = "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit"
+	consumedMetricName = groupID + "/SITE/AREA/LINE1/UNIT1/Admin/ProdConsumedCount/1/Unit"
 
 	// MachSpeed for the same unit — seeds the port's Phase 7 threshold
 	// config so Phase 8's glitch guard (`prodSpeed < 3*machspeed`) has
 	// a non-zero denominator. Without this, EVERY metric emission is
 	// suppressed because 0 < 3*0 is false.
-	machSpeedMetricName = "CPACK/SC/LINHAS/L5/BREYER/Status/MachSpeed"
+	machSpeedMetricName = groupID + "/SITE/AREA/LINE1/UNIT1/Status/MachSpeed"
 
 	// Parameter30700 on the LINE topic — CSV of machine indices that
-	// participate in the line. When BREYER's counter (index 61) matches
-	// the first entry, Phase 9 line-aggregation fires the LINE Consumed
-	// emission. Sending "61" (single-machine line) is the simplest
-	// possible topology that fires both first-in-CSV AND last-in-CSV
-	// branches on the same metric.
-	lineTopicParam30700Name = "CPACK/SC/LINHAS/L5/Status/Parameter30700"
-	lineParam30700Value     = "61"
+	// participate in the line. Sending "1" (single-machine line) is the
+	// simplest topology that fires both the first-in-CSV AND last-in-CSV
+	// Phase-9 branches on the same metric.
+	lineTopicParam30700Name = groupID + "/SITE/AREA/LINE1/Status/Parameter30700"
+	lineParam30700Value     = "1"
 
 	// Sparkplug B alias — must fit in uint64. Any small integer works.
 	// Distinct aliases for distinct metrics so NDATA references are

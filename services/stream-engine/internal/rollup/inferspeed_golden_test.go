@@ -8,7 +8,7 @@
 // are handled exactly per spec.
 //
 // The statement is exercised in ISOLATION (via InferSpeedSQLForParity) against a
-// controlled ca_agg_equipment_values_1min + equipments fixture, so the assertions
+// controlled equipment_categorical_1min + equipments fixture, so the assertions
 // are exact and independent of the live rollup.
 //
 // Run: DATABASE_URL=postgres://... go test -tags golden ./internal/rollup -run InferSpeed
@@ -49,7 +49,7 @@ func TestGoldenInferSpeed(t *testing.T) {
 		    production_speed double precision,
 		    production_speed_source text
 		);
-		CREATE TABLE ispeed.ca_agg_equipment_values_1min (
+		CREATE TABLE ispeed.equipment_categorical_1min (
 		    id_equipment int, ts_value timestamptz, gross_production_incr double precision
 		);`
 
@@ -75,27 +75,27 @@ func TestGoldenInferSpeed(t *testing.T) {
 		    (44, 3, 12,  'inferred'),
 		    (45, 1, NULL, NULL);
 		-- 40: 300 productive minutes, per-minute rates cycle 1..100 (×3) → p95≈95
-		INSERT INTO ispeed.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO ispeed.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 40, now() - make_interval(mins => g), ((g % 100) + 1)
 		  FROM generate_series(0, 299) g;
 		-- 41: only 100 productive minutes (< 240)
-		INSERT INTO ispeed.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO ispeed.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 41, now() - make_interval(mins => g), ((g % 100) + 1)
 		  FROM generate_series(0, 99) g;
 		-- 42: 300 minutes but every rate 0.4 → p95 0.4 < floor 1.0
-		INSERT INTO ispeed.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO ispeed.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 42, now() - make_interval(mins => g), 0.4
 		  FROM generate_series(0, 299) g;
 		-- 43: confirmed nameplate — plenty of samples, must NOT be touched
-		INSERT INTO ispeed.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO ispeed.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 43, now() - make_interval(mins => g), ((g % 100) + 1)
 		  FROM generate_series(0, 299) g;
 		-- 44: prior inferred estimate — must be overwritten with fresh p95
-		INSERT INTO ispeed.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO ispeed.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 44, now() - make_interval(mins => g), ((g % 100) + 1)
 		  FROM generate_series(0, 299) g;
 		-- 45: tp=1 machine — line-only guard must skip it
-		INSERT INTO ispeed.ca_agg_equipment_values_1min (id_equipment, ts_value, gross_production_incr)
+		INSERT INTO ispeed.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr)
 		SELECT 45, now() - make_interval(mins => g), ((g % 100) + 1)
 		  FROM generate_series(0, 299) g;`
 

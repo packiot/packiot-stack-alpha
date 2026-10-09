@@ -1,0 +1,28 @@
+# ── seed-replay (Tier 1) — ADR-0060 D7 / P3 ──────────────────────────────────
+# contract:
+#   inputs:   postgres — core.device_bindings (the seed's random dk_ keys) + silver.equipment_values for (now − 7 d)
+#   outputs:  MQTT spBv1.0/DEV/{NBIRTH,NDATA}/seed-replay (edge-source contract: declared device_key + roles)
+#   external: none
+# Makes the dev environment LIVE: the seed's week, replayed at wall-clock pace one week later. With the decoder and
+# stream-engine up, fresh silver/gold rows appear at "now", and next week's lap replays those.
+#   make dev SVC="seed-replay stream-engine"     # the whole live pipeline (decoder + read-api come via depends_on)
+services:
+  seed-replay:
+    build: ../../services/sparkplug-decoder
+    entrypoint: ["/usr/local/bin/seed-replay"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+      sparkplug-decoder:
+        condition: service_started
+    environment:
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/packiot_analytics
+      REPLAY_GROUP_ID: DEV
+      REPLAY_EDGE_NODE: seed-replay
+      REPLAY_TICK: 5s
+      REPLAY_LAG: 168h
+      REPLAY_ENTERPRISES: ""
+    restart: unless-stopped

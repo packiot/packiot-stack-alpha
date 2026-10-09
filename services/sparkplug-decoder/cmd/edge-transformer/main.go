@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -53,9 +54,12 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/command"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/config"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/countersrate"
-	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/localstate"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/oeeprofile"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/edgeapiclient"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/erpconnector"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/handlers"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/health"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/localstate"
 	logp "github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/log"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/metrics"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/mqtt"
@@ -74,6 +78,88 @@ var emittedByFlow = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "edge_transformer_emitted_total",
 	Help: "Envelopes enqueued to the outbox by destination flow (triple-emit).",
 }, []string{"flow"})
+
+// erpProductionOrdersDataset is the read dataset the sink forwards to edge-api.
+// Any other dataset (scrap, users, …) is observed-and-logged only until its own
+// downstream wiring lands — matching the connector's per-dataset seam.
+const erpProductionOrdersDataset = "production_orders"
+
+// newEdgeAPIClient builds the edge-api PO-upsert client from the environment,
+// or returns nil when the transformer should stay log-only. EDGE_API_URL is the
+// switch: unset → inert (the ERP read cycle still logs, no upsert). When set but
+// misconfigured (no key / bad enterprise id) we log and stay inert rather than
+// crash — the ERP link degrades independently of the tag path.
+func newEdgeAPIClient(logger *slog.Logger) *edgeapiclient.Client {
+	base := os.Getenv("EDGE_API_URL")
+	if base == "" {
+		logger.Info("erpconnector: EDGE_API_URL unset — PO upsert is log-only")
+		return nil
+	}
+	key := os.Getenv("EDGE_API_KEY")
+	if key == "" {
+		logger.Error("erpconnector: EDGE_API_URL set but EDGE_API_KEY empty — PO upsert stays log-only")
+		return nil
+	}
+	entID, err := strconv.Atoi(os.Getenv("EDGE_API_ENTERPRISE_ID"))
+	if err != nil || entID <= 0 {
+		logger.Error("erpconnector: EDGE_API_ENTERPRISE_ID missing/invalid — PO upsert stays log-only",
+			slog.String("value", os.Getenv("EDGE_API_ENTERPRISE_ID")))
+		return nil
+	}
+	logger.Info("erpconnector: edge-api PO upsert enabled",
+		slog.String("edge_api_url", base), slog.Int("enterprise_id", entID))
+	return &edgeapiclient.Client{
+		BaseURL:      base,
+		APIKey:       key,
+		EnterpriseID: entID,
+		HTTP:         &http.Client{Timeout: edgeapiclient.DefaultTimeout},
+	}
+}
+
+// newERPReadSink builds the seam that receives each erpconnector read cycle
+// (ADR-0019 G1). It always emits a structured observation so a live ERP read is
+// provable in the logs. When a client is configured (EDGE_API_URL set) and the
+// dataset is production_orders, it maps each row onto the edge-api CSV upsert
+// (idempotent on (id_enterprise, id_order)) so the customer's real POs land in
+// the platform. A row that fails the mapping is skipped-and-logged, not fatal:
+// the batch imports the good rows. A client==nil keeps the pre-P1b log-only
+// behaviour.
+func newERPReadSink(logger *slog.Logger, client *edgeapiclient.Client) func(context.Context, erpconnector.ReadResult) error {
+	return func(ctx context.Context, r erpconnector.ReadResult) error {
+		logger.Info("erpconnector read cycle",
+			slog.String("dataset", r.Dataset),
+			slog.Int("rows", len(r.Rows)),
+			slog.Time("observed_at", r.ObservedAt),
+		)
+		if client == nil || r.Dataset != erpProductionOrdersDataset {
+			return nil
+		}
+
+		orders := make([]edgeapiclient.ProductionOrder, 0, len(r.Rows))
+		for _, row := range r.Rows {
+			po, err := edgeapiclient.RowToProductionOrder(row)
+			if err != nil {
+				logger.Warn("erpconnector: skipping unmappable production_orders row",
+					slog.String("err", err.Error()))
+				continue
+			}
+			orders = append(orders, po)
+		}
+		res, err := client.UpsertProductionOrders(ctx, orders)
+		if err != nil {
+			// Surfaced (not swallowed) so a rejected atomic import is visible.
+			// Returning the error lets the manager count it against the read
+			// sink; the cadence retries on the next tick.
+			return err
+		}
+		logger.Info("erpconnector: production orders upserted via edge-api",
+			slog.Int("mapped", len(orders)),
+			slog.Int("skipped", len(r.Rows)-len(orders)),
+			slog.Int("rows_reported", res.Rows),
+		)
+		return nil
+	}
+}
 
 func main() {
 	// Docker healthcheck path. Distroless has no shell/curl/wget, so the
@@ -141,6 +227,44 @@ func main() {
 		slog.Any("tenants", tenants),
 		slog.Int("equipment_mappings", len(clientCfg.Equipments)),
 	)
+
+	// ── ADR-0019 G1 / ADR-0058: factory-DB (ERP) connector ────────────────────
+	// INERT BY CONSTRUCTION: erpconnector.New filters clientCfg.Capabilities.
+	// Integrations to Type=="database"; with none declared the Manager holds zero
+	// connectors and Start returns immediately — every tenant without an ERP is
+	// unaffected. When a tenant DOES declare one, this reads POs/scrap/users out
+	// of the customer DB on a cadence (secret-ref DSN, versioned SQL templates,
+	// declarative dedup) and hands each ReadResult to the ReadSink. P1 validates
+	// + observes the read cycle (proves live activation); P1b maps rows → edge-api
+	// PO upsert. A resolve/open failure (e.g. secret unset) logs and does NOT
+	// crash the transformer — the ERP link degrades independently of the tag path.
+	erpTemplateDir := os.Getenv("ERP_SQL_TEMPLATE_DIR")
+	if erpTemplateDir == "" {
+		erpTemplateDir = "/etc/packiot/tenant/sql"
+	}
+	// Capabilities is an OPTIONAL descriptor block (`*Capabilities`, nil when the
+	// tenant declares none — e.g. CPACK). Guard the deref: a nil block simply
+	// means "no integrations", which erpconnector.New treats as inert.
+	var erpIntegrations []clientconfig.Integration
+	if clientCfg.Capabilities != nil {
+		erpIntegrations = clientCfg.Capabilities.Integrations
+	}
+	erpMgr, err := erpconnector.New(erpconnector.Config{
+		Integrations: erpIntegrations,
+		Resolver:     erpconnector.EnvSecretResolver{}, // prod wires a SecretsManagerResolver
+		Templates:    erpconnector.NewTemplateStore(erpTemplateDir),
+		ReadSink:     newERPReadSink(logger, newEdgeAPIClient(logger)),
+		Logger:       logger,
+	})
+	if err != nil {
+		logger.Error("erpconnector init failed", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	go func() {
+		if err := erpMgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("erpconnector stopped unexpectedly", slog.String("err", err.Error()))
+		}
+	}()
 
 	// Fetch AMQP creds from AWS Secrets Manager. No DB creds in the
 	// skeleton — the transformer doesn't touch Postgres yet.
@@ -414,10 +538,14 @@ func main() {
 		// oeecloud-worker dispatch writes into shadow_go_port.* schema.
 		if localDecodeOnly {
 			logger.Info("LOCAL_DECODE_ONLY=true: on-prem decode→localstate only; no cloud AMQP publisher, no outbox (ADR-0053 B-minimal)")
-		} else if analyticsPub, shadowErr = analyticspub.New(amqpCreds.URL(), "oee", logger); shadowErr != nil {
-			logger.Error("analyticspub: failed to open channel — MQTT disabled",
+		} else if analyticsPub, shadowErr = analyticspub.NewWithRetry(ctx, amqpCreds.URL(), "oee", logger, 3*time.Minute); shadowErr != nil {
+			// Was: log + analyticsPub=nil + keep running → after a host reboot (decoder up
+			// before RabbitMQ) the process decoded MQTT but published NOTHING and disabled the
+			// outbox, until someone restarted it by hand (2026-09-25). A broker that stays
+			// unreachable past the retry window is fatal: exit so the restart policy recycles us.
+			logger.Error("analyticspub: broker unreachable after startup retries — exiting for restart",
 				slog.String("err", shadowErr.Error()))
-			analyticsPub = nil
+			os.Exit(1)
 		} else {
 			// #91 emit-liveness: fail /healthz if emit stalls (dead channel /
 			// failing reconnect) so orchestration recycles instead of a silent
@@ -475,6 +603,35 @@ func main() {
 			)
 		}
 
+		// WS3 per-client OEE profile (ADR-0058): the WS1 spike-guard margin
+		// becomes a per-client, CS-Admin-editable knob. When OEE_PROFILE_FROM_DB
+		// is on, a Watcher owns a periodically-reloaded unit-topic→spike_margin
+		// map sourced from client_descriptors.descriptor->oee_profile. Default
+		// OFF → spikeMargins returns an empty map, so every topic keeps the env
+		// default (CALC_COUNTER_SPIKE_MARGIN) and the guard behaves exactly as it
+		// did before WS3 (parity). Fail-open like the rates watcher: a DB error on
+		// reload keeps the previous snapshot, so the env default is the floor.
+		spikeMargins := func() map[string]float64 { return map[string]float64{} }
+		spikeRatedSpeeds := func() map[string]float64 { return map[string]float64{} }
+		uint16Counters := func() map[string]struct{} { return map[string]struct{}{} }
+		if cfg.OeeProfileFromDB {
+			oeeProfileWatcher := oeeprofile.NewWatcher(
+				time.Duration(cfg.OeeProfileRefreshSeconds)*time.Second,
+				logger,
+			)
+			oeeProfileWatcher.Start(ctx)
+			spikeMargins = oeeProfileWatcher.Margins
+			spikeRatedSpeeds = oeeProfileWatcher.RatedSpeeds
+			uint16Counters = oeeProfileWatcher.Uint16Counters
+			logger.Info("per-client OEE profile: DB watcher started (config-as-data)",
+				slog.Int("refresh_seconds", cfg.OeeProfileRefreshSeconds),
+				slog.Int("tenants", oeeProfileWatcher.Tenants()),
+				slog.Int("margin_entries", len(oeeProfileWatcher.Margins())),
+				slog.Int("rated_speed_entries", len(oeeProfileWatcher.RatedSpeeds())),
+				slog.Int("uint16_counter_entries", len(oeeProfileWatcher.Uint16Counters())),
+			)
+		}
+
 		// LINE_TRACE_TENANTS (comma-separated, lowercase GroupIDs, e.g.
 		// "cpack") turns on INFO-level per-counter drop tracing for the listed
 		// tenants ONLY. Empty (default) → zero extra logs. Purpose: pin a
@@ -498,10 +655,17 @@ func main() {
 			countersOnlyEnabled:    countersOnlyEnabled,
 			countersOnlyAutoFromDB: countersOnlyAutoFromDB,
 			idealRates:             idealRates,
+			spikeMarginDefault:     cfg.CalcCounterSpikeMargin,
+			spikeMargins:           spikeMargins,
+			spikeRatedSpeeds:       spikeRatedSpeeds,
+			uint16Counters:         uint16Counters,
 			traceTenants:           traceTenants,
 			resetHeal:              cfg.ResetHealEnabled,
 			noSpeedGuardFallback:   cfg.NoSpeedGuardFallbackEnabled,
-			// ADR-0037 Silver rules — off unless the env flags are set.
+			// ADR-0037 Silver rules — off unless the env flags are set. The WS1
+			// spike-guard margin is NOT here: it is resolved per-message from the
+			// client OEE profile (spikeMargins) with cfg.CalcCounterSpikeMargin as
+			// the env default (see spikeMarginDefault above).
 			calcCfg: calc_production_counters.Config{
 				MonotonicityGuard: cfg.CalcMonotonicityGuard,
 				CounterRollover:   cfg.CalcCounterRollover,
@@ -633,7 +797,7 @@ func main() {
 		if perTenantRouting {
 			logger.Info("F3_PER_TENANT_ROUTING=true: publishing analytics envelopes to per-tenant routing key sparkplug.data.<tenant> (stream-engine per-tenant queues)")
 		}
-		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, localStateStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, logger), logger)
+		mqttSub = mqtt.NewSubscriber(mqttCfg, sparkplugHandler(sparkplugStore, analyticsPub, outboxStore, localStateStore, calcHooks, emitGo, emitRefactored, emitProduction, emitCutoverRefactored, perTenantRouting, rebirthRequester, newBirthBinder(cfg, mx.Registry, logger), logger), logger)
 
 		// ADR-0011 P1: wire the drop-metric callback so ingestion queue
 		// overflow is Prometheus-visible.
@@ -890,6 +1054,29 @@ type calcHooks struct {
 	countersOnlyEnabled    bool
 	countersOnlyAutoFromDB bool
 	idealRates             func() map[string]float64
+
+	// spikeMarginDefault / spikeMargins — the per-client OEE-profile seam (WS3 /
+	// ADR-0058). spikeMarginDefault is the global env fallback
+	// (CALC_COUNTER_SPIKE_MARGIN); spikeMargins is a live ACCESSOR returning the
+	// unit-topic→margin map an oeeprofile.Watcher keeps fresh from
+	// client_descriptors.descriptor->oee_profile->spike_margin. Per message the
+	// resolved margin is: the topic's profile value if present and > 0, else the
+	// env default. Absent profile ⇒ the env default governs every topic, i.e. the
+	// WS1 behavior byte-for-byte (parity). spikeMargins is never nil (main.go sets
+	// it to a closure returning an empty map when the DB watcher is off).
+	spikeMarginDefault float64
+	spikeMargins       func() map[string]float64
+	// spikeRatedSpeeds (FU#3) — unit-topic→rated-speed accessor for the WS1 guard
+	// bound on non-counters-only topics (production_speed from the client OEE
+	// profile). Never nil (main.go sets it to an empty-map closure when off).
+	spikeRatedSpeeds func() map[string]float64
+	// uint16Counters — accessor for the set of full counter metric names the
+	// client descriptor declares as S7 `type: int` (an unsigned 16-bit PLC
+	// register the edge reads signed). Calc reinterprets their negative reads
+	// as +65536 so the uint16 rollover rule credits the wrap instead of the
+	// upper half of every cycle being dropped (CPACK L8/L10-PTH). May be nil in
+	// tests (⇒ no topic flagged).
+	uint16Counters func() map[string]struct{}
 
 	// resetHeal (ADR-0048 count-spike guard) — when true, Calc re-seeds a
 	// genuine totalizer reset instead of emitting the whole-totalizer
@@ -1224,23 +1411,49 @@ func (h calcHooks) runShadow(ctx context.Context, tenant string, metric sparkplu
 	// use the rated-speed glitch guard instead of the absent MachSpeed
 	// guard. Auto-selection (machSpeed==0) still happens inside Calc, so a
 	// machine that DOES report speed is unaffected even when opted in.
+	// WS3: seed the WS1 spike-guard margin with the global env default; the
+	// counters-only block below overrides it per topic from the client's OEE
+	// profile when one is authored. Set here (before the block) so the override
+	// wins. Zero default + no profile ⇒ the guard stays inert (parity).
+	msg.CounterSpikeMargin = h.spikeMarginDefault
 	rates := h.idealRates()
 	countersOnly := h.countersOnlyEnabled || (h.countersOnlyAutoFromDB && len(rates) > 0)
-	if countersOnly {
-		// ParseTopic requires the "***"-delimited counter topic shape; the
-		// bare metric.Name has no "***" so it would ALWAYS error, leaving the
-		// opt-in inert. msg.Topic (metric.Name + "***TRIG", built just above)
-		// is the form ParseTopic expects and yields the 5-seg unit topic key.
-		// A role-override message's Topic has no matching Prod*Count
-		// substring, so ParseTopic errors for it too — counters-only mode
-		// doesn't apply to role-mapped counters (that guard exists for the
-		// ABSENT MachSpeed sensor case, orthogonal to role mapping).
-		if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
+	// ParseTopic requires the "***"-delimited counter topic shape; the bare
+	// metric.Name has no "***" so it would ALWAYS error. msg.Topic (metric.Name +
+	// "***TRIG", built just above) is the form ParseTopic expects and yields the
+	// 5-seg unit topic key. A role-override message's Topic has no matching
+	// Prod*Count substring, so ParseTopic errors for it too.
+	if unitTopic, _, perr := calc_production_counters.ParseTopic(msg.Topic); perr == nil {
+		// WS3 per-client OEE profile: resolve the WS1 spike-guard knobs for THIS
+		// topic. The margin overrides the env default when the client authored one.
+		// The rated speed (FU#3) is the guard's plausibility bound for topics that
+		// are NOT counters-only-mapped (IdealRate stays 0 for them) — so a tenant
+		// that authors a margin gets the guard on its WHOLE fleet, not just the
+		// handful of counters-only lines. Both are nil-guarded: main.go always sets
+		// them, but a hooks value built in a test may leave them nil (no profile).
+		if h.spikeMargins != nil {
+			if m, ok := h.spikeMargins()[unitTopic]; ok && m > 0 {
+				msg.CounterSpikeMargin = m
+			}
+		}
+		if h.spikeRatedSpeeds != nil {
+			if rs, ok := h.spikeRatedSpeeds()[unitTopic]; ok && rs > 0 {
+				msg.GuardRatedSpeed = rs
+			}
+		}
+		// Counters-only opt-in: only for topics with a configured rated speed in
+		// the ideal-rates map (the ABSENT-MachSpeed guard swap). Auto-selection
+		// (machSpeed==0) still happens inside Calc, so a machine that reports speed
+		// is unaffected even when opted in.
+		if countersOnly {
 			if rate, ok := rates[unitTopic]; ok && rate > 0 {
 				msg.CountersOnly = true
 				msg.IdealRate = rate
 			}
 		}
+	}
+	if h.uint16Counters != nil {
+		_, msg.Uint16Counter = h.uint16Counters()[metric.Name]
 	}
 	msg.ResetHeal = h.resetHeal
 	msg.NoSpeedGuardFallback = h.noSpeedGuardFallback
@@ -1611,7 +1824,7 @@ func analyticsRoutingKey(perTenant bool, tenant string) string {
 	return "sparkplug.data"
 }
 
-func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, logger *slog.Logger) mqtt.Handler {
+func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publisher, outboxStore *outbox.Store, localStateStore *localstate.Store, calc calcHooks, emitGo, emitRefactored, emitProduction, cutoverRefactored, perTenantRouting bool, rebirthRequester *mqtt.RebirthRequester, binder *birthBinder, logger *slog.Logger) mqtt.Handler {
 	return func(ctx context.Context, topic mqtt.Topic, body []byte) error {
 		// Root of the data-plane trace. The MQTT hop upstream can't carry a
 		// parent (paho v3.1.1 has no user-properties), so receive is the trace
@@ -1657,6 +1870,8 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 			return fmt.Errorf("ingest: %w", err)
 		}
 		if resolved == nil {
+			// ADR-0061 P2: bind the birth's declared device_keys (no-op when OFF).
+			binder.onBirth(topic, payload)
 			// BIRTH/DEATH/CMD — state updated, no downstream output.
 			// EXCEPTION for Phase 3 shadow: seed non-counter parameters from
 			// NBIRTH so subsequent NDATA has the parameter context (MachSpeed,
@@ -1831,6 +2046,8 @@ func sparkplugHandler(store *sparkplug.StateStore, publisher *analyticspub.Publi
 						SourceType:      st,
 					})
 				}
+				// ADR-0061 P2: stamp the birth-bound ids (no-op when OFF).
+				binder.stamp(&env, topic.GroupID, topic.EdgeNodeID)
 				body, err := json.Marshal(env)
 				if err != nil {
 					logger.Warn("outbox: marshal envelope failed",

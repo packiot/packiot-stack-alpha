@@ -115,7 +115,7 @@ numeric-sim --url https://localhost:9104/v1/counters --key "$AGENT_INGEST_API_KE
 
 ### 4.3 Shadow-DB verification (SELECT-only, done 2026-07-27)
 
-On `packiot_shadow` (F3), `BEGIN TRANSACTION READ ONLY`:
+On `packiot_analytics` (F3), `BEGIN TRANSACTION READ ONLY`:
 
 | Check | Result |
 |---|---|

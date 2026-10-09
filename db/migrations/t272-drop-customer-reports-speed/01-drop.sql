@@ -1,0 +1,13 @@
+-- t272 — drop customer_reports.speed (the dead enterprise-33 speed report pool).
+--
+-- Adversarial validation (necessity audit): the customer_reports.* plane backs EXTERNAL
+-- customer integration contracts (Neopac SAP / Montebello OEE), NOT PowerBI/Superset — so
+-- those tables are KEPT. But `speed` is the exception: it was keyed to enterprise-33, which
+-- does NOT exist on the new stack (legacy Incoplast was remapped to id 4, and Incoplast has
+-- /ext/incoplast/events+jobs but NO speed feed). No external shim, no reader, 0 rows.
+--
+-- Its sole writer (stream-engine speed33.go) was removed in #263 (PR feat/263-remove-speed33).
+-- ⚠ APPLY ONLY AFTER that writer-stop deploys + soaks (else the still-running old writer's
+-- next 10-min INSERT errors on the missing relation). #186 discipline: writer-stop and drop
+-- in separate deploys. rollback.sql recreates the table (a revert of #263 restarts the writer).
+DROP TABLE IF EXISTS customer_reports.speed;

@@ -1,0 +1,141 @@
+# dev/base.yml — Tier 0, the data plane (ADR-0060 D2). Always available.
+#
+# Contract header (ADR-0060 D1):
+#   inputs:   none (Tier 0 is the bottom of the graph)
+#   outputs:  postgres :5432 (packiot_analytics), rabbitmq :5672 (+ `oee`
+#             topology), mosquitto :1883, redis :6379 (alias app-redis),
+#             minio :9000 (bucket $HISTORIAN_BUCKET)
+#   external: none. Every host port binds 127.0.0.1 only.
+#
+# Mirrors compose.staging.yml where staging runs the same thing in a container
+# (rabbitmq, mosquitto, app-redis). Postgres runs on a separate EC2 in staging
+# and S3 is AWS, so those two are dev stand-ins. See dev/README.md for drift.
+
+services:
+  # ── postgres + timescaledb ────────────────────────────────────────────────
+  # Empty `packiot_analytics` for now; P1-B's seed image replaces it through
+  # DEVDB_IMAGE. The timescale image runs CREATE EXTENSION timescaledb in
+  # POSTGRES_DB on first boot.
+  postgres:
+    image: ${DEVDB_IMAGE:-timescale/timescaledb:2.27.0-pg15}
+    environment:
+      DEVDB_EXPECT_SEED: ${DEVDB_EXPECT_SEED:-1}   # healthcheck: require seed data (0 = plain DB)
+      POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      POSTGRES_DB: ${POSTGRES_DB:-packiot_analytics}
+    ports:
+      - "127.0.0.1:${DEV_PG_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # runs once on a fresh volume, after the seed loader (50-devseed.sh): sequences past the seed's ids (F11)
+      - ./seed/sync-sequences.sql:/docker-entrypoint-initdb.d/60-devseed-sequences.sql:ro
+    shm_size: 256m
+    healthcheck:
+      # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary
+      # server that listens on the Unix socket ONLY, so a socket check reported "healthy" while the dev
+      # seed was still loading and `make dev --wait` returned early (2026-10-07).
+      # Healthy = the SEED IS LOADED, not just "accepts connections" (2026-10-08): a named volume left from an earlier
+      # run (empty or half-loaded packiot_analytics) makes the entrypoint print "Skipping initialization", the seed never
+      # loads, and a connection-only check still says healthy — every dependent then fails on missing tables.
+      # Fix a stale volume with `make dev-reset`. DEVDB_EXPECT_SEED=0 relaxes this for a non-seed DEVDB_IMAGE.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" && { [ \"$${DEVDB_EXPECT_SEED:-1}\" = 0 ] || psql -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -tAc 'SELECT 1 FROM silver.equipment_values LIMIT 1' | grep -q 1; }"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # ── rabbitmq (same image + conf + plugins as staging) ─────────────────────
+  # Loads the `oee` topology at boot so a decoder-only slice still routes
+  # (only stream-engine declares it in code, docs/dev/contracts.md §5.4).
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    # Fixed hostname = fixed Erlang node name (rabbit@rabbitmq), so the Mnesia
+    # dir on the named volume is reused across container recreates.
+    hostname: rabbitmq
+    entrypoint: ["/bin/sh", "/usr/local/bin/render-definitions.sh"]
+    environment:
+      RMQ_ADMIN_USER: ${RABBITMQ_USER:?set in dev/.env.dev}
+      RMQ_ADMIN_PASS: ${RABBITMQ_PASSWORD:?set in dev/.env.dev}
+      RMQ_STREAM_ENGINE_PASS: ${RABBITMQ_STREAM_ENGINE_PASSWORD:?set in dev/.env.dev}
+      RMQ_SD_PASS: ${RABBITMQ_SPARKPLUG_DECODER_PASSWORD:?set in dev/.env.dev}
+    ports:
+      - "127.0.0.1:${DEV_RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${DEV_RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ../monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ../monitoring/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/definitions.dev.template.json:/etc/rabbitmq/definitions.template.json:ro
+      - ./rabbitmq/render-definitions.sh:/usr/local/bin/render-definitions.sh:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 30s
+
+  # ── mosquitto (staging's config: listener 1883, anonymous, persistence) ───
+  mosquitto:
+    image: eclipse-mosquitto:2
+    init: true   # reaps healthcheck children (staging incident 2026-07-09)
+    ports:
+      - "127.0.0.1:${DEV_MQTT_PORT:-1883}:1883"
+    volumes:
+      - ../configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # ── redis (staging: app-redis) ────────────────────────────────────────────
+  # Staging runs it cache-only (no AOF, no RDB); dev keeps a volume anyway so
+  # the Tier 0 shape is uniform. Alias app-redis = the hostname read-api uses.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--appendonly", "no", "--save", ""]
+    networks:
+      default:
+        aliases: [app-redis]
+    ports:
+      - "127.0.0.1:${DEV_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── minio (stands in for S3: historian Parquet) ───────────────────────────
+  # The entrypoint also creates the historian bucket (versioning on, as
+  # terraform/staging/historian.tf); healthy = server live AND bucket exists.
+  minio:
+    image: ${MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z}
+    entrypoint: ["/bin/sh", "/usr/local/bin/dev-minio-entrypoint.sh"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in dev/.env.dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in dev/.env.dev}
+      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:?set in dev/.env.dev}
+    ports:
+      - "127.0.0.1:${DEV_MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${DEV_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+      - ./minio/entrypoint.sh:/usr/local/bin/dev-minio-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/bucket-ready && curl -fsS http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  mosquitto-data:
+  redis-data:
+  minio-data:

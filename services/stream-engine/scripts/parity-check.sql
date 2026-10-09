@@ -35,7 +35,7 @@ SELECT date_trunc('minute', ts_value) AS minute,
        COUNT(*) FILTER (WHERE gross_production_incr IS NOT NULL)  AS gross_set,
        COUNT(*) FILTER (WHERE scrap_incr            IS NOT NULL)  AS scrap_set,
        COUNT(*) FILTER (WHERE ideal_production_speed IS NOT NULL) AS ideal_speed_set
-  FROM public.equipment_values
+  FROM silver.equipment_values
  WHERE id_enterprise = 3
    AND ts_value > NOW() - interval '5 minutes'
  GROUP BY date_trunc('minute', ts_value)

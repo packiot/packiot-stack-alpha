@@ -46,7 +46,7 @@ func speedVoidWriter(t *testing.T) *EquipmentValues {
 		ProductionSpeed: intptr(l5RatedSpeed),
 	})
 	w := NewEquipmentValues(r, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	w.SetIncrementClamp(true, 4, 60, 1000)
+	w.SetIncrementClamp(true, 4, 60, 1000, 0.5)
 	return w
 }
 

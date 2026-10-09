@@ -11,64 +11,85 @@ sparkplug:
 raw_tag_map:
     - metric_suffix: /LINHAS/L71/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L71
+      device_key: dk_31aff2a4082d4e0b91b4c37d6be1e926
+      role: counter.net
     - metric_suffix: /LINHAS/L71/M670/Admin/ProdProcessedCount/670/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L71-M670
+      device_key: dk_1030798f762942d68f31be4d4f591c85
+      role: counter.net
     - metric_suffix: /LINHAS/L71/M671/Admin/ProdProcessedCount/671/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L71-M671
+      device_key: dk_5f896d7cf9fd41b282aca72f25da7f70
+      role: counter.net
     - metric_suffix: /LINHAS/L72/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L72
+      device_key: dk_ec5907d430134dd69c6ba60a6600a409
+      role: counter.net
     - metric_suffix: /LINHAS/L72/M672/Admin/ProdProcessedCount/672/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L72-M672
+      device_key: dk_5383bf75cb0c4c779bca0958714d2693
+      role: counter.net
     - metric_suffix: /LINHAS/L72/M673/Admin/ProdProcessedCount/673/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L72-M673
+      device_key: dk_89c001d11a6f4ea389ad52bc9963171d
+      role: counter.net
     - metric_suffix: /LINHAS/L73/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L73
+      device_key: dk_2587177618a54722b0aca014c8464b23
+      role: counter.net
     - metric_suffix: /LINHAS/L73/M674/Admin/ProdProcessedCount/674/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L73-M674
+      device_key: dk_20ba62412c204fdbbf09a22e75643d1a
+      role: counter.net
     - metric_suffix: /LINHAS/L73/M675/Admin/ProdProcessedCount/675/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L73-M675
+      device_key: dk_2c57722d950b4c6aaece30e0941bdb6b
+      role: counter.net
     - metric_suffix: /LINHAS/L56/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L56
+      device_key: dk_1af0aca0d74f4bbb98748b3920e53600
+      role: counter.net
     - metric_suffix: /LINHAS/L56/M676/Admin/ProdProcessedCount/676/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L56-M676
+      device_key: dk_0a018498b566476dbe4144d6f7a9e1a4
+      role: counter.net
     - metric_suffix: /LINHAS/L56/M677/Admin/ProdProcessedCount/677/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L56-M677
+      device_key: dk_3d3204af2fa94acda7b0a1c20cf2d842
+      role: counter.net
     - metric_suffix: /LINHAS/L57/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L57
+      device_key: dk_8a828ae5ef5b46fba3ce485b07e473e4
+      role: counter.net
     - metric_suffix: /LINHAS/L57/M678/Admin/ProdProcessedCount/678/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L57-M678
+      device_key: dk_0b673d70926e4f80a8098ab21be9b7ae
+      role: counter.net
     - metric_suffix: /LINHAS/L57/M679/Admin/ProdProcessedCount/679/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L57-M679
+      device_key: dk_909763a2e4e14550a2ff39a14a804516
+      role: counter.net
     - metric_suffix: /LINHAS/L58/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L58
+      device_key: dk_73819664915441d284c0cb5a5e25b747
+      role: counter.net
     - metric_suffix: /LINHAS/L58/M680/Admin/ProdProcessedCount/680/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L58-M680
+      device_key: dk_502b0dc90d8248eab11e60bd7e2dee44
+      role: counter.net
     - metric_suffix: /LINHAS/L58/M681/Admin/ProdProcessedCount/681/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L58-M681
+      device_key: dk_1dcf333078a1455b865f9c5aba3b6ef4
+      role: counter.net
     - metric_suffix: /LINHAS/L60/Admin/ProdProcessedCount
       type: double
-      device_key: BISNAGO-SP-LINHAS-L60
+      device_key: dk_aa1002ca30114296a9c7e3d943aa824c
+      role: counter.net
     - metric_suffix: /LINHAS/L60/M682/Admin/ProdProcessedCount/682/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L60-M682
+      device_key: dk_122fb319b72a48a9995a12ceaa072ce2
+      role: counter.net
     - metric_suffix: /LINHAS/L60/M683/Admin/ProdProcessedCount/683/Unit
       type: double
-      device_key: BISNAGO-SP-LINHAS-L60-M683
+      device_key: dk_675351e6504c4d3591959ab2f4188d02
+      role: counter.net

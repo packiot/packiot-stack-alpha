@@ -78,7 +78,7 @@ const dayRollupSQL = `
 	WITH sums AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           -- ADR-0037 output-invariant clamp (#576 extended): bound to [0,1].
-	           GREATEST(LEAST(sum(hr.net) / NULLIF(sum(hr.ideal_production), 0), 1), 0) AS oee,
+	           GREATEST(sum(hr.net) / NULLIF(sum(hr.ideal_production), 0), 0) AS oee,
 	           -- ADR-0037 C: the OEE waterfall (A×P×Q), previously unwritten at
 	           -- the day grain (only composite oee). Availability = running /
 	           -- planned-production-time ; Quality = net / gross ; Performance
@@ -92,7 +92,7 @@ const dayRollupSQL = `
 	           -- CHECK. Clamp to [0,1]; no-op on in-range state-based data.
 	           GREATEST(LEAST(LEAST(sum(hr.running_time), el.day_len_s)
 	               / NULLIF(LEAST(sum(hr.available_time), el.day_len_s), 0), 1), 0) AS oee_a,
-	           GREATEST(LEAST(sum(hr.net) / NULLIF(sum(hr.gross), 0), 1), 0) AS oee_q,
+	           GREATEST(sum(hr.net) / NULLIF(sum(hr.gross), 0), 0) AS oee_q,
 	           -- Physical invariant: a production-day's time-in-state cannot
 	           -- exceed the day's own wall-clock length (el.day_len_s). The
 	           -- HOUR grain is :00-aligned, but a non-hour-aligned site
@@ -123,7 +123,9 @@ const dayRollupSQL = `
 	           sum(hr.changeover_time)  AS changeover_time,
 	           sum(hr.scrap)            AS scrap,
 	           avg(hr.speed)            AS speed,
-	           sum(hr.proportional_target) AS proportional_target
+	           sum(hr.proportional_target) AS proportional_target,
+	           sum(hr.no_data_time)        AS no_data_time,
+	           sum(hr.out_of_service_time) AS out_of_service_time
 	      FROM day_elig el
 	      JOIN %[1]s.equipment_oee_hourly hr
 	        ON hr.id_equipment = el.id_equipment
@@ -135,8 +137,10 @@ const dayRollupSQL = `
 	       oee              = COALESCE(s.oee, 0),
 	       oee_a            = COALESCE(s.oee_a, 0),
 	       oee_q            = COALESCE(s.oee_q, 0),
-	       oee_p            = GREATEST(LEAST(COALESCE(s.oee / NULLIF(s.oee_a * s.oee_q, 0), 0), 1), 0),
+	       oee_p            = GREATEST(COALESCE(s.oee / NULLIF(s.oee_a * s.oee_q, 0), 0), 0),
 	       available_time   = COALESCE(s.available_time, 0),
+	       no_data_time        = COALESCE(s.no_data_time, 0),
+	       out_of_service_time = COALESCE(s.out_of_service_time, 0),
 	       running_time     = COALESCE(s.running_time, 0),
 	       stopped_time     = COALESCE(s.stopped_time, 0),
 	       planned_downtime = COALESCE(s.planned_downtime, 0),
@@ -173,11 +177,11 @@ const dayRollupSQL = `
 const dayOeeReconcileSQL = `
 	UPDATE %[1]s.equipment_oee_daily e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM day_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
@@ -229,33 +233,39 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 	} else if !got {
 		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("day eligible: %w", err)
 	}
+	for _, s := range daySteps(d, ca) {
+		if _, err := tx.Exec(ctx, s.sql); err != nil {
+			return fmt.Errorf("day %s: %w", s.name, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf(dayReflagSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+		return fmt.Errorf("day reflag: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// daySteps is the ordered statement list RunDay executes after day_elig is built.
+// Shared with the history-recompute renderer (history.go).
+func daySteps(d flows.Dest, ca CountersAvail) []rollupStep {
 	steps := []rollupStep{
-		{"rollup", fmt.Sprintf(dayRollupSQL, d.EvSchema)},
+		{"rollup", fmt.Sprintf(dayRollupSQL, d.GoldSchema)},
 	}
 	// ADR-0048 §Fault-3 canonical A·P·Q reconcile — overwrites the four oee
 	// columns factors-first (oee = a·p·q) so the identity holds by construction,
 	// exactly as hour/shift/week/month do. Inert (legacy back-solve in dayRollupSQL
 	// stands) when not engaged. Runs right after rollup, before the cascades.
 	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(dayOeeReconcileSQL, d.EvSchema)})
+		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(dayOeeReconcileSQL, d.GoldSchema)})
 	}
 	steps = append(steps,
-		rollupStep{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.EvSchema)},
-		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.EvSchema)},
-		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.EvSchema)},
+		rollupStep{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.GoldSchema)},
+		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.GoldSchema)},
+		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.GoldSchema)},
 	)
-	for _, s := range steps {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
-			return fmt.Errorf("day %s: %w", s.name, err)
-		}
-	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(dayReflagSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
-		return fmt.Errorf("day reflag: %w", err)
-	}
-	return tx.Commit(ctx)
+	return steps
 }
 
 // Parity accessors (single-source emission).

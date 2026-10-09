@@ -71,15 +71,10 @@ const topoZeroMembers = `
 	 WHERE ts_value < $1 AND id_equipment_line_connected = $2
 	   AND (is_equipment_line_infeed > 0 OR is_equipment_line_outfeed > 0)`
 
-// refSchema: packml_register is REFERENCE-plane — it lives in public
-// on both DBs (shadow_go_port shares the main DB's reference tables;
-// packiot_analytics syncs its own copy into public). Same split as the
-// events deriver's Dest{EvSchema, RefSchema}.
-const refSchema = "public"
-
 // executeTopology runs the 30700 unit in one tx. SQL templates take
-// %[1]s = equipment_values schema, %[2]s = reference schema.
-func (h *Handler) executeTopology(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
+// %[1]s = equipment_values (silver), %[2]s = packml_register (core, #251 P2 —
+// was the refSchema="public" shim const before the de-shim).
+func (h *Handler) executeTopology(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, s Schemas) error {
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
 		return err
@@ -101,16 +96,16 @@ func (h *Handler) executeTopology(ctx context.Context, pool *pgxpool.Pool, m *sp
 	for i, u := range unitOrder {
 		seq[i] = fmt.Sprint(u)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(topoPackmlSeq, schema, refSchema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(topoPackmlSeq, s.Silver, s.Core),
 		strings.Join(seq, ","), m.TopicForRegister()); err != nil {
 		return fmt.Errorf("packml seq: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(topoLineRow, schema, refSchema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(topoLineRow, s.Silver, s.Core),
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		unitOrder[0], unitOrder[len(unitOrder)-1]); err != nil {
 		return fmt.Errorf("line row: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(topoZeroLine, schema, refSchema), ts, info.IDEquipment); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(topoZeroLine, s.Silver, s.Core), ts, info.IDEquipment); err != nil {
 		return fmt.Errorf("zero line: %w", err)
 	}
 	one := 1
@@ -124,13 +119,13 @@ func (h *Handler) executeTopology(ctx context.Context, pool *pgxpool.Pool, m *sp
 		if i == len(unitOrder)-1 {
 			outfeed = &one
 		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf(topoMemberRow, schema, refSchema),
+		if _, err := tx.Exec(ctx, fmt.Sprintf(topoMemberRow, s.Silver, s.Core),
 			ts, info.IDEnterprise, info.IDSite, info.IDArea,
 			unit, info.IDEquipment, i+1, infeed, outfeed); err != nil {
 			return fmt.Errorf("member row unit=%d: %w", unit, err)
 		}
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(topoZeroMembers, schema, refSchema), ts, info.IDEquipment); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(topoZeroMembers, s.Silver, s.Core), ts, info.IDEquipment); err != nil {
 		return fmt.Errorf("zero members: %w", err)
 	}
 	h.topology.Add(1)

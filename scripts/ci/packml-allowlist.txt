@@ -1,0 +1,3 @@
+# ADR-0061 packml ratchet — files allowed to ADD packml references, one path per line, then a reason.
+# Intended for P5: migrations that drop PackML objects, and expiring v1 deprecation shims.
+services/sparkplug-decoder/cmd/seed-replay/main.go  dev-only producer (ADR-0060 P3): publishes the seed's registered topics because stream-engine still resolves equipment by packml_topic; every metric also declares device_key. EXPIRES with ADR-0061 P5: switch to device_key-only names and drop the packml_register read.

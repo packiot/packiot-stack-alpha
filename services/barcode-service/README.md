@@ -65,7 +65,7 @@ COMMIT;                                                 -- releases the advisory
 | `HTTP_PORT` | `8446` | serves API + `/healthz` + `/metrics` + SSE |
 | `DB_HOST` / `DB_PORT` | `pgbouncer` / `5432` | |
 | `DB_USER` / `DB_PASSWORD` | `postgres` / — | password from env/secret |
-| `DB_NAME` | `packiot_shadow` | writes to F3 (the go-forward plane) |
+| `DB_NAME` | `packiot_analytics` | writes to the analytics plane (go-forward) |
 | `FIREBASE_PROJECT_ID` | `fbpackiot` | `""` disables the Firebase path |
 | `COGNITO_ISSUER` | — | `https://cognito-idp.<region>.amazonaws.com/<poolId>`; `""` disables Cognito |
 | `COGNITO_CLIENT_ID` | — | Cognito app-client id (aud); `""` skips the audience check (Phase-0 lenient). Same var refdata-api uses. |
@@ -81,7 +81,7 @@ Migration `edge-node-red/db/36-box-scans.sql` creates:
 - `v_po_box_totals` — the authoritative per-PO totals view.
 
 FK note: the hierarchy PKs (`enterprises/sites/areas/equipments.id_*`,
-`production_orders.id_order`) are `INTEGER` in `packiot_shadow`; only
+`production_orders.id_order`) are `INTEGER` in `packiot_analytics`; only
 `production_orders.id_production_order` is `BIGINT`. The FK columns are
 type-matched accordingly; `id_site/id_area/id_order` are nullable and populated
 server-side from the tenant's own rows.

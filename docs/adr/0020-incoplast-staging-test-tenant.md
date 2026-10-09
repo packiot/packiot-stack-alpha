@@ -116,4 +116,4 @@ The artifacts in this ADR's PR are inert files. To bring Incoplast up on staging
 ADR-0019 (the requirements this tenant tests) · ADR-0009 (the customization surface,
 Layer B) · ADR-0012 (the multi-tenancy this proves) ·
 `docs/clients/incoplast-migration-assessment.md` (the source factory) ·
-`docs/guide/07-customizations-and-real-factories.md` (the story).
+`docs/archive/wiki-v1/guide/07-customizations-and-real-factories.md` (the story).

@@ -41,7 +41,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 )
 
-// BOUNDED per-tick (%[3]d = LIMIT). The eligible set spans a 30-day window and,
+// BOUNDED per-tick (%[6]d = LIMIT). The eligible set spans a 30-day window and,
 // because shift rows are partitioned by (id_shift × ts_value_production), can hold
 // thousands of flagged rows after any burst (an incident, a poison purge, a manual
 // reflag). RunShift processes shift_elig in ONE transaction, so an unbounded set
@@ -51,10 +51,16 @@ import (
 // never reaching the stale rows). LIMIT makes every tick commit a bounded slice, so
 // the backlog drains monotonically over ticks (same discipline as backfill.go).
 //
-// ORDER BY ts_value ASC (oldest-first): the recent tail is re-flagged EVERY tick by
-// shiftReflagSQL, so newest-first would let that fresh reflag perpetually crowd out
-// the old backlog and it would never drain. Oldest-first drains the backlog to zero;
-// once drained, only the small recent set remains and each tick clears it promptly.
+// ORDER BY computed_at NULLS FIRST, ts_value (least-recently-computed first). The
+// recent tail is re-flagged EVERY tick by shiftReflagSQL, so the eligible set never
+// drops below that recurring [now-12h, now] set. Newest-first would let it crowd out
+// the old backlog forever. Plain oldest-first (the previous order) starves the other
+// end: once the recurring set outgrew LIMIT (2026-09-28: 127 rows vs 75), every tick
+// re-picked the same finished rows and the LIVE shift was never computed until hours
+// after it ended. computed_at ordering is round-robin: never-computed rows (the live
+// shift, a fresh backlog) go first, oldest first among them, then whatever was
+// recomputed longest ago, so every flagged row gets a turn. Reflag does not touch
+// computed_at, so it cannot jump the queue.
 // LIMIT is pure row-selection — it never changes HOW a selected row is computed, so
 // parity with prod's per-row math is preserved (ShiftStatementsForParity passes an
 // effectively-unbounded limit to compare the full set).
@@ -62,7 +68,7 @@ const shiftEligibleSQL = `
 	CREATE TEMP TABLE shift_elig ON COMMIT DROP AS
 	SELECT e.id_equipment, e.ts_value, e.ts_end, e.ts_value_production,
 	       e.id_shift, e.target_customized, s.cd_shift AS cd_shift2
-	  FROM %[1]s.equipment_oee_shift e
+	  FROM %[4]s.equipment_oee_shift e
 	  JOIN %[2]s.shifts s ON e.id_shift = s.id_shift
 	  JOIN %[2]s.equipments eq ON e.id_equipment = eq.id_equipment
 	 WHERE e.ts_value >= now() - interval '30 days' AND e.ts_value <= now()
@@ -74,11 +80,11 @@ const shiftEligibleSQL = `
 	       UNION ALL
 	       SELECT id_equipment FROM %[2]s.equipments
 	        WHERE tp_equipment = 1 AND id_enterprise = ANY($3))
-	 ORDER BY e.ts_value ASC
-	 LIMIT %[3]d`
+	 ORDER BY e.computed_at ASC NULLS FIRST, e.ts_value ASC
+	 LIMIT %[6]d`
 
 // IDEAL-SPEED SOURCE (line-OEE fix, same mechanism as hour.go):
-// prod's ca_agg_equipment_values_1hour rows inherit the trigger
+// prod's equipment_categorical_1hour rows inherit the trigger
 // table's LOCF'd ideal_production_speed (equipment_values last
 // non-null ≤ row ts; capture 20-oee-engine-parity.sql:10162-10172,
 // carried through 22-agg-views.sql:248 GROUP BY). Our flow CAgg is
@@ -93,9 +99,9 @@ const shiftValuesSQL = `
 	           sum(ca.net_production_incr)   AS net,
 	           COALESCE(avg(COALESCE(ca.ideal_production_speed, locf.ideal_production_speed)),
 	               (SELECT q.production_speed FROM %[2]s.equipments q WHERE q.id_equipment = el.id_equipment)) AS ideal_speed,
-	           avg(CASE WHEN ca.state = 6 THEN ca.speed END) AS speed
+	           avg(CASE WHEN ca.state = 6 THEN ca.sum_speed / NULLIF(ca.cnt_speed, 0) END) AS speed
 	      FROM shift_elig el
-	      JOIN %[1]s.ca_agg_equipment_values_1hour ca
+	      JOIN %[3]s.equipment_categorical_1hour ca
 	        ON ca.id_equipment = el.id_equipment
 	       AND ca.id_shift = el.id_shift
 	       AND ca.ts_value >= now() - interval '30 days'
@@ -103,15 +109,29 @@ const shiftValuesSQL = `
 	       AND ca.ts_value_production = el.ts_value_production
 	      LEFT JOIN LATERAL (
 	           SELECT ev.ideal_production_speed
-	             FROM %[1]s.equipment_values ev
+	             FROM %[3]s.equipment_values ev
 	            WHERE ev.id_equipment = ca.id_equipment
 	              AND ev.ts_value < ca.ts_value + interval '1 hour'
 	              AND ev.ideal_production_speed IS NOT NULL
+	              -- Bounded look-back (2026-09-28). Unbounded, this walked the whole
+	              -- retained history (compressed chunks) whenever no value existed —
+	              -- per minute per row. Measured live: NO equipment has ever reported a
+	              -- non-null ideal_production_speed here, so every lookup scanned
+	              -- everything and returned NULL (→ production_speed fallback); one
+	              -- 09-01 recompute spent 890 s in this step. 7 days keeps real LOCF
+	              -- across short silences if 30701 starts arriving.
+	              AND ev.ts_value >= ca.ts_value - interval '7 days'
+	              -- STABLE copy of the bound (2026-09-28): the per-row bound above depends
+	              -- on the outer row, so TimescaleDB cannot exclude chunks at startup and
+	              -- re-checks EVERY chunk per lookup (~40 ms x ~1,100 lookups = 45 s per
+	              -- hour tick, measured). A now()-based bound is applied once at startup.
+	              -- It never narrows the per-row bound: shift rows are at most 30 days old, so row - 7 days >= now() - 37 days.
+	              AND ev.ts_value >= now() - interval '37 days'
 	            ORDER BY ev.ts_value DESC LIMIT 1
 	      ) locf ON ca.ideal_production_speed IS NULL
 	     GROUP BY el.id_equipment, el.ts_value
 	)
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       gross = COALESCE(s.gross, 0),
 	       net   = COALESCE(s.net, 0),
 	       scrap = COALESCE(s.gross - s.net, 0),
@@ -138,7 +158,7 @@ const shiftValuesSQL = `
 	   AND e.ts_value >= now() - interval '30 day'`
 
 const shiftCascadeAreaSQL = `
-	UPDATE %[1]s.area_oee_shift a SET recalc_needed = true
+	UPDATE %[4]s.area_oee_shift a SET recalc_needed = true
 	  FROM shift_elig el
 	  JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	 WHERE a.id_area = q.id_area AND a.ts_value = el.ts_value
@@ -149,14 +169,14 @@ const shiftCascadeAreaSQL = `
 // (plannedDowntimeExpr) — ADR-0037 (c): off = "ee.planned_downtime = true"
 // (prod-verbatim); on = changeover excluded from the planned bucket so it
 // stays inside (ts_total − ts_planned) and depresses Availability.
-const shiftEventsSQL = `
+var shiftEventsSQL = `
 	CREATE TEMP TABLE shift_ev ON COMMIT DROP AS
 	WITH last_seen AS (
 	    -- LAST OBSERVED DATA per equipment (see hour.go) — the physical bound for a
 	    -- TRAILING open event. max(ts_value) of the 1-hour cagg = start of the last
 	    -- data-bearing hour; +1h grace covers through its end.
 	    SELECT m.id_equipment, max(m.ts_value) AS ts_last
-	      FROM %[1]s.ca_agg_equipment_values_1hour m
+	      FROM %[3]s.equipment_categorical_1hour m
 	     WHERE m.id_equipment IN (SELECT id_equipment FROM shift_elig)
 	       AND m.ts_value >= now() - interval '90 days'
 	     GROUP BY m.id_equipment
@@ -185,14 +205,15 @@ const shiftEventsSQL = `
 	                    lead(ee.ts_event) OVER (PARTITION BY ee.id_equipment ORDER BY ee.ts_event),
 	                    GREATEST(ee.ts_event, LEAST(now(), ls.ts_last + interval '1 hour'))) AS ts_eff_end,
 	           ee.planned_downtime, ee.change_over, ee.status
-	      FROM %[1]s.equipment_events ee
+	      -- Range scan + the event IN EFFECT at the bound (eventsInEffectSQL): a
+	      -- stop that began before the lookback and still covers the bucket.
+	      FROM ` + eventsInEffectSQL("%[3]s", "SELECT DISTINCT id_equipment FROM shift_elig",
+	"now() - interval '25 days'") + ` ee
 	      LEFT JOIN last_seen ls ON ls.id_equipment = ee.id_equipment
-	     WHERE ee.id_equipment IN (SELECT id_equipment FROM shift_elig)
-	       AND ee.ts_event >= now() - interval '25 days' AND ee.ts_event < now()
 	)
 	SELECT el.id_equipment, el.ts_value, el.ts_end, el.target_customized,
 	       extract(epoch FROM (least(el.ts_end, now()) - el.ts_value)) AS ts_total,
-	       COALESCE(sum(CASE WHEN %[2]s THEN
+	       COALESCE(sum(CASE WHEN %[6]s THEN
 	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_planned,
 	       COALESCE(sum(CASE WHEN ee.change_over = true THEN
 	           extract(epoch FROM (least(ee.ts_eff_end, COALESCE(el.ts_end, now())) - greatest(ee.ts_event, el.ts_value))) END), 0) AS ts_changeover,
@@ -209,7 +230,7 @@ const shiftEventsSQL = `
 	 GROUP BY el.id_equipment, el.ts_value, el.ts_end, el.target_customized`
 
 const shiftEventsUpdateSQL = `
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       -- Denominator degrades gracefully (see hour.go): subtract
 	       -- LEAST(ts_planned, ts_total) so available_time / oee_a stay ≥ 0. Inert
 	       -- now that ee_bounded makes ts_planned physical.
@@ -228,13 +249,13 @@ const shiftEventsUpdateSQL = `
 	       downtime         = LEAST(COALESCE(ev.ts_downtime, 0),   ev.ts_total),
 	       changeover_time  = LEAST(COALESCE(ev.ts_changeover, 0), ev.ts_total),
 	       recalc_needed    = false,
-	       oee = GREATEST(LEAST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp [0,1]
+	       oee = GREATEST(COALESCE(e.net / NULLIF(((ev.ts_total - LEAST(ev.ts_planned, ev.ts_total)) / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp [0,1]
 	       -- ADR-0037 C: write the OEE waterfall (A×P×Q), not just composite oee.
 	       -- Availability = running / planned-production-time ; Quality = net /
 	       -- gross ; Performance back-solved by shiftOeePSQL so oee = a·p·q
 	       -- (same shape as grains.go / legacy pg engine). Was: A/P/Q all 0.
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(ev.ts_running, 0), ev.ts_total) / NULLIF(ev.ts_total - LEAST(ev.ts_planned, ev.ts_total), 0), 0), 1), 0), -- ADR-0037 clamp [0,1] (now INERT: ee_bounded makes ts_planned physical, so A lands in (0,1] not floored to 0); LEAST() denom degrades gracefully
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
@@ -242,8 +263,8 @@ const shiftEventsUpdateSQL = `
 // Performance residual — closes oee = oee_a · oee_p · oee_q on the event-hit
 // shift rows the events update just persisted (see hourOeePSQL for rationale).
 const shiftOeePSQL = `
-	UPDATE %[1]s.equipment_oee_shift e
-	   SET oee_p = GREATEST(LEAST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 1), 0)
+	UPDATE %[4]s.equipment_oee_shift e
+	   SET oee_p = GREATEST(COALESCE(e.oee / NULLIF(e.oee_a * e.oee_q, 0), 0), 0)
 	  FROM shift_ev ev
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
@@ -278,10 +299,10 @@ const shiftOeePSQL = `
 //	  found" guard (legacy's `if found`): its shift_size is intentionally
 //	  no longer referenced now that proration is elapsed-based.
 const shiftTargetsSQL = `
-	UPDATE %[1]s.equipment_oee_shift e SET
-	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned) / (3600 * 24)), 0)
+	UPDATE %[4]s.equipment_oee_shift e SET
+	       proportional_target = COALESCE(pt.vl_day * ((ev.ts_total - ev.ts_planned/*OOS_TARGET*/) / (3600 * 24)), 0)
 	  FROM shift_ev ev
-	  JOIN %[2]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
+	  JOIN %[6]s.production_targets pt ON pt.id_equipment = ev.id_equipment,
 	  LATERAL piot_get_shift_hour_begin_by_equipment(ev.id_equipment, ev.ts_value) sh
 	 WHERE e.id_equipment = ev.id_equipment AND e.ts_value = ev.ts_value
 	   AND ev.target_customized IS NOT TRUE`
@@ -296,14 +317,14 @@ const shiftTargetsSQL = `
 // for a live shift the two coincide, for a replayed old shift computed_at is
 // recent while source_watermark settles at ts_end — the auditable distinction.
 const shiftStampSQL = `
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       computed_at = now(),
 	       source_watermark = LEAST(COALESCE(e.ts_end, e.ts_value + interval '1 day'), now())
 	  FROM shift_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
 const shiftReflagSQL = `
-	UPDATE %[1]s.equipment_oee_shift e SET recalc_needed = true
+	UPDATE %[4]s.equipment_oee_shift e SET recalc_needed = true
 	 WHERE e.ts_value >= now() - interval '12 hours'
 	   AND e.ts_value < now() + interval '18 hour'
 	   AND e.id_equipment IN (
@@ -336,7 +357,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	} else if !got {
 		return 0, tx.Commit(ctx)
 	}
-	tag, err := tx.Exec(ctx, fmt.Sprintf(shiftEligibleSQL, d.EvSchema, d.RefSchema, limit),
+	tag, err := tx.Exec(ctx, fmtRD(shiftEligibleSQL, d, limit),
 		exclAreas, exclEnterprises, machineLevelEnterprises)
 	if err != nil {
 		return 0, fmt.Errorf("shift eligible: %w", err)
@@ -351,47 +372,7 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	if _, err := tx.Exec(ctx, `ANALYZE shift_elig`); err != nil {
 		return 0, fmt.Errorf("shift elig analyze: %w", err)
 	}
-	steps := []rollupStep{
-		{"values", fmt.Sprintf(shiftValuesSQL, d.EvSchema, d.RefSchema)},
-		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, d.EvSchema, d.RefSchema)},
-		{"events-bank", fmt.Sprintf(shiftEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability))},
-		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, d.EvSchema)},
-	}
-	// Counters-only Availability fallback — flag + opt-in gated, positioned
-	// after events-update (shift_ev exists → the NOT-EXISTS state-less anti-
-	// join resolves) and before oee-p. Inert (not appended) when not engaged.
-	if ca.engaged() {
-		steps = append(steps, rollupStep{"counters-avail",
-			fmt.Sprintf(shiftCountsAvailSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
-	}
-	// Line-from-lead derivation — flag + enterprise gated, same region as the
-	// counters-avail fallback (before oee-p; shift back-solves oee_p inline).
-	// Inert (not appended) when not engaged. See line_lead.go.
-	if ca.engagedLineLead() {
-		steps = append(steps, rollupStep{"line-lead",
-			fmt.Sprintf(shiftLineLeadSQL, d.EvSchema, d.RefSchema, pgIntArrayLiteral(ca.LineLeadEnterprises), ca.IdleTimeoutSec)})
-	}
-	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
-	// count-active time for opted-in equipment where the state stream had gaps.
-	// After every state/counter running writer, before the oee finalize so the
-	// reconcile/oee-p reads the healed running. Inert when not engaged.
-	if ca.engagedFloor() {
-		steps = append(steps, rollupStep{"avail-floor",
-			fmt.Sprintf(shiftAvailFloorSQL, d.EvSchema, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
-	}
-	// ADR-0048 §Fault-3: canonical A·P·Q reconcile (whole batch) REPLACES the
-	// legacy event-row-scoped oee-p residual when engaged; otherwise the legacy
-	// residual runs (byte-identical). Either way targets + stamp follow.
-	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(shiftOeeReconcileSQL, d.EvSchema)})
-	} else {
-		steps = append(steps, rollupStep{"oee-p", fmt.Sprintf(shiftOeePSQL, d.EvSchema)})
-	}
-	steps = append(steps,
-		rollupStep{"targets", fmt.Sprintf(shiftTargetsSQL, d.EvSchema, d.RefSchema)},
-		rollupStep{"stamp", fmt.Sprintf(shiftStampSQL, d.EvSchema)},
-	)
-	for _, s := range steps {
+	for _, s := range shiftSteps(d, ca, changeoverAvailability) {
 		if _, err := tx.Exec(ctx, s.sql); err != nil {
 			return 0, fmt.Errorf("shift %s: %w", s.name, err)
 		}
@@ -399,11 +380,63 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	// Reflag runs EVERY tick (even when the batch was empty) so the recent tail
 	// stays live — it is a small [now−12h, now+18h] window, independent of the
 	// bounded batch above.
-	if _, err := tx.Exec(ctx, fmt.Sprintf(shiftReflagSQL, d.EvSchema, d.RefSchema),
+	if _, err := tx.Exec(ctx, fmtRD(shiftReflagSQL, d),
 		exclEnterprises, machineLevelEnterprises); err != nil {
 		return 0, fmt.Errorf("shift reflag: %w", err)
 	}
 	return n, tx.Commit(ctx)
+}
+
+// shiftSteps is the ordered statement list RunShift executes after shift_elig is
+// built (the reflag that follows is NOT a step — it re-flags the live tail).
+// Shared with the history-recompute renderer (history.go).
+func shiftSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
+	steps := []rollupStep{
+		{"values", fmtRD(shiftValuesSQL, d)},
+		{"cascade-area", fmtRD(shiftCascadeAreaSQL, d)},
+		{"events-bank", fmtRD(shiftEventsSQL, d, plannedDowntimeExpr(changeoverAvailability))},
+		{"events-update", fmtRD(shiftEventsUpdateSQL, d)},
+	}
+	// Counters-only Availability fallback — flag + opt-in gated, positioned
+	// after events-update (shift_ev exists → the NOT-EXISTS state-less anti-
+	// join resolves) and before oee-p. Inert (not appended) when not engaged.
+	if ca.engaged() {
+		steps = append(steps, rollupStep{"counters-avail",
+			fmtRD(shiftCountsAvailSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	// Line-from-lead derivation — flag + enterprise gated, same region as the
+	// counters-avail fallback (before oee-p; shift back-solves oee_p inline).
+	// Inert (not appended) when not engaged. See line_lead.go.
+	if ca.engagedLineLead() {
+		steps = append(steps, rollupStep{"line-lead",
+			fmtRD(withPlannedPred(shiftLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
+	}
+	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
+	// count-active time for opted-in equipment where the state stream had gaps.
+	// After every state/counter running writer, before the oee finalize so the
+	// reconcile/oee-p reads the healed running. Inert when not engaged.
+	if ca.engagedFloor() {
+		steps = append(steps, rollupStep{"avail-floor",
+			fmtRD(shiftAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+	}
+	// Availability exclusions (out of service + PLC no data) — after EVERY
+	// available_time writer, before the finalize. Inert when off.
+	if ca.engagedExclusions() {
+		steps = append(steps, rollupStep{"exclusions", fmtRD(shiftExclusionsSQL, d, d.ConfigSchema)})
+	}
+	// ADR-0048 §Fault-3: canonical A·P·Q reconcile (whole batch) REPLACES the
+	// legacy event-row-scoped oee-p residual when engaged; otherwise the legacy
+	// residual runs (byte-identical). Either way targets + stamp follow.
+	if ca.engagedCanonical() {
+		steps = append(steps, rollupStep{"oee-reconcile", fmtRD(shiftOeeReconcileSQL, d)})
+	} else {
+		steps = append(steps, rollupStep{"oee-p", fmtRD(shiftOeePSQL, d)})
+	}
+	steps = append(steps,
+		rollupStep{"targets", fmtRD(withOosTarget(shiftTargetsSQL, ca.engagedExclusions(), shiftOosTargetTerm), d, d.ConfigSchema)},
+		rollupStep{"stamp", fmtRD(shiftStampSQL, d)},
+	)
+	return steps
 }
 
 // parityShiftLimit keeps the parity emission effectively unbounded: the port
@@ -416,15 +449,15 @@ const parityShiftLimit = 1 << 31 // ~2.1e9 rows — never binds in parity
 // Parity accessors (single-source emission).
 func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
 	return []struct{ Name, SQL string }{
-		{"eligible", fmt.Sprintf(shiftEligibleSQL, evSchema, refSchema, parityShiftLimit)},
-		{"values", fmt.Sprintf(shiftValuesSQL, evSchema, refSchema)},
-		{"cascade-area", fmt.Sprintf(shiftCascadeAreaSQL, evSchema, refSchema)},
+		{"eligible", fmtRP(shiftEligibleSQL, evSchema, parityShiftLimit)},
+		{"values", fmtRP(shiftValuesSQL, evSchema)},
+		{"cascade-area", fmtRP(shiftCascadeAreaSQL, evSchema)},
 		// Parity accessor frozen to the prod-verbatim (off) classification —
 		// diffed against prod (F2), which has no changeover reclassification.
-		{"events-bank", fmt.Sprintf(shiftEventsSQL, evSchema, plannedDowntimeExpr(false))},
-		{"events-update", fmt.Sprintf(shiftEventsUpdateSQL, evSchema)},
-		{"oee-p", fmt.Sprintf(shiftOeePSQL, evSchema)},
-		{"targets", fmt.Sprintf(shiftTargetsSQL, evSchema, refSchema)},
-		{"reflag", fmt.Sprintf(shiftReflagSQL, evSchema, refSchema)},
+		{"events-bank", fmtRP(shiftEventsSQL, evSchema, plannedDowntimeExpr(false))},
+		{"events-update", fmtRP(shiftEventsUpdateSQL, evSchema)},
+		{"oee-p", fmtRP(shiftOeePSQL, evSchema)},
+		{"targets", fmtRP(withOosTarget(shiftTargetsSQL, false, ""), evSchema, evSchema)},
+		{"reflag", fmtRP(shiftReflagSQL, evSchema)},
 	}
 }

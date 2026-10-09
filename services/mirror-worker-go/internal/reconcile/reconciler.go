@@ -637,7 +637,7 @@ func shadowFanoutPlan(f1 db.F1POShape, prodInfo db.ProdPOFinishInfo, prodPresent
 }
 
 // runShadowFanout reproduces the F1 finisher's close on the shadow flows
-// (F2 shadow_go_port, F3 packiot_shadow) by NATURAL KEY (id_enterprise,
+// (F2 shadow_go_port, F3 packiot_analytics) by NATURAL KEY (id_enterprise,
 // id_order), reusing the ADR-0012 fan-out pools. It is unconditional (runs
 // even with zero F1 candidates) so pre-existing #49 zombies — F1 closed, F2/F3
 // stuck status=2 — get corrected. Steps: collect each flow's still-open

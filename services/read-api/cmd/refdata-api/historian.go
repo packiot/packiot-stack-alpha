@@ -7,7 +7,7 @@ package main
 // scrolls back past the hot boundary needs the COLD S3 archive too. The
 // historian-gateway (compose.historian-gateway.yml, container `hist-gateway`)
 // already unions HOT (postgres_fdw → the live timescaledb) with COLD (S3 Parquet
-// via pg_duckdb) behind ev_all / ev_between, with per-partition pruning. This
+// via pg_duckdb) behind silver.equipment_values / ev_between, with per-partition pruning. This
 // endpoint is the read-api door to it.
 //
 // DESIGN — deliberately ISOLATED + ADDITIVE (nothing here touches the existing
@@ -21,7 +21,7 @@ package main
 //   - TENANT ISOLATION: the gateway view has NO RLS engine — the caller MUST carry
 //     id_enterprise. We inject it from the SERVER-RESOLVED customer_id (auth
 //     middleware), never the request body — identical rule to /v1/query.
-//   - Queries the ev_all VIEW (NOT the ev_between function — pg_duckdb can't run
+//   - Queries the silver.equipment_values VIEW (NOT the ev_between function — pg_duckdb can't run
 //     read_parquet wrapped in a SQL function) and carries ev_between's year/month
 //     prune predicate inline, so the cold side reads the relevant partition files
 //     only (T3: 1/181), not the whole archive.
@@ -64,8 +64,10 @@ func newHistPool(ctx context.Context, logger *slog.Logger) *pgxpool.Pool {
 	}
 	host := getenv("HIST_GW_HOST", "hist-gateway")
 	port := getenv("HIST_GW_PORT", "5432")
-	user := getenv("HIST_GW_USER", "postgres")
-	db := getenv("HIST_GW_DB", "postgres")
+	// Defaults = the T3 least-privilege service identity + the gateway's real DB
+	// (was postgres/postgres: the superuser and a DB renamed in #274).
+	user := getenv("HIST_GW_USER", "historian_svc")
+	db := getenv("HIST_GW_DB", "packiot_historian")
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s", host, port, user, pass, db)
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -105,9 +107,9 @@ type histSeriesReq struct {
 }
 
 // histProductionSeriesSQL — daily gross/net per equipment over [from,to) for one
-// tenant, hot+cold via the ev_all VIEW.
+// tenant, hot+cold via the silver.equipment_values VIEW.
 //
-// WHY ev_all (view) and NOT ev_between (function): pg_duckdb runs the cold-side
+// WHY silver.equipment_values (view) and NOT ev_between (function): pg_duckdb runs the cold-side
 // read_parquet in DuckDB and the hot-side FDW in Postgres as ONE mixed plan when
 // the parquet scan is inline in a query/view — but wrapping it in a SQL function
 // breaks that (force-off → "read_parquet only works with DuckDB execution";
@@ -127,7 +129,7 @@ const histProductionSeriesSQL = `
          id_equipment,
          sum(gross_production_incr)               AS gross_production,
          sum(net_production_incr)                 AS net_production
-    FROM ev_all
+    FROM silver.equipment_values
    WHERE id_enterprise = $1
      AND ts_value >= $2 AND ts_value < $3
      %s
@@ -136,72 +138,143 @@ const histProductionSeriesSQL = `
    GROUP BY 1, 2
    ORDER BY 1, 2
    LIMIT %d`
+// NOTE: the union views live in the gateway's `cold` schema (t287 — symmetric with
+// the hot `live` FDW schema); we qualify them explicitly (silver.equipment_values /
+// silver.equipment_events) so resolution never relies on the gateway's search_path.
 
-// registerHistorianAPI mounts POST /v1/historian/production-series. Always
-// mounted (so the route is discoverable); returns 503 when histPool is nil.
+// histDowntimeSeriesSQL — daily downtime per equipment over [from,to) for one
+// tenant, split by planned_downtime, hot+cold via silver.equipment_events (task #227 §8-EE).
+//
+// This is the downtime/OEE-reconstruction door: sum(duration) grouped by
+// (day, equipment, planned_downtime) is the Availability building block
+// (unplanned downtime seconds vs planned). Bounds the row count the same way the
+// production series does (days × equipment × 2). Reads silver.equipment_events (the EE
+// hot+cold union) — NOT a function — and carries the year/month prune predicate
+// inline, identical constraints to histProductionSeriesSQL. sum() skips NULL
+// durations (honest "no data", never a fake 0). Placeholders mirror the
+// production SQL: $1 tenant fence, $2/$3 window, $4-$7 year/month prune; first
+// %s = optional inline equipment filter, second %d = row cap.
+const histDowntimeSeriesSQL = `
+  SELECT date_trunc('day', ts_event)::date       AS day,
+         id_equipment,
+         planned_downtime,
+         count(*)                                 AS event_count,
+         sum(duration)                            AS downtime_seconds
+    FROM silver.equipment_events
+   WHERE id_enterprise = $1
+     AND ts_event >= $2 AND ts_event < $3
+     %s
+     AND ( year >  $4 OR (year = $4 AND month >= $5) )
+     AND ( year <  $6 OR (year = $6 AND month <= $7) )
+   GROUP BY 1, 2, 3
+   ORDER BY 1, 2, 3
+   LIMIT %d`
+
+// registerHistorianAPI mounts the historian read endpoints. Always mounted (so
+// the routes are discoverable); each returns 503 when histPool is nil.
+//   POST /v1/historian/production-series — daily gross/net per equipment (EV, silver.equipment_values)
+//   POST /v1/historian/downtime-series   — daily downtime per equipment (EE, silver.equipment_events)
 func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
 	mux.HandleFunc("/v1/historian/production-series", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
-			return
-		}
-		cid, ok := customerIDFromContext(r.Context())
-		if !ok {
-			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
-			return
-		}
-		// Validate the request BEFORE checking backend availability, so a malformed
-		// window is always a clean 400 regardless of whether the gateway is up.
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
-			return
-		}
-		var q histSeriesReq
-		if err := json.Unmarshal(body, &q); err != nil {
-			http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
-			return
-		}
-		if q.From.IsZero() || q.To.IsZero() || !q.To.After(q.From) {
-			http.Error(w, `{"error":"invalid window: require from < to (RFC3339)"}`, http.StatusBadRequest)
-			return
-		}
-		if q.To.Sub(q.From) > histMaxWindow {
-			http.Error(w, fmt.Sprintf(`{"error":"window exceeds %s historian budget"}`, histMaxWindow), http.StatusBadRequest)
-			return
-		}
-		if histPool == nil {
-			http.Error(w, `{"error":"historian gateway not configured"}`, http.StatusServiceUnavailable)
-			return
-		}
-		// Optional equipment filter → an INLINE integer IN-list (not a bind param;
-		// pg_duckdb can't cast a PG int[] literal). NEVER the tenant fence — that is
-		// always the server-resolved cid ($1). ids come from JSON as []int, so each
-		// is a validated integer → injection-safe to inline.
-		equipFilter := ""
-		if len(q.Equipment) > 0 {
-			parts := make([]string, len(q.Equipment))
-			for i, e := range q.Equipment {
-				parts[i] = strconv.Itoa(e)
-			}
-			equipFilter = "AND id_equipment IN (" + strings.Join(parts, ",") + ")"
-		}
-		// Year/month prune bounds (UTC — the partition columns are UTC-derived).
-		// Computed in Go so they bind as plain int constants the planner prunes on.
-		fu, tu := q.From.UTC(), q.To.UTC()
-		fy, fm := fu.Year(), int(fu.Month())
-		ty, tm := tu.Year(), int(tu.Month())
-		// A cold duckdb scan can be slow even pruned; give it room but bound it.
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-		defer cancel()
-		sql := fmt.Sprintf(histProductionSeriesSQL, equipFilter, histRowLimit)
-		payload, err := runQueryJSON(ctx, histPool, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
-		if err != nil {
-			logger.Warn("historian query failed", slog.Int("cid", cid), slog.String("err", err.Error()))
-			http.Error(w, `{"error":"historian query failed"}`, http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(payload)
+		serveHistWindowSeries(w, r, histPool, logger, histProductionSeriesSQL, histKindProduction)
 	})
+	mux.HandleFunc("/v1/historian/downtime-series", func(w http.ResponseWriter, r *http.Request) {
+		serveHistWindowSeries(w, r, histPool, logger, histDowntimeSeriesSQL, histKindDowntime)
+	})
+}
+
+// serveHistWindowSeries is the shared handler for the historian window endpoints.
+// Both production-series (EV) and downtime-series (EE) have the identical shape —
+// tenant-fenced, [from,to)-bounded, optional equipment filter, year/month prune —
+// differing only in the aggregation SQL. sqlTemplate MUST take (%s equipFilter,
+// %d rowLimit) and bind $1=cid $2=from $3=to $4=fromYear $5=fromMonth $6=toYear
+// $7=toMonth (see the two *SQL consts).
+type histKind int
+
+const (
+	histKindProduction histKind = iota
+	histKindDowntime
+)
+
+func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgxpool.Pool, logger *slog.Logger, sqlTemplate string, kind histKind) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	cid, ok := customerIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
+		return
+	}
+	// Validate the request BEFORE checking backend availability, so a malformed
+	// window is always a clean 400 regardless of whether the gateway is up.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+		return
+	}
+	var q histSeriesReq
+	if err := json.Unmarshal(body, &q); err != nil {
+		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+		return
+	}
+	if q.From.IsZero() || q.To.IsZero() || !q.To.After(q.From) {
+		http.Error(w, `{"error":"invalid window: require from < to (RFC3339)"}`, http.StatusBadRequest)
+		return
+	}
+	if q.To.Sub(q.From) > histMaxWindow {
+		http.Error(w, fmt.Sprintf(`{"error":"window exceeds %s historian budget"}`, histMaxWindow), http.StatusBadRequest)
+		return
+	}
+	if histPool == nil {
+		http.Error(w, `{"error":"historian gateway not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	// Optional equipment filter → an INLINE integer IN-list (not a bind param;
+	// pg_duckdb can't cast a PG int[] literal). NEVER the tenant fence — that is
+	// always the server-resolved cid ($1). ids come from JSON as []int, so each
+	// is a validated integer → injection-safe to inline.
+	equipFilter := ""
+	if len(q.Equipment) > 0 {
+		parts := make([]string, len(q.Equipment))
+		for i, e := range q.Equipment {
+			parts[i] = strconv.Itoa(e)
+		}
+		equipFilter = "AND id_equipment IN (" + strings.Join(parts, ",") + ")"
+	}
+	// Year/month prune bounds (UTC — the partition columns are UTC-derived).
+	// Computed in Go so they bind as plain int constants the planner prunes on.
+	fu, tu := q.From.UTC(), q.To.UTC()
+	fy, fm := fu.Year(), int(fu.Month())
+	ty, tm := tu.Year(), int(tu.Month())
+	// A cold duckdb scan can be slow even pruned; give it room but bound it.
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	var payload []byte
+	switch {
+	case kind == histKindDowntime:
+		// Hot/cold split (historian_split.go): the mixed union plan loses FDW pushdown.
+		var rows []map[string]any
+		if rows, err = serveEESplit(ctx, histPool, cid, q, equipFilter); err == nil {
+			payload, err = json.Marshal(rows)
+		}
+	case kind == histKindProduction:
+		// Always the split: cold daily rollup + hot hourly rollup (whole UTC days). The
+		// per-second union view now carries the windowed spike guard (~20 s per month
+		// scanned), so even a 7-day window crossing a month would press the 60 s budget.
+		var rows []map[string]any
+		if rows, err = serveEVDaily(ctx, histPool, cid, q, equipFilter); err == nil {
+			payload, err = json.Marshal(rows)
+		}
+	default:
+		sql := fmt.Sprintf(sqlTemplate, equipFilter, histRowLimit)
+		payload, err = runQueryJSON(ctx, histPool, cid, sql, []any{cid, q.From, q.To, fy, fm, ty, tm})
+	}
+	if err != nil {
+		logger.Warn("historian query failed", slog.Int("cid", cid), slog.String("err", err.Error()))
+		http.Error(w, `{"error":"historian query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(payload)
 }

@@ -131,7 +131,7 @@ func RunUnmetered(ctx context.Context, d flows.Dest, machineLevelEnterprises []i
 		if err != nil {
 			return 0, fmt.Errorf("savepoint %s: %w", tbl, err)
 		}
-		tag, err := sp.Exec(ctx, fmt.Sprintf(unmeteredNullSQL, d.EvSchema, d.RefSchema, tbl), machineLevelEnterprises)
+		tag, err := sp.Exec(ctx, fmt.Sprintf(unmeteredNullSQL, d.GoldSchema, d.RefSchema, tbl), machineLevelEnterprises)
 		if err != nil {
 			_ = sp.Rollback(ctx)
 			if isUndefinedTable(err) {

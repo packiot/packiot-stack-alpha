@@ -1,0 +1,153 @@
+# sbxcpack.descriptor.yaml — SANDBOX-CPACK edge descriptor (SBXCPACK, ent 2000003).
+#
+# WHAT THIS IS
+# ------------
+# The onboard-gen SSoT for a SEVERED replica of the real CPACK edge box. It is a
+# transform of docs/clients/cpack.descriptor.yaml (the real CPACK worked example)
+# with the SparkPlug identity + data path deliberately CUT so the replica can be
+# run on the staging sandbox VM (mi-0114b66366e2d6613) and PROVABLY cannot write
+# to real CPACK. Generate the bundle the SAME way as any client:
+#
+#   go run ./services/edge-transformer/cmd/onboard-gen \
+#       --descriptor docs/clients/sandbox-edge/sbxcpack.descriptor.yaml --out <dir>/
+#
+# SEVERANCE BAKED INTO THIS DESCRIPTOR (see scripts/provision-cpack-replica-sandbox.sh
+# and docs/clients/sandbox-edge/compose.replica.yml for the network + cert cuts):
+#   • tenant SBXCPACK (group_id) + prefix SBXCPACK/SC — a DISTINCT topic namespace
+#     that matches NO row in the real CPACK packml_register, so even a leaked
+#     payload resolves to nothing on the cloud side.
+#   • enterprise_id 2000003 — the sandbox tenant, never ent 1 (prod) or 3 (staging CPACK).
+#   • uplink_broker = internal loopback (Mode-A), tee ingest_url = a .invalid blackhole.
+#   • the cert CN is sbxcpack (minted by the provision script from a THROWAWAY
+#     sandbox CA — never the real Packiot Edge Uplink CA), so the real broker ACL
+#     would reject it even if the network sever failed.
+#
+tenant: SBXCPACK
+enterprise_id: 2000003                       # staging CPACK (prod=1); register cross-tenant guard
+
+canonical:
+  prefix: SBXCPACK/SC                     # tenant_prefix — the canonical (post-fixup) head
+
+# ── raw → canonical mapping (the per-client quirks, normalized STACK-SIDE in the
+#    agent profile per ADR-0045 §2.3 Option B) ─────────────────────────────────
+mapping:
+  count_index_default_mode: equipment_id   # fallback for any un-captured member
+  prefix_fixups:
+    - {from: "C-PACK/", to: "SBXCPACK/"}                        # real PLC head → canonical
+  metric_aliases:
+    - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"} # real prod leaf (#590) → Calc input
+  parameter_aliases:
+    - {from: "Status/Parameter", to: "Status/Parameter30700", applies_to: line}
+  # parameter_decomposition: (ADR-0044) — the id-driven path for tenants whose
+  # bare Status/Parameter carries MANY params over time. CPACK's hand profile
+  # uses the single parameter_aliases rename above; decomposition is the
+  # forward direction (#602). Left empty here to match the equivalence target.
+
+# ── line-vs-member canonical metric templates (superset allowlist) ────────────
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased (metric_aliases)
+    - {leaf: "/Status/StateCurrent", type: long}
+    - {leaf: "/Status/Parameter30700", type: string}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased (metric_aliases)
+    - {leaf: "/Status/StateCurrent", type: long}
+
+# ── equipment inventory (62: 20 lines tp=3 + 42 members tp=1) ─────────────────
+# id_equipment = the staging register surrogate id (drives packml_register SQL +
+# id resolution). count_index.value = the OBSERVED PLC channel index (drives the
+# member's count leaf); it is NOT the id (the whole #601 finding). confidence
+# gates cutover.
+equipment:
+  - {topic: SBXCPACK/SC/CELULA1/CER400, device_key: dk_0ac06557214a94000d2b945cec93556c, id_equipment: 83, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA1/CER400/CER400, device_key: dk_0942966438a4fa96e9bbc198b2b21b85, id_equipment: 88, tp_equipment: 1, id_unit: 88, count_index: {value: 107, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/CELULA1/DUBUTI1, device_key: dk_4432d8a2b2f06437d51a81f73aff2acf, id_equipment: 84, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA1/DUBUTI1/DUBUTI1, device_key: dk_629a64df15d0f89183db7c182d6a8be3, id_equipment: 89, tp_equipment: 1, id_unit: 89, count_index: {value: 334, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA1/DUBUTI2, device_key: dk_9cb042d858127f11f5720615bbd067e7, id_equipment: 81, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA1/DUBUTI2/DUBUTI2, device_key: dk_f304310a00cf415c4f350295d8b3ea50, id_equipment: 86, tp_equipment: 1, id_unit: 86, count_index: {value: 97, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA1/HOTMADAG, device_key: dk_dd3a0a1e86edda75485c5864baba4bee, id_equipment: 82, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA1/HOTMADAG/HOTMADAG, device_key: dk_f6a4ef55a909a092a790f07c84e0c93e, id_equipment: 87, tp_equipment: 1, id_unit: 87, count_index: {value: 99, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA1/ISIMAT, device_key: dk_d80789adb8683c0e9402a57cbb851417, id_equipment: 85, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA1/ISIMAT/ISIMAT, device_key: dk_385448877cbf1efc92f7c4caed8c9f5f, id_equipment: 90, tp_equipment: 1, id_unit: 90, count_index: {value: 335, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA2/BREYER1, device_key: dk_33a13a66950928079c5249d47044de78, id_equipment: 95, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA2/BREYER1/BREYER1, device_key: dk_6af01158d317f612d2310db098ad91dc, id_equipment: 101, tp_equipment: 1, id_unit: 101, count_index: {value: 26, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA2/BREYER2, device_key: dk_d3c6140007f22f92418dccf325303720, id_equipment: 91, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA2/BREYER2/BREYER2, device_key: dk_6169aff22e0d344aa0c8e2533edc4bbb, id_equipment: 97, tp_equipment: 1, id_unit: 97, count_index: {value: 101, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA2/POLYTYPE1, device_key: dk_d1e032eb2a5368474e95b11339a0d496, id_equipment: 93, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1, device_key: dk_54406af6ba08364e1c557f097ee2e3e0, id_equipment: 99, tp_equipment: 1, id_unit: 99, count_index: {value: 110, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/CELULA2/POLYTYPE2, device_key: dk_2d5a97382341f2b9b4e5b2ce53cecf5d, id_equipment: 96, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2, device_key: dk_bdb024c1dde590d7aa4dbe1c7ddc54af, id_equipment: 102, tp_equipment: 1, id_unit: 102, count_index: {value: 29, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA2/PTH40-03, device_key: dk_39036d9658ef305bd186f43aa7940320, id_equipment: 94, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA2/PTH40-03/PTH40-03, device_key: dk_00cdc3de2ecd668fa6097528dd84bd8b, id_equipment: 100, tp_equipment: 1, id_unit: 100, count_index: {value: 339, confidence: inferred}}
+  - {topic: SBXCPACK/SC/CELULA2/PTH80S, device_key: dk_267f7abb68acfac5501b98d6ccb0b9cd, id_equipment: 92, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA2/PTH80S/PTH80S, device_key: dk_d8a8e937374ba3a0ed849d3a0691b1bc, id_equipment: 98, tp_equipment: 1, id_unit: 98, count_index: {value: 105, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/CELULA9/FLEXO, device_key: dk_57e48a9d2b225f7d860e2da58f1440c9, id_equipment: 103, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/CELULA9/FLEXO/FLEXO, device_key: dk_85722c83d2291ba56df50c401aef8b21, id_equipment: 104, tp_equipment: 1, id_unit: 104, count_index: {value: 557, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L10, device_key: dk_86459a672230e6051b981760cce5a7c7, id_equipment: 52, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/LINHAS/L10/DXL, device_key: dk_23e5c85edc2b8b24f442ce3d09f34796, id_equipment: 77, tp_equipment: 1, id_unit: 77, count_index: {value: 564, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L10/PTH, device_key: dk_d94e0b9fc8e22ffbdd11abacf5dfc1ac, id_equipment: 78, tp_equipment: 1, id_unit: 78, count_index: {value: 565, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L10/TCX, device_key: dk_5abbf2aa8562afde85f03ed7bf20aca9, id_equipment: 79, tp_equipment: 1, id_unit: 79, count_index: {value: 566, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L10/TEXA, device_key: dk_a537d3a56891b45094e300e5d168338f, id_equipment: 80, tp_equipment: 1, id_unit: 80, count_index: {value: 567, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L3, device_key: dk_25fb630d1db2db541dd69ceda5227fb9, id_equipment: 48, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/LINHAS/L3/BREYER, device_key: dk_a6061376d16776ddb2ffa8c5d2b47845, id_equipment: 58, tp_equipment: 1, id_unit: 58, count_index: {value: 76, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L3/POLYTYPE, device_key: dk_b99eac367377c574a8345a6b98b2afbc, id_equipment: 62, tp_equipment: 1, id_unit: 62, count_index: {value: 82, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L3/PTH, device_key: dk_a17e48203d257ca040fdcf7b8bbe7175, id_equipment: 61, tp_equipment: 1, id_unit: 61, count_index: {value: 81, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L3/RMH, device_key: dk_8084a13246c96781370d810392594611, id_equipment: 59, tp_equipment: 1, id_unit: 59, count_index: {value: 79, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L3/TEXA, device_key: dk_52066eb0eb320eca05634186e6a72f6e, id_equipment: 60, tp_equipment: 1, id_unit: 60, count_index: {value: 80, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L4, device_key: dk_bf54ed2192af3412e52228afacbe7101, id_equipment: 49, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/LINHAS/L4/BREYER, device_key: dk_f0206b4b9a762d2e518727dda5637eaa, id_equipment: 66, tp_equipment: 1, id_unit: 66, count_index: {value: 6, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L4/POLYTYPE, device_key: dk_62dcc3973ec699629f6fd74c79d17065, id_equipment: 67, tp_equipment: 1, id_unit: 67, count_index: {value: 7, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L4/PTH, device_key: dk_5ea64c8e1176a6007e7f95d0a1315b85, id_equipment: 64, tp_equipment: 1, id_unit: 64, count_index: {value: 8, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L4/RMH, device_key: dk_49334cd83a9ec7422be0c703f8cbf4b1, id_equipment: 65, tp_equipment: 1, id_unit: 65, count_index: {value: 9, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L4/TEXA, device_key: dk_58195fc2ee890edb456c92b63a86cd1d, id_equipment: 63, tp_equipment: 1, id_unit: 63, count_index: {value: 10, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L5, device_key: dk_2edac842be1abeadfc9d053cc2ef921f, id_equipment: 47, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/LINHAS/L5/BREYER, device_key: dk_8e8e72928c44b072e621f5c448547c70, id_equipment: 53, tp_equipment: 1, id_unit: 53, count_index: {value: 61, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L5/POLYTYPE, device_key: dk_b1201435a8dc06bcf58f663592f798c0, id_equipment: 54, tp_equipment: 1, id_unit: 54, count_index: {value: 62, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L5/PTH, device_key: dk_d7ce829f9dc68dd121ce51f3f613f2a3, id_equipment: 55, tp_equipment: 1, id_unit: 55, count_index: {value: 63, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L5/RMH, device_key: dk_bb35de92e0ddd4cb93a453db20d8c135, id_equipment: 56, tp_equipment: 1, id_unit: 56, count_index: {value: 64, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L5/TEXA, device_key: dk_ff33c782d1407f8485abcf308b0e8ff6, id_equipment: 57, tp_equipment: 1, id_unit: 57, count_index: {value: 65, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L6, device_key: dk_e14746e8a7ef5189be0a3a132c1b4bcf, id_equipment: 50, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/LINHAS/L6/BREYER, device_key: dk_11e6ed9129b5b5fc025460a7b50f96ae, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L6/POLYTYPE, device_key: dk_3689ddc6eccfee6977efb80de3b15994, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L6/PTH, device_key: dk_c3f15b392a35a6b4a5c4cb7f14fd7b8d, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L6/RMH, device_key: dk_f1f56043acf8b0beb1cfd9b0b47ce895, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L6/TEXA, device_key: dk_49e1de25becd25eefcf64675f6a35189, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+  - {topic: SBXCPACK/SC/LINHAS/L8, device_key: dk_ebc876e1671d0e11af1cbaaaf47afa00, id_equipment: 51, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/LINHAS/L8/DXL, device_key: dk_29747ca8d08e2502f9102ac33a6462b2, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L8/PTH, device_key: dk_d9e4ee472ae5ff9ff0d140cb9783fe57, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L8/TCX, device_key: dk_36fbc081fc59be952f99a2dbcc9a6c63, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
+  - {topic: SBXCPACK/SC/LINHAS/L8/TEXA, device_key: dk_46675c5b74e8ae717281bc4517ed3740, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}
+  - {topic: SBXCPACK/SC/SLEEVE/SLEEVE1, device_key: dk_eb39df81608556859ebacc541569c363, id_equipment: 105, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/SLEEVE/SLEEVE1/SLEEVE1, device_key: dk_b5c9f6d96a37de8d5bcb884a8669b58d, id_equipment: 107, tp_equipment: 1, id_unit: 107, count_index: {value: 763, confidence: inferred}}
+  - {topic: SBXCPACK/SC/SLEEVE/SLEEVE2, device_key: dk_0f1a7bbef59c9922a2e6cf56276603ef, id_equipment: 106, tp_equipment: 3}
+  - {topic: SBXCPACK/SC/SLEEVE/SLEEVE2/SLEEVE2, device_key: dk_19ae1b35364179b6bba76bc49e385591, id_equipment: 108, tp_equipment: 1, id_unit: 108, count_index: {value: 823, confidence: inferred}}
+
+# ── agent wiring (→ client.yaml, the agentcfg descriptor) ─────────────────────
+agent:
+  edge_node_id: sbxcpack-tee              # DISTINCT from plc-sim's edge node
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: edge/raw/sbxcpack/#
+  # SEVERANCE L2 (data OUT): uplink stays on the INTERNAL loopback broker
+  # (Mode-A), so the SparkPlug session terminates INSIDE the box and never
+  # crosses the WAN. Never set this to ssl://ingest.prod.* on the sandbox.
+  uplink_broker: tcp://mosquitto:1883
+  mtls:                                # Mode-B mTLS CN=<tenant>; secret refs, never values
+    cert_ref: ""
+    key_ref: ""
+    ca_ref: ""
+
+# ── Node-RED tee snippet parameters (→ sbxcpack-tee-node.json) ────────────────
+# SEVERANCE L2 (data OUT): the tee target is a BLACKHOLE, never the real ingest.
+# `.invalid` is reserved by RFC 6761 and can NEVER resolve, so even if this file
+# were used verbatim the tee could not POST anywhere real.
+tee:
+  ingest_url: "https://sbx-blackhole.invalid:8446/ingest/sparkplug"
+  ingest_key_env: SBXCPACK_INGEST_KEY   # tee reads the key from env, never hardcoded
+  gateway: sbxcpack-edge
+  tls_insecure: true                    # sandbox self-signed

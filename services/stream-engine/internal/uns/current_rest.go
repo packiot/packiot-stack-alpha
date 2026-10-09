@@ -36,7 +36,7 @@ const refreshDayEntitySQL = `
 	      FROM %[1]s.%[4]s
 	     WHERE ts_value >= date_trunc('day', now())::timestamptz AND ts_value <= now()
 	)
-	UPDATE %[1]s.%[5]s u SET
+	UPDATE %[6]s.%[5]s u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       begin_time = p.ts_value, end_time = p.ts_value + interval '1 day',
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
@@ -76,7 +76,7 @@ const refreshShiftAreaSQL = `
 	      JOIN ts ON v.id_area = ts.id_area
 	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
 	)
-	UPDATE %[1]s.area_live_shift u SET
+	UPDATE %[3]s.area_live_shift u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
 	       available_time = p.available_time, running_time = p.running_time,
@@ -100,9 +100,12 @@ const refreshShiftAreaSQL = `
 // Stamps last_updated = now() (the equipment-grain freshness signal —
 // see the hour/week/month note in uns.go); without it the current_job
 // tile reads frozen at Provision-seed time even as its numbers advance.
+// id_order here is the client-facing number (varchar, ADR-0062): it is written
+// from id_order_text — the integer id_order is an internal placeholder (negative)
+// for alphanumeric numbers and must never reach Mission Control.
 const refreshJobsSQL = `
 	WITH po AS (
-	    SELECT po.id_production_order, po.id_order, po.net_production, po.gross_production,
+	    SELECT po.id_production_order, po.id_order_text, po.net_production, po.gross_production,
 	           (po.gross_production - po.net_production) AS scrap_incr, po.speed,
 	           e.id_equipment, p.nm_product, pf.nm_product_family, c.nm_client,
 	           po.production_programmed, po.ts_start,
@@ -114,8 +117,8 @@ const refreshJobsSQL = `
 	      LEFT JOIN %[2]s.clients c ON c.id_client = po.id_client
 	     WHERE e.tp_equipment = 3
 	)
-	UPDATE %[1]s.equipment_live_job u SET
-	       id_production_order = p.id_production_order, id_order = p.id_order,
+	UPDATE %[3]s.equipment_live_job u SET
+	       id_production_order = p.id_production_order, id_order = p.id_order_text,
 	       nm_product = p.nm_product, nm_client = p.nm_client,
 	       nm_product_family = p.nm_product_family,
 	       gross_production = p.gross_production, net_production = p.net_production,
@@ -131,7 +134,7 @@ const refreshJobsElapsedSQL = `
 	WITH po AS (
 	    SELECT po.id_production_order, e.id_equipment
 	      FROM %[2]s.equipments e
-	      LEFT JOIN %[1]s.production_orders po ON e.id_equipment = po.id_equipment AND po.status = 2
+	      LEFT JOIN %[2]s.production_orders po ON e.id_equipment = po.id_equipment AND po.status = 2
 	     WHERE e.tp_equipment = 3
 	), po_time AS (
 	    SELECT po.id_production_order, po.id_equipment,
@@ -140,23 +143,24 @@ const refreshJobsElapsedSQL = `
 	      LEFT JOIN %[1]s.production_orders_runtime por ON po.id_production_order = por.id_production_order
 	     GROUP BY 1, 2
 	)
-	UPDATE %[1]s.equipment_live_job u SET elapsed_time = p.duration
+	UPDATE %[3]s.equipment_live_job u SET elapsed_time = p.duration
 	  FROM po_time p WHERE u.id_equipment = p.id_equipment`
 
-// RefreshCurrentRest runs the remaining live refreshers (day for area+site,
-// shift for area). #186: the area/site live-WEEK and live-MONTH refreshers were
-// retired — their source grains (area/site_oee_weekly/monthly) and sink tables
-// (area/site_live_week/month) had zero consumers. area/site_live_day stays LIVE
-// (front4 mission control reads it), so the DAY refresh is preserved.
+// RefreshCurrentRest runs the remaining live refreshers (day for AREA, shift for
+// area). #186: the area/site live-WEEK and live-MONTH refreshers were retired.
+// area_live_day stays LIVE (front4 mission control / serving.home reads it).
+// #263: the SITE live-day leg was removed — site_live_day had ZERO readers
+// (serving.home reads area_live_day, not site) and its source site_oee_daily is
+// likewise unread; both are dropped. Only the AREA day refresh remains.
 func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 	type ent struct{ key, rtDay, unsDay string }
 	ents := []ent{
 		{"id_area", "area_oee_daily", "area_live_day"},
-		{"id_site", "site_oee_daily", "site_live_day"},
 	}
 	for _, e := range ents {
 		steps := []struct{ name, sql string }{
-			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.EvSchema, d.RefSchema, e.key, e.rtDay, e.unsDay)},
+			// %[1]s reads the *_oee_daily fact (gold); %[6]s writes the *_live_day grain (silver/GrainSchema).
+			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.GoldSchema, d.RefSchema, e.key, e.rtDay, e.unsDay, d.GrainSchema)},
 		}
 		for _, s := range steps {
 			if _, err := d.Pool.Exec(ctx, s.sql); err != nil {
@@ -164,7 +168,8 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 			}
 		}
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.EvSchema, d.RefSchema)); err != nil {
+	// %[1]s reads area_oee_shift (gold); %[3]s writes area_live_shift (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.GoldSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns shift-area: %w", err)
 	}
 	return nil
@@ -172,10 +177,12 @@ func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
 
 // RefreshCurrentJobs is the PO dispatcher's third step.
 func RefreshCurrentJobs(ctx context.Context, d flows.Dest) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsSQL, d.EvSchema, d.RefSchema)); err != nil {
+	// %[1]s=%[2]s=core (production_orders + equipments/products/families/clients); %[3]s writes equipment_live_job (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsSQL, d.RefSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns jobs: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsElapsedSQL, d.EvSchema, d.RefSchema)); err != nil {
+	// %[1]s reads production_orders_runtime (gold); %[2]s reads production_orders (core); %[3]s writes equipment_live_job (silver).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshJobsElapsedSQL, d.GoldSchema, d.RefSchema, d.GrainSchema)); err != nil {
 		return fmt.Errorf("uns jobs elapsed: %w", err)
 	}
 	return nil

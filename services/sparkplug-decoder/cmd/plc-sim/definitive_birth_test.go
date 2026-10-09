@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/birthbind"
@@ -19,18 +20,19 @@ import (
 //	consumer:  Decode → birthbind.ApplyBirth (MapResolver) → Lookup(alias)
 //
 // and asserts a synthetic DDATA alias routes to the right (id_equipment, role).
-// The MapResolver stands in for packml_register (the identity SSoT), mapping the
-// dash-joined equipment topics the sim declares as device_key.
+// The MapResolver stands in for core.device_bindings (the identity SSoT, ADR-0061),
+// mapping the opaque dk_ keys the sim declares (line.deviceKey) to id_equipment.
 func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 	const edgeNode = "plc-sim"
 
-	// packml_register stand-in: device_key (dash-joined equipment topic) →
-	// id_equipment. Keys must match what the sim derives at birth (topicPrefix
-	// with "/"→"-"). Values are the staging surrogate ids from the topology map.
+	// core.device_bindings stand-in: the DECLARED dk_ key → id_equipment (ADR-0061).
+	// Values are the staging surrogate ids from the topology map.
+	lineIdx := indexByTopic(t) // topicPrefix → position in `lines`
+	keyOf := func(topic string) string { return lines[lineIdx[topic]].deviceKey() }
 	resolver := birthbind.MapResolver{
-		"CPACK-SC-LINHAS-L5":        47, // L5 line own-stream
-		"CPACK-SC-LINHAS-L5-BREYER": 53, // L5/BREYER member
-		"CPACK-SC-LINHAS-L3-PTH":    61, // L3/PTH member
+		keyOf("CPACK/SC/LINHAS/L5"):        47, // L5 line own-stream
+		keyOf("CPACK/SC/LINHAS/L5/BREYER"): 53, // L5/BREYER member
+		keyOf("CPACK/SC/LINHAS/L3/PTH"):    61, // L3/PTH member
 	}
 
 	// Produce a DEFINITIVE birth from the real sim builder (flag ON). Fresh zero
@@ -54,7 +56,8 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 	// CONSUMER side: bind the node-scoped birth (deviceID empty; device_key rides
 	// as a metric property, contract §3).
 	table := birthbind.NewTable(resolver)
-	bound, skipped := table.ApplyBirth(edgeNode, "", pl, nil)
+	res := table.ApplyBirth(groupID, edgeNode, "", true, pl, nil)
+	bound, skipped := res.Bound, res.Skipped()
 	// Three counters × three resolvable device_keys = 9 bindings. Counters whose
 	// device_key is NOT in the resolver (the other lines/members) fail closed →
 	// skipped, never guessed.
@@ -71,7 +74,6 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 		id    int
 		role  birthbind.Role
 	}
-	lineIdx := indexByTopic(t) // topicPrefix → position in `lines`
 	cases := []want{
 		{aliasFor(lineIdx["CPACK/SC/LINHAS/L5"], 1), 47, birthbind.RoleGross},
 		{aliasFor(lineIdx["CPACK/SC/LINHAS/L5"], 2), 47, birthbind.RoleNet},
@@ -81,7 +83,7 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 		{aliasFor(lineIdx["CPACK/SC/LINHAS/L3/PTH"], 3), 61, birthbind.RoleScrap},
 	}
 	for _, c := range cases {
-		b, ok := table.Lookup(edgeNode, c.alias)
+		b, ok := table.Lookup(groupID, edgeNode, c.alias)
 		if !ok {
 			t.Errorf("Lookup(alias=%d): no binding — a birth-bound flip would DROP this counter", c.alias)
 			continue
@@ -109,7 +111,7 @@ func TestDefinitiveBirth_SimProducerToConsumerRoundTrip(t *testing.T) {
 	if m.GetName() != "" || m.GetProperties() != nil {
 		t.Fatalf("DDATA metric must be alias+value only (name=%q, props=%v)", m.GetName(), m.GetProperties())
 	}
-	b, ok := table.Lookup(edgeNode, m.GetAlias())
+	b, ok := table.Lookup(groupID, edgeNode, m.GetAlias())
 	if !ok || b.IDEquipment != 53 || b.Role != birthbind.RoleGross {
 		t.Fatalf("DDATA alias=%d routed to (id=%d, role=%s, ok=%v), want (53, gross, true)",
 			m.GetAlias(), b.IDEquipment, b.Role, ok)
@@ -132,7 +134,7 @@ func TestDefinitiveBirth_FlagOffNoProperties(t *testing.T) {
 	body, _ := sparkplug.EncodeSim(ms, &seq, true)
 	pl, _ := sparkplug.Decode(body)
 	table := birthbind.NewTable(birthbind.MapResolver{"CPACK-SC-LINHAS-L5-BREYER": 53})
-	if bound, _ := table.ApplyBirth("plc-sim", "", pl, nil); bound != 0 {
+	if bound := table.ApplyBirth(groupID, "plc-sim", "", true, pl, nil).Bound; bound != 0 {
 		t.Fatalf("flag OFF: ApplyBirth bound = %d, want 0 (no role properties to bind)", bound)
 	}
 }
@@ -156,4 +158,24 @@ func indexByTopic(t *testing.T) map[string]int {
 		m[p] = i
 	}
 	return m
+}
+
+// TestDeviceKey_OpaqueAndUnique: every simulated equipment declares an opaque dk_<32 hex> key
+// (ADR-0061 — never the name-derived form), distinct per line, and stable across calls.
+func TestDeviceKey_OpaqueAndUnique(t *testing.T) {
+	opaque := regexp.MustCompile(`^dk_[0-9a-f]{32}$`)
+	seen := map[string]string{}
+	for _, l := range lines {
+		k := l.deviceKey()
+		if !opaque.MatchString(k) {
+			t.Errorf("%s: device_key %q is not opaque dk_<32 hex>", l.topicPrefix(), k)
+		}
+		if prev, dup := seen[k]; dup {
+			t.Errorf("device_key %s shared by %s and %s", k, prev, l.topicPrefix())
+		}
+		seen[k] = l.topicPrefix()
+		if l.deviceKey() != k {
+			t.Errorf("%s: device_key not deterministic", l.topicPrefix())
+		}
+	}
 }

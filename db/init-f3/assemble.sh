@@ -2,15 +2,15 @@
 # db/init-f3/assemble.sh — assemble the F3 (refactored single-flow) schema as the
 # `public` schema of a FRESH database. This is the greenfield-prod DB-init path
 # (roadmap W1.4): a brand-new prod DB must be BORN with the end-state schema that
-# staging's `packiot_shadow` carries, WITHOUT the F1/F2 legacy or the long
+# staging's `packiot_analytics` carries, WITHOUT the F1/F2 legacy or the long
 # ADR-0012/0032 migration.
 #
 # ⚠ READ db/init-f3/README.md FIRST. This loader concatenates the canonical F3
 # source fragments in dependency order, but those fragments have DIVERGED from
-# live `packiot_shadow` (00-schema is a non-runnable dump; 22-agg-views makes
+# live `packiot_analytics` (00-schema is a non-runnable dump; 22-agg-views makes
 # plain views not caggs; there is no single clean base-hierarchy DDL file). The
 # AUTHORITATIVE, byte-faithful method is a curated schema-only dump of live
-# `packiot_shadow` (README §4). This loader is the reviewable scaffold + the
+# `packiot_analytics` (README §4). This loader is the reviewable scaffold + the
 # thing the parity gate (scripts/prod-f3-schema-parity-check.sh) measures against.
 #
 # Usage:
@@ -80,7 +80,7 @@ psqlf "$ENR/09-column-parity.sql"
 # db/22-agg-views.sql builds agg_*/ca_* as plain real-time VIEWS because staging
 # F1 has no hypertables. F3 wants REAL caggs on a hypertable equipment_values.
 # Source of truth = the 0012 F3 cagg migrations. ⚠ these were authored against
-# an already-populated packiot_shadow (create_hypertable(..., migrate_data)); on
+# an already-populated packiot_analytics (create_hypertable(..., migrate_data)); on
 # an empty DB they still create the hypertable + cagg definitions.
 step "5a. raw write-target hypertables (0012-phase3-writer-tables)"
 psqlf "$MIG/0012-phase3-writer-tables.sql"

@@ -41,10 +41,39 @@ log "Internet reachable"
 # ── Toolchain: a bare AL2023 box lacks what ubuntu-latest ships pre-installed.
 #    Install the general CI toolchain so Node/Go/make/docker jobs run without a
 #    per-workflow setup step (the existing workflows assume these are present). ──
-dnf install -y docker git tar gzip jq libicu \
+dnf install -y docker git tar gzip zip unzip jq libicu \
   nodejs npm make gcc gcc-c++ golang findutils which >> "$LOG" 2>&1
 systemctl enable --now docker
-log "Toolchain: node=$(node -v 2>/dev/null) go=$(go version 2>/dev/null | awk '{print $3}') docker ok"
+
+# `ubuntu-latest` ships `yarn` preinstalled; a bare AL2023 box does not. back4-api's
+# deploy workflows run classic `yarn` (v1), so install it globally so `run: yarn`
+# resolves for every repo runner (edge-api uses docker/make and doesn't need it).
+npm install -g yarn >> "$LOG" 2>&1 || log "WARN: global yarn install failed"
+
+# AL2023's `docker` package ships the CLI + daemon but NOT the Compose v2 plugin,
+# so `docker compose` (used by edge-api's `make test-cov`/`test-e2e`/`lint`) is
+# missing → `docker compose run` exits 125. Install the plugin binary into the
+# CLI-plugins dir so `docker compose ...` works for root and the runner user.
+CLI_PLUGINS=/usr/libexec/docker/cli-plugins
+mkdir -p "$CLI_PLUGINS"
+case "$(uname -m)" in
+  aarch64) COMPOSE_ARCH=aarch64 ;;
+  x86_64)  COMPOSE_ARCH=x86_64 ;;
+  *)       COMPOSE_ARCH="$(uname -m)" ;;
+esac
+COMPOSE_VER=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | jq -r .tag_name 2>/dev/null)
+[ -n "$COMPOSE_VER" ] && [ "$COMPOSE_VER" != "null" ] || COMPOSE_VER=v2.32.4
+curl -fsSL "https://github.com/docker/compose/releases/download/$COMPOSE_VER/docker-compose-linux-$COMPOSE_ARCH" \
+  -o "$CLI_PLUGINS/docker-compose" && chmod +x "$CLI_PLUGINS/docker-compose"
+
+# AL2023's bundled buildx is old (0.12.x); current Compose's `compose build`
+# requires buildx >= 0.17.0. Pull a current buildx into the same plugins dir.
+case "$COMPOSE_ARCH" in aarch64) BUILDX_ARCH=arm64 ;; x86_64) BUILDX_ARCH=amd64 ;; *) BUILDX_ARCH="$COMPOSE_ARCH" ;; esac
+BUILDX_VER=$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest | jq -r .tag_name 2>/dev/null)
+[ -n "$BUILDX_VER" ] && [ "$BUILDX_VER" != "null" ] || BUILDX_VER=v0.19.3
+curl -fsSL "https://github.com/docker/buildx/releases/download/$BUILDX_VER/buildx-$BUILDX_VER.linux-$BUILDX_ARCH" \
+  -o "$CLI_PLUGINS/docker-buildx" && chmod +x "$CLI_PLUGINS/docker-buildx"
+log "Toolchain: node=$(node -v 2>/dev/null) go=$(go version 2>/dev/null | awk '{print $3}') docker=ok compose=$(docker compose version --short 2>/dev/null) buildx=$(docker buildx version 2>/dev/null | awk '{print $2}')"
 
 # ── Dedicated non-root runner user ───────────────────────────────────────────
 id runner >/dev/null 2>&1 || useradd -m -s /bin/bash runner

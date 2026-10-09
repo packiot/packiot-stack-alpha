@@ -26,10 +26,10 @@
 -- reads lead_machine (see line_lead.go). Only the GROSS source moves.
 --
 -- Reference-plane table: equipments lives in `public` on BOTH the main DB and
--- packiot_shadow (RefSchema=public in flows.Standard), and refsync mirrors it
+-- packiot_analytics (RefSchema=public in flows.Standard), and refsync mirrors it
 -- main->shadow via SELECT * so the new column propagates automatically once it
 -- exists on both. Apply this ALTER to public.equipments on every DB that runs the
--- rollup (main + packiot_shadow). Idempotent — safe to re-run.
+-- rollup (main + packiot_analytics). Idempotent — safe to re-run.
 --
 -- NOTE: db/init/ runs ONCE on a fresh local-dev Postgres boot (see README). For an
 -- already-provisioned staging/prod/shadow DB this file does NOT auto-run; apply the

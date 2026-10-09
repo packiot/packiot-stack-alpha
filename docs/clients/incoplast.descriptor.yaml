@@ -63,10 +63,10 @@ metric_templates:
 # PLACEHOLDER (= id_equipment) marked inferred — capture confirms the real PLC
 # channel index before cutover.
 equipment:
-  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15, id_equipment: 990015, tp_equipment: 1, id_unit: 990015, count_index: {value: 990015, confidence: inferred}}
-  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_11, id_equipment: 990016, tp_equipment: 1, id_unit: 990016, count_index: {value: 990016, confidence: inferred}}
-  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/PRIMAFLEX_9, id_equipment: 990017, tp_equipment: 1, id_unit: 990017, count_index: {value: 990017, confidence: inferred}}
-  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/MIRAFLEX_28, id_equipment: 990018, tp_equipment: 1, id_unit: 990018, count_index: {value: 990018, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15, device_key: dk_b60ab1ceda0542eb82444537cf7b316b, id_equipment: 990015, tp_equipment: 1, id_unit: 990015, count_index: {value: 990015, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_11, device_key: dk_d77e95a6136843ae9451a8278c4adea7, id_equipment: 990016, tp_equipment: 1, id_unit: 990016, count_index: {value: 990016, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/PRIMAFLEX_9, device_key: dk_95a90602722a4ff59f275b421a6fb52c, id_equipment: 990017, tp_equipment: 1, id_unit: 990017, count_index: {value: 990017, confidence: inferred}}
+  - {topic: INCOPLAST/SAO_LUDGERO/IMPRESSAO/MIRAFLEX_28, device_key: dk_a8231eca1a3f499d835514dae3afc355, id_equipment: 990018, tp_equipment: 1, id_unit: 990018, count_index: {value: 990018, confidence: inferred}}
 
 # ── sparkplug-agent wiring (→ incoplast-agent.yaml) ───────────────────────────
 agent:

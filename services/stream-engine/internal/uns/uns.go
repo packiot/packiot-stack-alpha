@@ -31,11 +31,14 @@ var provisionMatrix = []struct {
 	unsTable, entityTable, idCol string
 }{
 	{"equipment_live_day", "equipments", "id_equipment"},
-	{"equipment_live_hour", "equipments", "id_equipment"},
 	{"equipment_live_job", "equipments", "id_equipment"},
 	{"equipment_live_month", "equipments", "id_equipment"},
 	{"equipment_live_shift", "equipments", "id_equipment"},
-	{"equipment_live_week", "equipments", "id_equipment"},
+	// #263 (necessity audit): equipment_live_hour + equipment_live_week removed —
+	// zero readers (not in read-api liveUNS registry, no serving fn, no front4/operator
+	// consumer; the last_24_hours trail was computed but served to nobody). Same
+	// class as the #186 area/site_live_hour sweep. Tables dropped in a follow-up
+	// migration after this writer-stop soaks.
 	{"area_live_day", "areas", "id_area"},
 	// #186: area_live_hour/month/week removed (retired dead grains). Only the
 	// live-DAY and live-SHIFT area grains survive (mission control reads them).
@@ -61,11 +64,12 @@ const provisionMetricsSQL = `
 func Provision(ctx context.Context, d flows.Dest) error {
 	for _, m := range provisionMatrix {
 		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionSQL,
-			d.EvSchema, d.RefSchema, m.unsTable, m.idCol, m.entityTable)); err != nil {
+			d.GrainSchema, d.RefSchema, m.unsTable, m.idCol, m.entityTable)); err != nil {
 			return fmt.Errorf("provision %s: %w", m.unsTable, err)
 		}
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionMetricsSQL, d.EvSchema, d.RefSchema)); err != nil {
+	// %[1]s writes equipment_live_metrics (silver); %[2]s reads core dims.
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(provisionMetricsSQL, d.SilverSchema, d.RefSchema)); err != nil {
 		return fmt.Errorf("provision metrics: %w", err)
 	}
 	return nil
@@ -76,7 +80,8 @@ func Provision(ctx context.Context, d flows.Dest) error {
 var equipmentGrains = []struct {
 	grain, unsTable, span string
 }{
-	{"week", "equipment_live_week", "1 week"},
+	// #263: "week"/equipment_live_week removed (unread grain). Only month survives
+	// (read-api live-equipment-month).
 	{"month", "equipment_live_month", "1 month"},
 }
 
@@ -90,14 +95,14 @@ const refreshEquipmentSQL = `
 	           sum(gross_production_incr) AS gross_production_incr,
 	           sum(scrap_incr)            AS scrap_incr,
 	           avg(speed)                 AS speed
-	      FROM %[1]s.agg_equipment_values_1hour v
+	      FROM %[6]s.agg_equipment_values_1hour v
 	     WHERE ts_value >= date_trunc('%[3]s', now())::date
 	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
 	            WHERE tp_equipment > 1
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	     GROUP BY id_equipment, date_trunc('%[3]s', ts_value)::date
 	)
-	UPDATE %[1]s.%[4]s u
+	UPDATE %[6]s.%[4]s u
 	   SET gross_production = p.gross_production_incr,
 	       net_production   = p.net_production_incr,
 	       scrap            = p.scrap_incr,
@@ -112,7 +117,7 @@ const refreshEquipmentSQL = `
 func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
 	for _, g := range equipmentGrains {
 		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshEquipmentSQL,
-			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span),
+			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span, d.GrainSchema),
 			exclAreas, exclEnterprises); err != nil {
 			return fmt.Errorf("refresh %s: %w", g.grain, err)
 		}
@@ -144,12 +149,7 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 					continue
 				}
 			}
-			if err := RefreshCurrentHour(ctx, d, exclAreas, exclEnterprises); err != nil {
-				logger.Warn("uns current-hour refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
+			// #263: equipment live-hour refresh removed (equipment_live_hour unread).
 			if err := RefreshCurrentRest(ctx, d); err != nil {
 				logger.Warn("uns current-rest refresh failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
@@ -192,48 +192,11 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 // area/site variants omit last_updated (verbatim — those tiles don't
 // key off it).
 
-const refreshHourEquipmentSQL = `
-	WITH prod AS (
-	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
-	           oee, oee_p, oee_a, oee_q, available_time, running_time,
-	           stopped_time, planned_downtime, ideal_production,
-	           idle_time, idle_starved, idle_blocked, target,
-	           changeover_time, proportional_target
-	      FROM %[1]s.equipment_oee_hourly v
-	     WHERE ts_value >= date_trunc('hour', now())::timestamptz AND ts_value <= now()
-	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
-	            WHERE tp_equipment > 1
-	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
-	)
-	UPDATE %[1]s.equipment_live_hour u SET
-	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
-	       speed = p.speed, begin_time = p.ts_value,
-	       end_time = p.ts_value + interval '1 hour',
-	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
-	       available_time = p.available_time, running_time = p.running_time,
-	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
-	       ideal_production = p.ideal_production, idle_time = p.idle_time,
-	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
-	       target = p.target, proportional_target = p.proportional_target,
-	       last_updated = now()
-	  FROM prod p WHERE u.id_equipment = p.id_equipment`
-
-const refreshHourTrailEquipmentSQL = `
-	WITH prod AS (
-	    SELECT id_equipment, json_agg(json_build_object(
-	           'ts_value', ts_value, 'net_production', net,
-	           'gross_production', gross, 'scrap', scrap, 'speed', speed)) AS data
-	      FROM (SELECT id_equipment, ts_value, net, gross, scrap, speed
-	              FROM %[1]s.equipment_oee_hourly
-	             WHERE ts_value >= date_trunc('hour', now() - interval '24 hour')::timestamptz
-	               AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
-	                    WHERE tp_equipment > 1
-	                      AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
-	             ORDER BY id_equipment, ts_value) t
-	     GROUP BY id_equipment
-	)
-	UPDATE %[1]s.equipment_live_hour u SET last_24_hours = p.data
-	  FROM prod p WHERE u.id_equipment = p.id_equipment`
+// #263: refreshHourEquipmentSQL + refreshHourTrailEquipmentSQL (the equipment
+// live-hour refresh + its last_24_hours trail) removed — equipment_live_hour is
+// unread (no read-api dataset / serving fn / front4-operator consumer; the
+// last_24_hours column was computed but served to nobody). RefreshCurrentHour
+// deleted below.
 
 // entityHourSQL parameterizes the area/site hour refreshers (verbatim:
 // no exclusion lists on these; area carries the full OEE family, site
@@ -241,20 +204,9 @@ const refreshHourTrailEquipmentSQL = `
 // #186: refreshHourEntitySQL / refreshHourTrailEntitySQL (area/site live-hour
 // refreshers) were removed with the retired area/site hourly grains.
 
-// RefreshCurrentHour runs the equipment live-hour refreshers.
-func RefreshCurrentHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
-		return fmt.Errorf("uns hour equipment: %w", err)
-	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshHourTrailEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
-		return fmt.Errorf("uns hour equipment trail: %w", err)
-	}
-	// #186: the area/site live-HOUR refreshers were retired — their source grains
-	// (area/site_oee_hourly) and sink tables (area/site_live_hour) had zero
-	// consumers (mission control reads only the day/shift chain). Only the
-	// equipment live-hour refresh above remains.
-	return nil
-}
+// #263: RefreshCurrentHour deleted (equipment_live_hour unread). The area/site
+// live-hour refreshers were already retired in #186; now the equipment live-hour
+// refresh is gone too. equipment_live_day/shift (below) + week→month remain.
 
 // ── EQUIPMENT current-SHIFT + current-DAY refreshers (the grey-tile
 // unfreeze). BACKGROUND: prod's piot_refresh_uns runs hour+week+month
@@ -287,7 +239,7 @@ const refreshDayEquipmentSQL = `
 	            WHERE tp_equipment > 1
 	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	)
-	UPDATE %[1]s.equipment_live_day u SET
+	UPDATE %[3]s.equipment_live_day u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed, begin_time = p.ts_value,
 	       end_time = (p.ts_value + interval '1 day')::date,
@@ -334,7 +286,7 @@ const refreshShiftEquipmentSQL = `
 	      JOIN ts ON v.id_equipment = ts.id_equipment
 	       AND v.ts_value = ts.ts_value - (interval '1 second' * v.duration)
 	)
-	UPDATE %[1]s.equipment_live_shift u SET
+	UPDATE %[3]s.equipment_live_shift u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       speed = p.speed,
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
@@ -352,6 +304,11 @@ const refreshShiftEquipmentSQL = `
 	       prev1_end_time = p1.ts_end, prev1_id_shift = p1.id_shift,
 	       prev1_id_shift_hour = p1.id_shift_hour, prev1_duration = p1.duration,
 	       elapsed_time = extract(epoch FROM (now() - p.ts_value))::int,
+	       -- shift labels (2026-09-24): never set before → front4 Mission Control printed
+	       -- the literal "null" next to every current/previous shift, for EVERY tenant.
+	       -- core.shifts carries only the code (cd_shift: T1/T2/…), which is the label.
+	       shift_name = (SELECT s.cd_shift FROM %[2]s.shifts s WHERE s.id_shift = p.id_shift),
+	       prev1_shift_name = (SELECT s.cd_shift FROM %[2]s.shifts s WHERE s.id_shift = p1.id_shift),
 	       last_updated = now()
 	  FROM prod p LEFT JOIN prod1 p1 ON p.id_equipment = p1.id_equipment
 	 WHERE u.id_equipment = p.id_equipment`
@@ -360,10 +317,11 @@ const refreshShiftEquipmentSQL = `
 // refreshers (the grey-tile unfreeze). Same exclusion lists as the
 // hour/week/month equipment refreshers.
 func RefreshCurrentEquipmentShiftDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	// %[1]s reads equipment_oee_daily/shift (gold); %[3]s writes equipment_live_day/shift (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayEquipmentSQL, d.GoldSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns day equipment: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.EvSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftEquipmentSQL, d.GoldSchema, d.RefSchema, d.GrainSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("uns shift equipment: %w", err)
 	}
 	return nil

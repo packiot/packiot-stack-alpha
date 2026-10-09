@@ -17,7 +17,7 @@ func TestCloserBoundsAndClosesStaleOpens(t *testing.T) {
 		"status_type = 0",                              // CPACK-class scope, not the 4-only deriver
 		"tp_equipment IN (1, 3)",                       // machines + lines
 		"lead(ev.ts_event)",                            // (a) next-event bounding
-		"ca_agg_equipment_values_1min",                 // count-silence source (same as cpac_deriver)
+		"equipment_categorical_1min",                 // count-silence source (same as cpac_deriver)
 		"gross_production_incr > 0",                    // productive-minute heartbeat
 		"COALESCE(NULLIF(e.stop_threshold_time, 0), $2)", // per-equipment threshold w/ default
 		"greatest(o.ts_event, lc.last_ts + make_interval(secs => lc.thr))", // (b) count-silence, clamped >= ts_event
@@ -102,5 +102,17 @@ func TestRunOnceCloseDefaults(t *testing.T) {
 	}
 	if got := defaultInt(cfg.HorizonHours, 72); got != 72 {
 		t.Errorf("horizon default = %d, want 72", got)
+	}
+}
+
+// The trailing count-silence close must be RUNNING-only: applied to an open STOP it
+// ended the stop at (or ≤thr after) its own start and — since only ts_end IS NULL rows
+// are touched — permanently (2026-09-24: 955/3791 CPACK stops truncated in 7 days).
+func TestCloserTrailingCloseIsRunningOnly(t *testing.T) {
+	if !strings.Contains(closeStaleOpensSQL, "o.status = 6 AND lc.last_ts IS NOT NULL") {
+		t.Fatal("trailing count-silence close must be restricted to status 6 (running); an open stop is ongoing downtime")
+	}
+	if !strings.Contains(closeStaleOpensSQL, "WHEN o.next_ts IS NOT NULL THEN o.next_ts") {
+		t.Fatal("next-transition bound must still apply to every status (it is what closes stops)")
 	}
 }

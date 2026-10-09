@@ -156,14 +156,15 @@ func integrationShiftValidationAuth(r *http.Request, keys map[string]int, owner 
 // + JobDataIntegrationRepository.dataIntegration:
 //   - post-auth validation: `!days_interval || days_interval <= 0 || days_interval
 //     > 41` → 400 "days interval must be between 1 and 41";
-//   - read the ent-06-FROZEN set-returning get_data_sync_enterprsie_06b(days), with
-//     an optional UPPER'd `site` filter (string-interpolated in back4 →
-//     parameterized here). The function is pre-scoped to enterprise 06 and takes
-//     NO id_enterprise arg, so — exactly like NEOPAC sap-report-sync — there is no
-//     $1 tenant column to fence in SQL; the ENTIRE fence is the owner binding.
+//   - read the generic serving.data_sync(p_id_enterprise, p_numdays) (t244 —
+//     replaces the ent-06-hardcoded get_data_sync_enterprsie_06b(days); the tenant
+//     is now the explicit $1 param, so there IS a $1 tenant column in SQL now,
+//     strengthening the fence beyond the owner binding). p_numdays keeps the
+//     client-supplied days_interval ($2), with an optional UPPER'd `site` filter
+//     (string-interpolated in back4 → parameterized here).
 //   - frozen `{data_integration}` envelope. back4 res.json's the rows straight (no
 //     moment/date adapter), so timestamps use the default toISOString pin.
-func runJobDataIntegration(ctx context.Context, deps shimDeps, _ int, r *http.Request) (any, *shimError) {
+func runJobDataIntegration(ctx context.Context, deps shimDeps, cid int, r *http.Request) (any, *shimError) {
 	q := r.URL.Query()
 	di := parseIntDefault(q.Get("days_interval"), 0) // absent/non-numeric ⇒ 0 ⇒ rejected (mirrors !days_interval)
 	if di <= 0 || di > 41 {
@@ -171,11 +172,12 @@ func runJobDataIntegration(ctx context.Context, deps shimDeps, _ int, r *http.Re
 	}
 	site := q.Get("site")
 	var data externalRows
+	// t244: $1 = injected cid (tenant), $2 = the client days_interval (p_numdays).
 	if site != "" {
 		data = deps.query(ctx,
-			`select * from get_data_sync_enterprsie_06b($1) where site = UPPER($2)`, di, site)
+			`select * from serving.data_sync($1, $2) where site = UPPER($3)`, cid, di, site)
 	} else {
-		data = deps.query(ctx, `select * from get_data_sync_enterprsie_06b($1)`, di)
+		data = deps.query(ctx, `select * from serving.data_sync($1, $2)`, cid, di)
 	}
 	return envDataIntegration{DataIntegration: data}, nil
 }
@@ -277,7 +279,10 @@ func runShiftValidation(ctx context.Context, deps shimDeps, cid int, r *http.Req
 	// 3) findByTopic — column order = the DAO's object-literal order; back4's
 	// `interval '${days}day'` and `like '%${topic}%'` string-interpolations are
 	// parameterized (di * interval '1 day', and $2 = '%'||topic||'%').
-	data := deps.query(ctx, sqlShiftValidation, di, "%"+topic+"%")
+	// $3 = cid: explicit tenant fence. The substring match alone would also match ANOTHER tenant whose
+	// topic contains this one (`%CPACK/SC%` ⊂ `SBXCPACK/SC/…`); today RLS (readapi_ro, no tenant GUC on
+	// the shim path) hides other tenants' register rows, but the result must not depend on the DB role.
+	data := deps.query(ctx, sqlShiftValidation, di, "%"+topic+"%", cid)
 	return envShiftData{ShiftData: data.withDateOnlyColumns("ts_value_production")}, nil
 }
 
@@ -337,6 +342,7 @@ const sqlJobReport = `
           po.id_area,
           po.id_site,
           po.id_order,
+          po.id_order_text as order_number,
           lower(porun.runtime_timerange)  as job_start,
           case when upper(porun.runtime_timerange) is null then now()  else upper(porun.runtime_timerange)  end as job_end
         from production_orders_runtime porun, production_orders po
@@ -351,6 +357,7 @@ const sqlJobReport = `
           shi.cd_shift,
           shi.ts_value_production,
           po.id_order,
+          po.order_number,
           case when tz_value > job_start then tz_value else job_start end as ts_start,
           case when tz_end < job_end then tz_end else job_end end as ts_end,
           po.id_site,
@@ -370,7 +377,8 @@ const sqlJobReport = `
           bfs.id_order,
           sum(pc.gross_production_incr) as presscount,
           bfs.ts_start,
-          packml_topic
+          packml_topic,
+          bfs.order_number
         from base_for_splits bfs
         left join presscount pc
         on pc.tz_value between bfs.ts_start and bfs.ts_end
@@ -380,7 +388,7 @@ const sqlJobReport = `
         left join packml_register pr
         on pc.id_equipment = pr.id_equipment
         where pc.id_equipment = ANY($2::int[])
-        group by 1,2,3,4,6,7
+        group by 1,2,3,4,6,7,8
         order by 1,6 desc
         `
 
@@ -389,7 +397,8 @@ const sqlJobReport = `
 // id_site, shift_hrs, ts_value_production, cd_shift, validation, id_order,
 // txt_validation_notes, nm_user_validation, ts_user_validation, shift_start_time,
 // to_delete). back4's `interval '${days_interval} day'` → `$1 * interval '1 day'`;
-// `packml_topic like '%${topic}%'` → `like $2` (the caller passes '%'||topic||'%').
+// `packml_topic like '%${topic}%'` → `like $2` (the caller passes '%'||topic||'%'), plus the
+// `pr.id_enterprise = $3` tenant fence (cid) that back4 never had.
 const sqlShiftValidation = `
         select
             evs.index1,
@@ -404,12 +413,15 @@ const sqlShiftValidation = `
             evs.nm_user_validation,
             evs.ts_user_validation,
             evs.shift_start_time,
-            evs.to_delete
+            evs.to_delete,
+            (select po.id_order_text from production_orders po
+              where po.id_enterprise = $3 and po.id_order = evs.id_order) as order_number
         from equipment_validation_shift evs
         left join packml_register pr on pr.id_equipment = evs.id_equipment
         where
         ts_value_production >= now() - ($1 * interval '1 day')
         and to_delete is FALSE
         and pr.packml_topic like $2
+        and pr.id_enterprise = $3
         order by ts_value_production desc, shift_hrs desc LIMIT 1000;
         `

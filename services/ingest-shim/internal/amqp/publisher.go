@@ -1,8 +1,8 @@
 // Package amqp owns the shim's single RabbitMQ connection + confirm-mode
 // publish channel, plus the reconnect/backoff loop that heals broker drops.
 //
-// Publisher-confirms discipline (same lesson as edge-transformer's
-// shadowpub + ADR-0011 rule 1): a plain PublishWithContext returns nil the
+// Publisher-confirms discipline (same lesson as sparkplug-decoder's
+// analyticspub + ADR-0011 rule 1): a plain PublishWithContext returns nil the
 // instant the bytes leave our TCP socket, whether or not the broker ever
 // persisted them. That is silent loss. We enable confirm-select mode on the
 // channel and wait for the broker's ack before telling the HTTP caller 202.

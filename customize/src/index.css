@@ -1,0 +1,173 @@
+@import "tailwindcss";
+
+/*
+  CS Admin theme — PackIOT navy family (distinct from the customer products).
+  Deep navy chrome (#102A4C), navy-blue accent (#1D4ED8), cool neutral app
+  background. Ships with a class-based dark theme (.dark on <html>): every
+  component is themed through the CSS-variable tokens below, so the light/dark
+  swap is a single block of `--var` overrides — no per-component color logic.
+*/
+
+/* Class-based dark variant: `dark:` utilities + the .dark token block below
+   key off a `.dark` class on <html> (set by the theme store / FOUC script). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #eef1f6;
+  --surface: #ffffff;
+  /* Subtle neutral surface for zebra rows, code chips, hover fills, etc. */
+  --muted: #f3f4f6;
+  /* Hover step for muted-fill controls (secondary/ghost buttons). */
+  --muted-hover: #e6e9ee;
+  --foreground: #131822;
+  /* Softer body text (labels, ghost buttons) — a step below --foreground. */
+  --foreground-subtle: #4a4a4a;
+  --muted-foreground: #525c6b;
+  --border: #d8dee9;
+
+  --chrome: #102a4c;
+  /* Light text that sits ON the (always-dark) chrome — e.g. code/pre blocks. */
+  --chrome-foreground: #d7e0f2;
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
+  --primary-foreground: #ffffff;
+  --primary-tint: #e6edfb;
+  --primary-border: #cddef5;
+  --primary-strong: #1e3a8a;
+
+  /* Semantic callout triads (tint bg / border / strong text) — theme-aware so
+     they flip in dark instead of staying light-on-dark. --warning/--danger
+     stay the icon/accent value; *-strong is the readable text variant. */
+  --warning: #f2994a;
+  --warning-strong: #8a5d10;
+  --warning-tint: #fdf4e3;
+  --warning-border: #f0d9a8;
+  --danger: #a82a2a;
+  --danger-tint: #fbeded;
+  --danger-border: #ead2d2;
+
+  /* Success triad (mirrors --danger) — used by the Active/Online status pill.
+     Light = a normal success-green on a pale-green tint (not neon). */
+  --success: #1a7038;
+  --success-tint: #e6f5ec;
+  --success-border: #bfe3c9;
+
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --font-sans: "Source Sans 3", "Source Sans Pro", system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo,
+    Consolas, monospace;
+}
+
+/*
+  Dark theme — same token contract, re-valued for a comfortable near-black navy
+  (not pure black, not washed out). Chrome sits a step lighter than the app bg
+  so the sidebar still reads as chrome; the accent brightens for pop while
+  keeping AA for white text on --primary. --danger/--warning are lifted to
+  lighter variants so semantic text stays legible on dark surfaces.
+*/
+.dark {
+  --background: #0b1220;
+  --surface: #141c2b;
+  --muted: #1a2436;
+  --muted-hover: #232f45;
+  --foreground: #e6ebf3;
+  --foreground-subtle: #c2c8d2;
+  --muted-foreground: #93a1b5;
+  --border: #26324a;
+
+  --chrome: #152238;
+  --chrome-foreground: #d7e0f2;
+  --primary: #2563eb;
+  --primary-hover: #1e40af;
+  --primary-foreground: #ffffff;
+  --primary-tint: #1b2942;
+  --primary-border: #2c3d5e;
+  --primary-strong: #93c5fd;
+
+  --warning: #f4ab6a;
+  --warning-strong: #f0b866;
+  --warning-tint: #2d2410;
+  --warning-border: #574718;
+  --danger: #f2777c;
+  --danger-tint: #2e1719;
+  --danger-border: #552d2f;
+
+  /* Dark = a deeper, muted "dark green" bg with a light-green text — parallel
+     in mutedness to the dark --danger triad so Active/Inactive read as a
+     matched green/red pair on the near-black-navy canvas. */
+  --success: #6dd99a;
+  --success-tint: #14311f;
+  --success-border: #2c5638;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-muted: var(--muted);
+  --color-muted-hover: var(--muted-hover);
+  --color-foreground: var(--foreground);
+  --color-foreground-subtle: var(--foreground-subtle);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-chrome: var(--chrome);
+  --color-chrome-foreground: var(--chrome-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-tint: var(--primary-tint);
+  --color-primary-border: var(--primary-border);
+  --color-primary-strong: var(--primary-strong);
+  --color-warning: var(--warning);
+  --color-warning-strong: var(--warning-strong);
+  --color-warning-tint: var(--warning-tint);
+  --color-warning-border: var(--warning-border);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-danger-border: var(--danger-border);
+  --color-success: var(--success);
+  --color-success-tint: var(--success-tint);
+  --color-success-border: var(--success-border);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  margin: 0;
+}
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono,
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 768px) and (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

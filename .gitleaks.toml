@@ -54,10 +54,21 @@ regexes = [
     '''changeme-min-32-chars-long-secret''',
     '''^SG\.dev-placeholder-not-used-locally$''',
 
+    # ADR-0061 device_key — the opaque per-equipment IDENTIFIER from
+    # core.device_bindings (dk_<32 hex>). Not a credential: it rides in cleartext
+    # SparkPlug births and grants nothing (resolution is internal + tenant-scoped).
+    # Exact shape only; generic-api-key over-matches `device_key: dk_…`.
+    '''^dk_[0-9a-f]{32}$''',
+
     # Cognito app CLIENT IDs (OAUTH2_PROXY_CLIENT_ID) — public identifiers, not
     # secrets; live in compose history. generic-api-key over-matches them.
     '''^25i5je849qsd1hetcinrbm2t2c$''',
     '''^4g5j94vsodtt8g8ima2hnf8ke7$''',
+
+    # ADR-0061 device_key TEST FIXTURES (read-api internal_test.go): fake opaque keys built from the
+    # digit/letter run 0-9a-f, exact literals only. Real dk_ keys are random hex and stay caught.
+    '''^dk_(0123456789abcdef){2}$''',
+    '''^dk_(0123456789ABCDEF){2}$''',
 
     # Env-var placeholders / shell interpolations — references, not values.
     '''\$\{[^}]*\}''',

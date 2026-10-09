@@ -17,6 +17,13 @@
 #     ProdConsumedCount. The raw A/B suffixes are CONSUMED (never republished — a
 #     partial sum would look like a totalizer drop to Calc).
 #
+#   - EXPR (SCRAP class, ADR-0058 Tier 1): a machine whose defect count is not a
+#     register but a DERIVATION — scrap = gross − net (DW0 − DW4). The agent binds
+#     each var to a RAW arriving suffix, latches them across envelopes, and emits a
+#     canonical ProdDefectiveCount once both are seen. This is the general primitive
+#     the closed integral/sum shapes cannot express. The inputs are NOT consumed
+#     (DW0/DW4 may also be published raw); declare them sum addends to fold away.
+#
 # The mechanism: each `derived` rule's `emit` leaves become the equipment's
 # canonical count suffixes, synthesized into the agent raw_tag_map allowlist
 # (SynthesizeEquipment) so the cloud sees ordinary SparkPlug counts; the runtime
@@ -56,6 +63,7 @@ tee:
 equipment:
   # ── FLEXO: analog speed → virtual production counter (INTEGRAL) ──────────────
   - topic: ACME/SP/L5/FLEXO
+    device_key: dk_59ba4bdc19310ec49faad808c5368650
     id_equipment: 5001
     tp_equipment: 1
     id_unit: 5001
@@ -74,6 +82,7 @@ equipment:
 
   # ── PTH: two count registers summed into one gross count (SUM) ───────────────
   - topic: ACME/SP/L5/PTH
+    device_key: dk_eb1d59d5dfb37f299e2ccac01569c328
     id_equipment: 5002
     tp_equipment: 1
     id_unit: 5002
@@ -86,3 +95,20 @@ equipment:
           addends:
             - "/Status/CountA"   # RAW arriving suffixes — consumed, never republished
             - "/Status/CountB"
+
+  # ── SCRAP: defect count derived as gross − net (EXPR, ADR-0058) ──────────────
+  - topic: ACME/SP/L5/SCRAP
+    device_key: dk_047adcb102e15036d985437ae2c0bd12
+    id_equipment: 5003
+    tp_equipment: 1
+    id_unit: 5003
+    count_index: {value: 73, confidence: confirmed}
+    derived:
+      - type: double
+        emit:
+          - "/Admin/ProdDefectiveCount/{idx}/Unit"
+        expr:
+          expr: "gross - net"       # sandboxed arithmetic over the vars below
+          vars:
+            gross: "/Status/DW0"    # RAW arriving suffixes (segment-qualified at generate)
+            net: "/Status/DW4"

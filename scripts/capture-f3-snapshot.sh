@@ -34,7 +34,8 @@ GATED. This reads staging packiot_analytics's SCHEMA (data-free, read-only-in-ef
 and writes db/init-f3/snapshot/*.sql. Re-run with CONFIRM=yes once approved.
 
 It will run, inside the staging timescaledb container:
-  pg_dump -d $DB --schema-only --no-owner --no-privileges --schema=public \\
+  pg_dump -d $DB --schema-only --no-owner --no-privileges \\
+     --schema=public [--schema=core --schema=app --schema=barcode if present] \\
      --exclude-table='ops_shadow_zombie_preimage_*' \\
      --exclude-table='report_*_enterprsie_*' \\
      --exclude-table='*_po_func_ret' --exclude-table='*_13_po_func_ret' \\
@@ -51,10 +52,30 @@ fi
 # views over _timescaledb_internal._materialized_hypertable_NN). Those + the
 # hypertables are recreated by the strict 05-*/10-* timescale layer, NOT here —
 # see the post-process below and db/init-f3/README.md §3.
+# MULTI-SCHEMA (task #237 public→core/app/barcode reorg): the reorg SET-SCHEMAs
+# dims→core, auth/i18n/ops→app, box tables→barcode. A public-only dump would
+# SILENTLY DROP every moved object from greenfield. We dump public PLUS the reorg
+# target schemas that HOLD PLAIN relations (core/app/barcode) — these carry no
+# hypertables/caggs, so they never collide with the strict 05-*/10-* timescale
+# supplement layer that recreates the medallion facts. We deliberately do NOT add
+# --schema=silver/gold/bronze here: those overlap the timescale layer and a
+# pg_dump of them would double-create the hypertables/caggs. (silver current-state
+# grains + serving/customer_reports views are handled surgically in reorg P4/P5.)
+# The list is computed DYNAMICALLY from schemas that actually exist, so the script
+# is safe to run at any point across the phased cutover (a not-yet-created target
+# schema is simply skipped rather than erroring "no matching schemas").
 remote=$(cat <<'REMOTE'
 set -e
+schema_flags="--schema=public"
+for s in core app barcode; do
+  if [ "$(docker exec -i timescaledb psql -U postgres -d __DB__ -tAc \
+        "SELECT 1 FROM pg_namespace WHERE nspname='$s'")" = "1" ]; then
+    schema_flags="$schema_flags --schema=$s"
+  fi
+done
+echo "pg_dump schema flags: $schema_flags" >&2
 docker exec -i timescaledb pg_dump -U postgres -d __DB__ \
-  --schema-only --no-owner --no-privileges --schema=public \
+  --schema-only --no-owner --no-privileges $schema_flags \
   --exclude-table='ops_shadow_zombie_preimage_*' \
   --exclude-table='report_*_enterprsie_*' \
   --exclude-table='*_po_func_ret' \

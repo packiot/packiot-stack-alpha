@@ -1,0 +1,52 @@
+# dev/services/grafana.yml — Grafana slice (ADR-0060 Tier 4, first slice).
+#
+# Contract header (ADR-0060 D1):
+#   inputs:   postgres `packiot_analytics` (datasource uid packiot-postgres-shadow,
+#             the one ~all dashboards query) — satisfied by Tier 0 postgres.
+#             postgres `$POSTGRES_DB` (uid packiot-postgres, staging's default DS;
+#             points at the retired `packiot` DB in staging, F9) — dev points it
+#             at packiot_analytics too so it is reachable.
+#             Prometheus / Loki / Tempo (uids packiot-prometheus, packiot-loki,
+#             packiot-tempo) — NOT satisfied in dev: provisioned, unreachable.
+#   outputs:  none (read-only UI)
+#   external: none
+#
+# Mirrors compose.staging.yml `grafana`: same image, same provisioning +
+# dashboards mounts, same env-var names the provisioning YAML interpolates.
+
+services:
+  grafana:
+    image: grafana/grafana:11.5.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/audience/00-overview.json
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Interpolated by grafana/provisioning/datasources/postgres*.yml.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      POSTGRES_DB: ${POSTGRES_DB:-packiot_analytics}
+    ports:
+      - "127.0.0.1:${DEV_GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  grafana-data:

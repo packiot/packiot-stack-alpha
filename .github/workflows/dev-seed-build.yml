@@ -1,0 +1,133 @@
+name: Dev seed build
+
+# ADR-0060 phase D: build the anonymized dev-database seed image on the staging runner and push it to the
+# private GHCR package ghcr.io/packiot/devseed. Raw data never leaves the box: dev/seed/extract.sh reads
+# staging read-only (default_transaction_read_only), anonymizes with the HMAC key from Secrets Manager
+# (packiot/staging/devseed), and leakgate.py must pass before anything is packaged. Only the anonymized
+# payload goes into the image; $OUT/private (tenant tokens, raw inventory) is deleted on every exit.
+#
+# Developers pull it with their own GitHub login (read:packages); no shared token. The push uses this
+# workflow's GITHUB_TOKEN (packages: write), same as build-postgres.yml.
+#
+#   gh workflow run dev-seed-build.yml                      # full build + push
+#   gh workflow run dev-seed-build.yml -f row_limit=50 -f push=false   # smoke test, nothing pushed
+
+on:
+  workflow_dispatch:
+    inputs:
+      row_limit:
+        description: 'LIMIT per table for a smoke test (empty = full seed)'
+        required: false
+        default: ''
+      push:
+        description: 'push the image to GHCR'
+        type: boolean
+        default: true
+
+concurrency:
+  group: dev-seed-build
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: [self-hosted, staging, linux, arm64]
+    timeout-minutes: 90
+    env:
+      IMAGE: ghcr.io/packiot/devseed
+    steps:
+      - name: Output dir
+        # the `runner` context isn't available in job-level env; RUNNER_TEMP is
+        run: echo "OUT=$RUNNER_TEMP/devseed" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Validate classification against the committed snapshot
+        run: python3 dev/seed/validate.py
+
+      - name: Extract → anonymize → leak gate (read-only on staging)
+        env:
+          DEVSEED_ROW_LIMIT: ${{ inputs.row_limit }}
+        run: |
+          set -euo pipefail
+          KEY=$(aws secretsmanager get-secret-value --secret-id packiot/staging/devseed --region us-east-1 \
+                  --query SecretString --output text | jq -r '.hmac_key // ""')
+          [ -n "$KEY" ] || { echo "ABORT: packiot/staging/devseed has no hmac_key"; exit 1; }
+          echo "::add-mask::$KEY"
+          envget() { grep -E "^$1=" /opt/packiot/.env | tail -1 | cut -d= -f2- | tr -d "\"'"; }
+          U=$(envget POSTGRES_USER); P=$(envget POSTGRES_PASSWORD); H=$(envget POSTGRES_HOST_UPSTREAM)
+          [ -n "$U" ] && [ -n "$P" ] && [ -n "$H" ] || { echo "ABORT: POSTGRES_* missing in /opt/packiot/.env"; exit 1; }
+          echo "::add-mask::$P"
+          [ -n "$DEVSEED_ROW_LIMIT" ] || unset DEVSEED_ROW_LIMIT
+          PGURL="postgresql://$U:$(jq -rn --arg p "$P" '$p|@uri')@$H:5432/packiot_analytics" \
+            DEVSEED_HMAC_KEY="$KEY" bash dev/seed/extract.sh
+          jq '{snapshot_end, since, tenant, tables: (.row_counts|length), rows: ([.row_counts[]]|add)}' "$OUT/payload/metadata.json"
+
+      - name: Build the seed image
+        id: build
+        run: |
+          set -euo pipefail
+          # context = the anonymized payload + load.sh ONLY ($OUT/private never enters the build context)
+          CTX="$OUT/ctx"; mkdir -p "$CTX"; mv "$OUT/payload" "$CTX/payload"
+          cp dev/seed/load.sh dev/seed/Dockerfile "$CTX/"
+          echo "CTX=$CTX" >> "$GITHUB_ENV"
+          TAG=$(jq -r '.snapshot_end[0:10]' "$CTX/payload/metadata.json")
+          [ -z "${{ inputs.row_limit }}" ] || TAG="$TAG-smoke"
+          # multi-arch needs the docker-container driver; COPY-only Dockerfile → no QEMU for the foreign arch
+          docker buildx inspect devseed >/dev/null 2>&1 || docker buildx create --name devseed --driver docker-container >/dev/null
+          # native (arm64) image into the local daemon for the boot test; the multi-arch push reuses its cache
+          docker buildx build --builder devseed --platform linux/arm64 --load -t "$IMAGE:$TAG" "$CTX"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          docker image inspect "$IMAGE:$TAG" --format 'image {{.Id}} {{.Architecture}} size {{.Size}}'
+
+      - name: Boot test (the image must load, generated tables must be populated)
+        run: |
+          set -euo pipefail
+          C=devseed-boottest-$GITHUB_RUN_ID
+          # NB: never `docker logs | grep -q` under pipefail — grep -q exits at the first match, docker logs gets
+          # SIGPIPE (141) and the pipeline reads as FAILED even though the line is there (the 2026-10-07 smoke run
+          # waited out its timeout on a healthy, fully loaded seed). grep without -q drains the input.
+          trap 'docker rm -f "$C" >/dev/null 2>&1 || true' EXIT
+          docker run -d --name "$C" -e POSTGRES_PASSWORD=boottest "$IMAGE:${{ steps.build.outputs.tag }}" >/dev/null
+          for _ in $(seq 1 360); do   # up to 30 min for a full seed
+            if docker logs "$C" 2>&1 | grep 'PostgreSQL init process complete' >/dev/null; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' "$C")" != true ]; then
+              docker logs --tail 40 "$C"; echo "ABORT: seed container exited during init"; exit 1
+            fi
+            sleep 5
+          done
+          docker logs "$C" 2>&1 | grep 'PostgreSQL init process complete' >/dev/null || { docker logs --tail 40 "$C"; echo "ABORT: init timeout"; exit 1; }
+          for _ in $(seq 1 60); do docker exec "$C" pg_isready -U postgres -q && break; sleep 2; done
+          # the seed lives in its own database (load.sh createdb), not the default `postgres`
+          docker exec -i "$C" psql -U postgres -d packiot_analytics -X -At -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT 'equipments', count(*) FROM core.equipments;
+          SELECT 'device_bindings (fresh dk_ keys)', count(*) FROM core.device_bindings WHERE device_key ~ '^dk_[0-9a-f]{32}$';
+          SELECT 'dev users', count(*) FROM identity.users WHERE user_email LIKE '%@example.com';
+          DO $$ BEGIN
+            IF (SELECT count(*) FROM core.device_bindings) = 0 THEN RAISE EXCEPTION 'boot test: no device_bindings generated'; END IF;
+            IF (SELECT count(*) FROM identity.users) <> 3 THEN RAISE EXCEPTION 'boot test: expected exactly the 3 synthetic users'; END IF;
+          END $$;
+          SQL
+
+      - name: Push to GHCR (private)
+        if: inputs.push
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # one manifest list for linux/amd64 (most dev laptops) + linux/arm64 (Graviton, Apple Silicon): the
+          # first published seed was arm64-only and died with "exec format error" on an amd64 laptop
+          TAGS=(-t "$IMAGE:${{ steps.build.outputs.tag }}")
+          [ -n "${{ inputs.row_limit }}" ] || TAGS+=(-t "$IMAGE:latest")
+          docker buildx build --builder devseed --platform linux/amd64,linux/arm64 --push "${TAGS[@]}" "$CTX"
+          docker buildx imagetools inspect "$IMAGE:${{ steps.build.outputs.tag }}" | grep -E 'Platform:' 
+          docker logout ghcr.io >/dev/null 2>&1 || true
+
+      - name: Delete the build output (tokens + raw inventory)
+        if: always()
+        run: '[ -n "$OUT" ] && rm -rf "$OUT"'

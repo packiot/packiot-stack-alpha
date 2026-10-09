@@ -180,7 +180,7 @@ func (r *Resolver) ensureFresh(ctx context.Context) error {
 
 	sites := make(map[int]SiteInfo)
 	rows, err := r.pool.Query(ctx,
-		`SELECT id_site, id_enterprise, COALESCE(timezone, 'UTC'), COALESCE(week_begin, 0) FROM public.sites`)
+		`SELECT id_site, id_enterprise, COALESCE(timezone, 'UTC'), COALESCE(week_begin, 0) FROM core.sites`)
 	if err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func (r *Resolver) ensureFresh(ctx context.Context) error {
 
 	equips := make(map[int]EquipRef)
 	rows, err = r.pool.Query(ctx,
-		`SELECT id_equipment, id_site, id_area FROM public.equipments`)
+		`SELECT id_equipment, id_site, id_area FROM core.equipments`)
 	if err != nil {
 		return err
 	}
@@ -235,7 +235,7 @@ func (r *Resolver) ensureFresh(ctx context.Context) error {
 	hours := make(map[int][]ShiftHour)
 	rows, err = r.pool.Query(ctx,
 		`SELECT id_shift_hour, id_shift, id_site, id_area, begin_time, end_time
-		   FROM public.shift_hours
+		   FROM core.shift_hours
 		  WHERE id_site IS NOT NULL AND begin_time IS NOT NULL AND end_time IS NOT NULL`)
 	if err != nil {
 		return err

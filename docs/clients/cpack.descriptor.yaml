@@ -57,14 +57,14 @@ metric_templates:
     - {leaf: "/Admin/ProdConsumedCount", type: double}
     - {leaf: "/Admin/ProdProcessedCount", type: double}
     - {leaf: "/Admin/ProdDefectiveCount", type: double}
-    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased (metric_aliases)
     - {leaf: "/Status/StateCurrent", type: long}
     - {leaf: "/Status/Parameter30700", type: string}
   member:
     - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
     - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
     - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
-    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/MachSpeed", type: double, role: speed.current}   # the PLC's CurMachSpeed, aliased (metric_aliases)
     - {leaf: "/Status/StateCurrent", type: long}
 
 # ── equipment inventory (62: 20 lines tp=3 + 42 members tp=1) ─────────────────
@@ -73,68 +73,68 @@ metric_templates:
 # member's count leaf); it is NOT the id (the whole #601 finding). confidence
 # gates cutover.
 equipment:
-  - {topic: CPACK/SC/CELULA1/CER400, device_key: CPACK-SC-CELULA1-CER400, id_equipment: 83, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA1/CER400/CER400, device_key: CPACK-SC-CELULA1-CER400-CER400, id_equipment: 88, tp_equipment: 1, id_unit: 88, count_index: {value: 107, confidence: confirmed}}
-  - {topic: CPACK/SC/CELULA1/DUBUTI1, device_key: CPACK-SC-CELULA1-DUBUTI1, id_equipment: 84, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA1/DUBUTI1/DUBUTI1, device_key: CPACK-SC-CELULA1-DUBUTI1-DUBUTI1, id_equipment: 89, tp_equipment: 1, id_unit: 89, count_index: {value: 334, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA1/DUBUTI2, device_key: CPACK-SC-CELULA1-DUBUTI2, id_equipment: 81, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA1/DUBUTI2/DUBUTI2, device_key: CPACK-SC-CELULA1-DUBUTI2-DUBUTI2, id_equipment: 86, tp_equipment: 1, id_unit: 86, count_index: {value: 97, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA1/HOTMADAG, device_key: CPACK-SC-CELULA1-HOTMADAG, id_equipment: 82, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA1/HOTMADAG/HOTMADAG, device_key: CPACK-SC-CELULA1-HOTMADAG-HOTMADAG, id_equipment: 87, tp_equipment: 1, id_unit: 87, count_index: {value: 99, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA1/ISIMAT, device_key: CPACK-SC-CELULA1-ISIMAT, id_equipment: 85, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA1/ISIMAT/ISIMAT, device_key: CPACK-SC-CELULA1-ISIMAT-ISIMAT, id_equipment: 90, tp_equipment: 1, id_unit: 90, count_index: {value: 335, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA2/BREYER1, device_key: CPACK-SC-CELULA2-BREYER1, id_equipment: 95, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA2/BREYER1/BREYER1, device_key: CPACK-SC-CELULA2-BREYER1-BREYER1, id_equipment: 101, tp_equipment: 1, id_unit: 101, count_index: {value: 26, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA2/BREYER2, device_key: CPACK-SC-CELULA2-BREYER2, id_equipment: 91, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA2/BREYER2/BREYER2, device_key: CPACK-SC-CELULA2-BREYER2-BREYER2, id_equipment: 97, tp_equipment: 1, id_unit: 97, count_index: {value: 101, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA2/POLYTYPE1, device_key: CPACK-SC-CELULA2-POLYTYPE1, id_equipment: 93, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1, device_key: CPACK-SC-CELULA2-POLYTYPE1-POLYTYPE1, id_equipment: 99, tp_equipment: 1, id_unit: 99, count_index: {value: 110, confidence: confirmed}}
-  - {topic: CPACK/SC/CELULA2/POLYTYPE2, device_key: CPACK-SC-CELULA2-POLYTYPE2, id_equipment: 96, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2, device_key: CPACK-SC-CELULA2-POLYTYPE2-POLYTYPE2, id_equipment: 102, tp_equipment: 1, id_unit: 102, count_index: {value: 29, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA2/PTH40-03, device_key: CPACK-SC-CELULA2-PTH40-03, id_equipment: 94, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA2/PTH40-03/PTH40-03, device_key: CPACK-SC-CELULA2-PTH40-03-PTH40-03, id_equipment: 100, tp_equipment: 1, id_unit: 100, count_index: {value: 339, confidence: inferred}}
-  - {topic: CPACK/SC/CELULA2/PTH80S, device_key: CPACK-SC-CELULA2-PTH80S, id_equipment: 92, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA2/PTH80S/PTH80S, device_key: CPACK-SC-CELULA2-PTH80S-PTH80S, id_equipment: 98, tp_equipment: 1, id_unit: 98, count_index: {value: 105, confidence: confirmed}}
-  - {topic: CPACK/SC/CELULA9/FLEXO, device_key: CPACK-SC-CELULA9-FLEXO, id_equipment: 103, tp_equipment: 3}
-  - {topic: CPACK/SC/CELULA9/FLEXO/FLEXO, device_key: CPACK-SC-CELULA9-FLEXO-FLEXO, id_equipment: 104, tp_equipment: 1, id_unit: 104, count_index: {value: 557, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L10, device_key: CPACK-SC-LINHAS-L10, id_equipment: 52, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L10/DXL, device_key: CPACK-SC-LINHAS-L10-DXL, id_equipment: 77, tp_equipment: 1, id_unit: 77, count_index: {value: 564, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L10/PTH, device_key: CPACK-SC-LINHAS-L10-PTH, id_equipment: 78, tp_equipment: 1, id_unit: 78, count_index: {value: 565, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L10/TCX, device_key: CPACK-SC-LINHAS-L10-TCX, id_equipment: 79, tp_equipment: 1, id_unit: 79, count_index: {value: 566, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L10/TEXA, device_key: CPACK-SC-LINHAS-L10-TEXA, id_equipment: 80, tp_equipment: 1, id_unit: 80, count_index: {value: 567, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L3, device_key: CPACK-SC-LINHAS-L3, id_equipment: 48, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L3/BREYER, device_key: CPACK-SC-LINHAS-L3-BREYER, id_equipment: 58, tp_equipment: 1, id_unit: 58, count_index: {value: 76, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L3/POLYTYPE, device_key: CPACK-SC-LINHAS-L3-POLYTYPE, id_equipment: 62, tp_equipment: 1, id_unit: 62, count_index: {value: 82, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L3/PTH, device_key: CPACK-SC-LINHAS-L3-PTH, id_equipment: 61, tp_equipment: 1, id_unit: 61, count_index: {value: 81, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L3/RMH, device_key: CPACK-SC-LINHAS-L3-RMH, id_equipment: 59, tp_equipment: 1, id_unit: 59, count_index: {value: 79, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L3/TEXA, device_key: CPACK-SC-LINHAS-L3-TEXA, id_equipment: 60, tp_equipment: 1, id_unit: 60, count_index: {value: 80, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L4, device_key: CPACK-SC-LINHAS-L4, id_equipment: 49, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L4/BREYER, device_key: CPACK-SC-LINHAS-L4-BREYER, id_equipment: 66, tp_equipment: 1, id_unit: 66, count_index: {value: 6, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L4/POLYTYPE, device_key: CPACK-SC-LINHAS-L4-POLYTYPE, id_equipment: 67, tp_equipment: 1, id_unit: 67, count_index: {value: 7, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L4/PTH, device_key: CPACK-SC-LINHAS-L4-PTH, id_equipment: 64, tp_equipment: 1, id_unit: 64, count_index: {value: 8, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L4/RMH, device_key: CPACK-SC-LINHAS-L4-RMH, id_equipment: 65, tp_equipment: 1, id_unit: 65, count_index: {value: 9, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L4/TEXA, device_key: CPACK-SC-LINHAS-L4-TEXA, id_equipment: 63, tp_equipment: 1, id_unit: 63, count_index: {value: 10, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L5, device_key: CPACK-SC-LINHAS-L5, id_equipment: 47, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L5/BREYER, device_key: CPACK-SC-LINHAS-L5-BREYER, id_equipment: 53, tp_equipment: 1, id_unit: 53, count_index: {value: 61, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L5/POLYTYPE, device_key: CPACK-SC-LINHAS-L5-POLYTYPE, id_equipment: 54, tp_equipment: 1, id_unit: 54, count_index: {value: 62, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L5/PTH, device_key: CPACK-SC-LINHAS-L5-PTH, id_equipment: 55, tp_equipment: 1, id_unit: 55, count_index: {value: 63, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L5/RMH, device_key: CPACK-SC-LINHAS-L5-RMH, id_equipment: 56, tp_equipment: 1, id_unit: 56, count_index: {value: 64, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L5/TEXA, device_key: CPACK-SC-LINHAS-L5-TEXA, id_equipment: 57, tp_equipment: 1, id_unit: 57, count_index: {value: 65, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6, device_key: CPACK-SC-LINHAS-L6, id_equipment: 50, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L6/BREYER, device_key: CPACK-SC-LINHAS-L6-BREYER, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, device_key: CPACK-SC-LINHAS-L6-POLYTYPE, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/PTH, device_key: CPACK-SC-LINHAS-L6-PTH, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/RMH, device_key: CPACK-SC-LINHAS-L6-RMH, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L6/TEXA, device_key: CPACK-SC-LINHAS-L6-TEXA, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
-  - {topic: CPACK/SC/LINHAS/L8, device_key: CPACK-SC-LINHAS-L8, id_equipment: 51, tp_equipment: 3}
-  - {topic: CPACK/SC/LINHAS/L8/DXL, device_key: CPACK-SC-LINHAS-L8-DXL, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L8/PTH, device_key: CPACK-SC-LINHAS-L8-PTH, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L8/TCX, device_key: CPACK-SC-LINHAS-L8-TCX, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
-  - {topic: CPACK/SC/LINHAS/L8/TEXA, device_key: CPACK-SC-LINHAS-L8-TEXA, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}
-  - {topic: CPACK/SC/SLEEVE/SLEEVE1, device_key: CPACK-SC-SLEEVE-SLEEVE1, id_equipment: 105, tp_equipment: 3}
-  - {topic: CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1, device_key: CPACK-SC-SLEEVE-SLEEVE1-SLEEVE1, id_equipment: 107, tp_equipment: 1, id_unit: 107, count_index: {value: 763, confidence: inferred}}
-  - {topic: CPACK/SC/SLEEVE/SLEEVE2, device_key: CPACK-SC-SLEEVE-SLEEVE2, id_equipment: 106, tp_equipment: 3}
-  - {topic: CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2, device_key: CPACK-SC-SLEEVE-SLEEVE2-SLEEVE2, id_equipment: 108, tp_equipment: 1, id_unit: 108, count_index: {value: 823, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/CER400, device_key: dk_68d852f33888425c80058c0bafa3ba22, id_equipment: 83, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/CER400/CER400, device_key: dk_e7ee55df538945a990f9c3ba5425f52b, id_equipment: 88, tp_equipment: 1, id_unit: 88, count_index: {value: 107, confidence: confirmed}}
+  - {topic: CPACK/SC/CELULA1/DUBUTI1, device_key: dk_6413124c704045018dbc83bd5cf8ccc0, id_equipment: 84, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/DUBUTI1/DUBUTI1, device_key: dk_57e31b0bcd2040959193f9f719cfafd3, id_equipment: 89, tp_equipment: 1, id_unit: 89, count_index: {value: 334, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/DUBUTI2, device_key: dk_6198988390784ca3b399e4a341ca29fa, id_equipment: 81, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/DUBUTI2/DUBUTI2, device_key: dk_12ac1d434b4646bcaeee1721032376df, id_equipment: 86, tp_equipment: 1, id_unit: 86, count_index: {value: 97, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/HOTMADAG, device_key: dk_8450231119f645418784d0deec77b178, id_equipment: 82, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/HOTMADAG/HOTMADAG, device_key: dk_5e13ae3bc45b4918bfedb70b5e2d663b, id_equipment: 87, tp_equipment: 1, id_unit: 87, count_index: {value: 99, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA1/ISIMAT, device_key: dk_3dbb93809e454796bcb6dfd8b8da893b, id_equipment: 85, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA1/ISIMAT/ISIMAT, device_key: dk_0e040ccd5655437caf9e32c6ceb4e192, id_equipment: 90, tp_equipment: 1, id_unit: 90, count_index: {value: 335, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/BREYER1, device_key: dk_9026e736d00a42edb6236727a0d962df, id_equipment: 95, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/BREYER1/BREYER1, device_key: dk_7c40e8e1466b436ca18b77098712742e, id_equipment: 101, tp_equipment: 1, id_unit: 101, count_index: {value: 26, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/BREYER2, device_key: dk_8ec3a679d8044039bd90cb837d10813d, id_equipment: 91, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/BREYER2/BREYER2, device_key: dk_43bd82a4344e4a0d89f6bf58fecbd2ba, id_equipment: 97, tp_equipment: 1, id_unit: 97, count_index: {value: 101, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE1, device_key: dk_ce2cccf042594fcab58194b08e4314cc, id_equipment: 93, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE1/POLYTYPE1, device_key: dk_745535b56da548929f96546b3abab28d, id_equipment: 99, tp_equipment: 1, id_unit: 99, count_index: {value: 110, confidence: confirmed}}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE2, device_key: dk_9e60d7f2b94647fcb4339d305896f8c5, id_equipment: 96, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/POLYTYPE2/POLYTYPE2, device_key: dk_bcb081769ca74070b4d4f643fbec7243, id_equipment: 102, tp_equipment: 1, id_unit: 102, count_index: {value: 29, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/PTH40-03, device_key: dk_abc5a70975544e13804a75eaa08171c6, id_equipment: 94, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/PTH40-03/PTH40-03, device_key: dk_3992ae56ffc245359ead31819159e377, id_equipment: 100, tp_equipment: 1, id_unit: 100, count_index: {value: 339, confidence: inferred}}
+  - {topic: CPACK/SC/CELULA2/PTH80S, device_key: dk_3c15f5df5b0a4dbbbc87cf3d673e0cb1, id_equipment: 92, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA2/PTH80S/PTH80S, device_key: dk_2f12b2eb2fce4833a327b1b4acca55dd, id_equipment: 98, tp_equipment: 1, id_unit: 98, count_index: {value: 105, confidence: confirmed}}
+  - {topic: CPACK/SC/CELULA9/FLEXO, device_key: dk_15d965e97e3444c3bd87a29ea5fee4c7, id_equipment: 103, tp_equipment: 3}
+  - {topic: CPACK/SC/CELULA9/FLEXO/FLEXO, device_key: dk_df66014163a14f989f5ec9493d25cc01, id_equipment: 104, tp_equipment: 1, id_unit: 104, count_index: {value: 557, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10, device_key: dk_32d9e8265cfb4d9e9d72f8293d930572, id_equipment: 52, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L10/DXL, device_key: dk_73c00545412d4294b3919b8f28067d7c, id_equipment: 77, tp_equipment: 1, id_unit: 77, count_index: {value: 564, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10/PTH, device_key: dk_e5d0012cc2c3452f9f49b02540b61db7, id_equipment: 78, tp_equipment: 1, id_unit: 78, count_index: {value: 565, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10/TCX, device_key: dk_20d77f9e14b746f48218d4501f5969f4, id_equipment: 79, tp_equipment: 1, id_unit: 79, count_index: {value: 566, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L10/TEXA, device_key: dk_19ba87c4c0a54a7fa3e30652acf99d0f, id_equipment: 80, tp_equipment: 1, id_unit: 80, count_index: {value: 567, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L3, device_key: dk_6b7775d1777649de824cb365daf4c5c3, id_equipment: 48, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L3/BREYER, device_key: dk_8012cb951c3843a5ab02a6702033cbf3, id_equipment: 58, tp_equipment: 1, id_unit: 58, count_index: {value: 76, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/POLYTYPE, device_key: dk_1071a1f41ab04c90a6e647c371221058, id_equipment: 62, tp_equipment: 1, id_unit: 62, count_index: {value: 82, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/PTH, device_key: dk_ea785effc89f4af9adf62d2fe3949845, id_equipment: 61, tp_equipment: 1, id_unit: 61, count_index: {value: 81, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/RMH, device_key: dk_ea78b4b7a70340b6a08a82bfee8c4992, id_equipment: 59, tp_equipment: 1, id_unit: 59, count_index: {value: 79, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L3/TEXA, device_key: dk_b01c6a701a8d4248aedc62c278042e20, id_equipment: 60, tp_equipment: 1, id_unit: 60, count_index: {value: 80, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4, device_key: dk_8a83ec42d59349dd8d024d71e2a8e373, id_equipment: 49, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L4/BREYER, device_key: dk_7111a116eea24077aed0a2cfcdd48ea8, id_equipment: 66, tp_equipment: 1, id_unit: 66, count_index: {value: 6, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/POLYTYPE, device_key: dk_04d5f7571ad7427a81c925167b89ba38, id_equipment: 67, tp_equipment: 1, id_unit: 67, count_index: {value: 7, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/PTH, device_key: dk_76ed7771f67349aa81e51776219abd0e, id_equipment: 64, tp_equipment: 1, id_unit: 64, count_index: {value: 8, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/RMH, device_key: dk_1b802bfbaf284b48a5eaff1b9a8ea7cb, id_equipment: 65, tp_equipment: 1, id_unit: 65, count_index: {value: 9, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L4/TEXA, device_key: dk_29b8aeb8822d46e6980f5bf79cf0e0ec, id_equipment: 63, tp_equipment: 1, id_unit: 63, count_index: {value: 10, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L5, device_key: dk_29040938404d4c33b4206fd66210fcdc, id_equipment: 47, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L5/BREYER, device_key: dk_b1ba091653884f9f8508aba6c75a4968, id_equipment: 53, tp_equipment: 1, id_unit: 53, count_index: {value: 61, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/POLYTYPE, device_key: dk_912c40ae2f844159bb1cb2da10ae0292, id_equipment: 54, tp_equipment: 1, id_unit: 54, count_index: {value: 62, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/PTH, device_key: dk_d55d55c050164de9842a2fb0c3d1f11b, id_equipment: 55, tp_equipment: 1, id_unit: 55, count_index: {value: 63, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/RMH, device_key: dk_57cb14a841304a60826d36f8def7a8c7, id_equipment: 56, tp_equipment: 1, id_unit: 56, count_index: {value: 64, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L5/TEXA, device_key: dk_68917ff2bb86412bb8ef189b72a6c3be, id_equipment: 57, tp_equipment: 1, id_unit: 57, count_index: {value: 65, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6, device_key: dk_6f0405bc78444b74aa7a995a9ef7c357, id_equipment: 50, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L6/BREYER, device_key: dk_4a6d35b87c97453ca0d5b32732d25c5c, id_equipment: 68, tp_equipment: 1, id_unit: 68, count_index: {value: 91, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/POLYTYPE, device_key: dk_e99d70a7967d45cea4025f8e0f841591, id_equipment: 70, tp_equipment: 1, id_unit: 70, count_index: {value: 93, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/PTH, device_key: dk_7f6e20c3b31d4f06a19f7f9b5f164969, id_equipment: 72, tp_equipment: 1, id_unit: 72, count_index: {value: 95, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/RMH, device_key: dk_77535c6244e143c1a2715bf0ff8870d7, id_equipment: 71, tp_equipment: 1, id_unit: 71, count_index: {value: 94, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L6/TEXA, device_key: dk_fecce6c8b92948b5ab123fb289c79e89, id_equipment: 69, tp_equipment: 1, id_unit: 69, count_index: {value: 92, confidence: confirmed}}
+  - {topic: CPACK/SC/LINHAS/L8, device_key: dk_f4d568149edd47afb8fea37e1e67d860, id_equipment: 51, tp_equipment: 3}
+  - {topic: CPACK/SC/LINHAS/L8/DXL, device_key: dk_14968bcd60ef4610b49199cf08cd2fd3, id_equipment: 73, tp_equipment: 1, id_unit: 73, count_index: {value: 219, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/PTH, device_key: dk_a37e6fdf5c20410ab345fa458fd662c9, id_equipment: 74, tp_equipment: 1, id_unit: 74, count_index: {value: 220, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TCX, device_key: dk_2cedf8e651b14b76a350bb6aa5a69370, id_equipment: 75, tp_equipment: 1, id_unit: 75, count_index: {value: 221, confidence: inferred}}
+  - {topic: CPACK/SC/LINHAS/L8/TEXA, device_key: dk_dd1a9ecd9ac04140827062f2a86289bc, id_equipment: 76, tp_equipment: 1, id_unit: 76, count_index: {value: 222, confidence: inferred}}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE1, device_key: dk_bf052e5a4a95425bb1f8fce9934deb97, id_equipment: 105, tp_equipment: 3}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE1/SLEEVE1, device_key: dk_d7f26723d8cd4fd79445932fa30c716b, id_equipment: 107, tp_equipment: 1, id_unit: 107, count_index: {value: 763, confidence: inferred}}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE2, device_key: dk_83e5dea063ac4134b03502f6cda28495, id_equipment: 106, tp_equipment: 3}
+  - {topic: CPACK/SC/SLEEVE/SLEEVE2/SLEEVE2, device_key: dk_c10f34957b4541068b2c128cda6180b2, id_equipment: 108, tp_equipment: 1, id_unit: 108, count_index: {value: 823, confidence: inferred}}
 
 # ── agent wiring (→ client.yaml, the agentcfg descriptor) ─────────────────────
 agent:

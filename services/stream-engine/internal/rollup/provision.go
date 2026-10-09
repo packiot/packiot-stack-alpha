@@ -27,33 +27,45 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
-// The 17-function matrix, prod order (equipment → area → site).
+// The provision matrix, prod order (equipment → area → site).
+//
+// #224 (analytics clean-schema P4/P5): these call the canonical *_oee_* provision
+// procs directly. The transitional PERFORM-new() shims under the old *_runtime_*
+// names (created by the P4-step2 rename) are being contracted away — repointing the
+// sole live caller here is the prerequisite for dropping those shims. The proc
+// bodies are unchanged; only the name each entry resolves to moved runtime_->oee_.
 var provisionFns = []string{
-	"piot_create_equipment_runtime_1hour",
-	"piot_create_equipment_runtime_1day",
-	"piot_create_equipment_runtime_1week",
-	"piot_create_equipment_runtime_1month",
-	"piot_create_equipment_runtime_shift",
-	"piot_create_equipment_runtime_shift_1week",
-	"piot_create_equipment_runtime_shift_1month",
+	"piot_create_equipment_oee_hourly",
+	"piot_create_equipment_oee_daily",
+	"piot_create_equipment_oee_weekly",
+	"piot_create_equipment_oee_monthly",
+	"piot_create_equipment_oee_shift",
+	"piot_create_equipment_oee_shift_weekly",
+	"piot_create_equipment_oee_shift_monthly",
 	// #186: area/site 1hour/1week/1month provisioning removed with the retired
 	// dead grains; only day + shift (+ all equipment grains) are provisioned now.
-	"piot_create_area_runtime_1day",
-	"piot_create_area_runtime_shift",
-	"piot_create_site_runtime_1day",
-	"piot_create_site_runtime_shift",
+	"piot_create_area_oee_daily",
+	"piot_create_area_oee_shift",
+	// #263: piot_create_site_oee_daily removed — site_oee_daily dropped (unread). Site SHIFT kept.
+	"piot_create_site_oee_shift",
 }
 
 // RunProvision executes the matrix for one destination: one session,
-// search_path = flow schema first (fail-soft per function — prod's
-// dispatcher wraps each create in its own EXCEPTION block).
+// search_path = the canonical medallion path (fail-soft per function —
+// prod's dispatcher wraps each create in its own EXCEPTION block).
+// The piot_create_*_oee_* provision fns have no own search_path and
+// reference the grain tables by BARE name (e.g. INSERT INTO
+// equipment_oee_shift), so gold/silver/core MUST precede public — else
+// the bare refs resolve to the public compat SHIMS (which are being
+// retired) instead of the real medallion tables. This mirrors the DB
+// role/database default search_path exactly.
 func RunProvision(ctx context.Context, d flows.Dest, logger *slog.Logger) error {
 	conn, err := d.Pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire: %w", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, fmt.Sprintf(`SET search_path TO %s, public`, d.EvSchema)); err != nil {
+	if _, err := conn.Exec(ctx, `SET search_path TO gold, silver, bronze, identity, config, ops, serving, customer_reports, core, public`); err != nil {
 		return fmt.Errorf("search_path: %w", err)
 	}
 	// Provision is allowed to be slow (hourly cadence, 30min job

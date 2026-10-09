@@ -1,5 +1,8 @@
 # db — the PostgreSQL / TimescaleDB layer
 
+> **2026-10-07:** the legacy local harness that mounted `db/init/` (compose.development.yml) was removed (ADR-0060 P2). The dev DB is now the anonymized seed image (`dev/seed`); `db/init/*` has no runner left and is kept for reference only — ORPHANED.
+
+
 Everything needed to **build the stack's single production database** lives here:
 the Docker image (Postgres 15 + TimescaleDB + `pg_cron`), the first-boot init
 scripts, the local-dev bootstrap schema, and the greenfield-prod **F3 schema
@@ -15,7 +18,7 @@ blocked, so inspect schema via `information_schema` / the Hasura console.
 > **The schema comes in two shapes.** *F1/legacy* is the historical
 > flow-1 schema (edge-api knex + the old `oeecloud-node-red` DDL). *F3* is the
 > refactored **single-flow** schema — the same one staging carries in its
-> `packiot_shadow` schema — that a greenfield prod DB is **born with** directly,
+> `packiot_analytics` schema — that a greenfield prod DB is **born with** directly,
 > skipping the long ADR-0012/0032 migration. New production is F3-only.
 
 ---
@@ -33,7 +36,7 @@ db/
 │
 ├── init/                              LOCAL-DEV bootstrap schema + a set of F3/F2 migration & hardening fixups
 │   ├── README.md
-│   ├── 00-schema.sql                  core OEE hierarchy + production tables (dev; mounted by compose.development.yml)
+│   ├── 00-schema.sql                  core OEE hierarchy + production tables (dev; mounted by the dev/ environment (ADR-0060; formerly compose.development.yml))
 │   ├── 01-seed.sql                    demo enterprise (id=1), sample machines, packml topics, downtime reasons
 │   ├── 02-refactored-rollup-bigint-widen.sql   widen week/month rollup int4→bigint (int4 SUM overflow denial guard)
 │   ├── 03-purge-nonstate-event-pollution.sql   one-time cleanup of stray open (ts_end NULL) events
@@ -48,13 +51,13 @@ db/
 │
 └── init-f3/                          GREENFIELD-PROD: assemble the F3 schema as `public` + prove it
     ├── README.md                     ← read this first for any prod-schema work
-    ├── MANIFEST.f3-target            authoritative F3 target manifest (curated, SELECT-only from live packiot_shadow)
+    ├── MANIFEST.f3-target            authoritative F3 target manifest (curated, SELECT-only from live packiot_analytics)
     ├── DEBRIS.exclude                regex patterns of staging debris that must NOT enter prod
     ├── knex-baseline.sql             fake-baseline edge-api's knex against F3 so db-migrate doesn't rebuild F1 over F3
     ├── assemble.sh                   reviewable fragment-scaffold (authoring aid; does NOT reach parity by itself)
     └── snapshot/                     the AUTHORITATIVE F3 DDL that compose.production.yml applies
         ├── README.md
-        ├── 00-packiot_analytics-schema.sql curated schema-only pg_dump (152 tables, 129 fns, 10 views) — best-effort
+        ├── 00-packiot_analytics-schema.sql   curated schema-only pg_dump (152 tables, 129 fns, 10 views) — best-effort
         ├── 15-f3-read-api-composite-type-fixes.sql fixes 9 read-api /v1/query datasets (text[]→jsonb[]) — strict
         ├── 05-f3-cagg-agg.sql              equipment_values hypertable + 9 agg_* continuous aggregates — strict
         └── 10-f3-timescale-supplement.sql  3 remaining raw hypertables + 5 ca_* continuous aggregates — strict
@@ -66,7 +69,7 @@ db/
 
 There are **three** build paths — one per environment.
 
-### 1. Local dev (`make up` / `compose.development.yml`)
+### 1. Local dev (`make up` / `the dev/ environment (ADR-0060; formerly compose.development.yml)`)
 
 The `postgres` service runs the plain **`timescale/timescaledb:2.25.2-pg16`**
 image and mounts the SQL files into `/docker-entrypoint-initdb.d/`, which the
@@ -125,7 +128,7 @@ is **proven to `F3_MISSING=0, EXTRA=0`** against the live target manifest — se
 
 **`assemble.sh` is not the prod path.** It concatenates canonical F3 source
 fragments in dependency order and is useful for *reading/authoring* the schema,
-but the fragments have diverged from live `packiot_shadow` and **do not reach
+but the fragments have diverged from live `packiot_analytics` and **do not reach
 parity** (measured: neither subset nor superset of F3). The authoritative method
 is the curated snapshot. Always prove a candidate with the gate:
 
@@ -174,7 +177,7 @@ CANDIDATE_DSN=<dsn> ./scripts/prod-f3-schema-parity-check.sh gate   # PASS ⇔ F
 
 ## Working with it locally
 
-All targets are on the root `Makefile` (uses `compose.development.yml`):
+All targets are on the root `Makefile` (uses `the dev/ environment (ADR-0060; formerly compose.development.yml)`):
 
 ```sh
 make up                 # bring the dev stack up (runs init scripts on first boot)
@@ -212,7 +215,7 @@ re-runs every `initdb.d` script — the clean way to pick up a changed
   to `init/01-seed.sql` (prefer extending it over new files — init order is
   alphabetical, so keep the numeric-prefix discipline if you must split).
 - **F3 / prod schema:** never hand-assemble prod from fragments. Evolve the
-  schema on staging `packiot_shadow`, then **regenerate** the snapshot via
+  schema on staging `packiot_analytics`, then **regenerate** the snapshot via
   `scripts/capture-f3-snapshot.sh` (gated — needs a staging DB read) and re-run
   `scripts/prod-f3-schema-parity-check.sh gate`. Nothing merges to the prod path
   until `F3_MISSING=0`. See [`init-f3/README.md`](init-f3/README.md).

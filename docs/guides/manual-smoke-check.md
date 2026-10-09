@@ -24,7 +24,7 @@ or `unhealthy` = stop here and read its logs.
 ## Layer 1 — ingest freshness, per flow (DB EC2)
 
 Run against **each** flow — `packiot` (F1), `shadow_go_port` schema on
-packiot (F2), `packiot_shadow` (F3):
+packiot (F2), `packiot_analytics` (F3):
 
 ```sql
 SELECT max(ts_value) AS newest,
@@ -109,4 +109,4 @@ prod-read harness (layer 4), not staging row counts.
 
 Routing: this is layer-by-layer triage. For what each component *is*,
 see [the guide](../README.md); for the verification methodology
-behind layer 4, [the guide ch.8 — observability](../guide/08-observability.md).
+behind layer 4, [the guide ch.8 — observability](../archive/wiki-v1/guide/08-observability.md).

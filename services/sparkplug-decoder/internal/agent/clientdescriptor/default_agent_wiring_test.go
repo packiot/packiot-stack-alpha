@@ -23,9 +23,11 @@ tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
   - topic: DUMMY/SP/LINE1
+    device_key: dk_b059e83ddcdec1f6395e3bf0cfcf5375
     id_equipment: 9000
     tp_equipment: 3
   - topic: DUMMY/SP/LINE1/M1
+    device_key: dk_8ef4fad5a93f4b5cc0e5ecd1dd44770b
     id_equipment: 9001
     tp_equipment: 1
     id_unit: 9001
@@ -115,6 +117,7 @@ tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
   - topic: DUMMY/SP/LINE1/M1
+    device_key: dk_60822b6133ff373ffe3cbc064f50445c
     id_equipment: 9001
     tp_equipment: 1
     id_unit: 9001

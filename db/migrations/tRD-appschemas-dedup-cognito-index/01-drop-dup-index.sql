@@ -1,0 +1,28 @@
+-- tRD-appschemas-dedup-cognito-index / 01-drop-dup-index.sql
+--
+-- SAFE (additive-reversible): drop a redundant duplicate partial-unique index on
+-- identity.users(id_user_cognito).
+--
+-- Two byte-identical indexes exist, created by two independent bootstrap paths that
+-- were unaware of each other:
+--   * users_id_user_cognito_un   -- created by edge-node-red/db/32-cognito-user-id.sql
+--                                   (+ 41-front4-f3-cognito-seed.sql), CREATE ... IF NOT EXISTS
+--   * users_id_user_cognito_uniq -- created by edge-api knex migration
+--                                   20260809000002_users_id_user_cognito_unique.ts
+--                                   (this is the parity-tracked object: db/cutover/f3-schema-parity.sql:323)
+--
+-- Both are: UNIQUE (id_user_cognito) WHERE (id_user_cognito IS NOT NULL). Keeping both
+-- doubles write-amplification and storage on every users upsert for zero benefit — the
+-- ON CONFLICT (id_user_cognito) inference in edge-api cognito-users-dao.ts resolves against
+-- EITHER index, and neither is referenced by name anywhere in the code.
+--
+-- We keep _uniq (the knex/parity-tracked canonical) and drop _un (the bootstrap-SQL dup).
+--
+-- ZERO consumer breakage: the surviving _uniq index enforces the same uniqueness and serves
+-- the same ON CONFLICT arbiter + lookups. idx_scan=0 on both today anyway (9-row table).
+--
+-- FOLLOW-UP (not in this migration, flagged for the parent): edit
+-- edge-node-red/db/32-cognito-user-id.sql + 41-front4-f3-cognito-seed.sql to stop creating
+-- _un, so a fresh DB bootstrap does not reintroduce the duplicate.
+
+DROP INDEX IF EXISTS identity.users_id_user_cognito_un;

@@ -1,0 +1,79 @@
+# ── stream-engine (Tier 2) — ADR-0060 P3 ─────────────────────────────────────
+# contract (docs/dev/contracts.md §2):
+#   inputs:   RabbitMQ `oee` exchange → stream-engine-q (routing key `sparkplug.data`, the decoder's firehose);
+#             postgres (config, shifts, POs)
+#   outputs:  postgres silver/gold (equipment_values, events, runtime rollups, PO runtimes, UNS)
+#   external: none in dev — CREDS_SOURCE=env, tracing off
+# Differences from compose.staging.yml, on purpose:
+#   - LEGACY_INGEST_ENABLED=false: no per-tenant queues (their discovery reads packml_register, which ADR-0061
+#     removes, and the anonymized seed's tenant names are not routing-key safe); the firehose carries every tenant.
+#   - customer report jobs (SHIFT06 / SAP13 / BOXES13 / SYNC06) off: client-specific exports, not pipeline.
+#   - tenant/equipment lists are the seed's (tenant 3, ids kept by the seed's classification).
+services:
+  stream-engine:
+    build: ../../services/stream-engine
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: info
+      CREDS_SOURCE: env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: packiot_analytics
+      POSTGRES_ANALYTICS_DB_NAME: packiot_analytics
+      POSTGRES_MAX_CONNS: "5"
+      POSTGRES_ANALYTICS_MAX_CONNS: "10"
+      RABBITMQ_USER: stream-engine
+      RABBITMQ_PASSWORD: ${RABBITMQ_STREAM_ENGINE_PASSWORD:?set in dev/.env.dev}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: oee
+      WORKER_QUEUE: stream-engine-q
+      RETRY_EXCHANGE: oee-retry
+      RETRY_QUEUE: stream-engine-q-retry-30s
+      FAILED_EXCHANGE: oee-failed
+      FAILED_QUEUE: stream-engine-q-failed
+      RETRY_TTL_MS: "30000"
+      MAX_RETRIES: "5"
+      PREFETCH: "50"
+      CONSUME_LANES: "2"
+      HEALTH_PORT: "9101"
+      LEGACY_INGEST_ENABLED: "false"
+      OEE_AVAIL_FLOOR_ENABLED: "true"
+      OEE_CANONICAL_APQ_ENABLED: "true"
+      ROLLUP_BACKFILL_ENABLED: "true"
+      ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
+      ROLLUP_BACKFILL_LIMIT: "50"
+      ROLLUP_SHIFT_LIMIT: "75"
+      EVENTS_CLOSE_STALE_ENABLED: "true"
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3"
+      SHIFT_FILL_FOLDED: "true"
+      SHIFT_RESOLVER_ENABLED: "true"
+      EVENTS_DERIVER_ENABLED: "true"
+      PO_CONTROL_ENABLED: "true"
+      UNS_REFRESH_ENABLED: "true"
+      UNS_CURRENT_METRICS_ENABLED: "true"
+      PO_RECALC_ENABLED: "true"
+      PO_AVAILABILITY_ENABLED: "true"
+      RUNTIME_PROVISION_ENABLED: "true"
+      RUNTIME_ROLLUP_ENABLED: "true"
+      COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
+      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "68,69,70,71,72"
+      COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
+      COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
+      INCREMENT_SANITY_CLAMP_ENABLED: "true"
+      INCREMENT_SANITY_CLAMP_SPIKE_FRACTION: "0.5"
+      BRONZE_RAW_APPEND: "true"
+      SHIFT06_REPORT_ENABLED: "false"
+      SAP13_REPORT_ENABLED: "false"
+      BOXES13_REPORT_ENABLED: "false"
+      SYNC06_REPORT_ENABLED: "false"
+      BOXES_BRIDGE_ENABLED: "false"
+      WORKER_POOL_SAC_ENABLED: "false"
+    restart: unless-stopped

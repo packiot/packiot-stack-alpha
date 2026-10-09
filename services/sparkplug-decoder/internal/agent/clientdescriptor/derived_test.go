@@ -47,6 +47,7 @@ func TestDerivedExample_GeneratesAndValidates(t *testing.T) {
 		"/L5/FLEXO/Admin/ProdConsumedCount/61/Unit",
 		"/L5/FLEXO/Admin/ProdProcessedCount/61/Unit",
 		"/L5/PTH/Admin/ProdConsumedCount/70/Unit",
+		"/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit", // EXPR emit leaf (ADR-0058)
 	}
 	for _, w := range wantPresent {
 		if !suffixes[w] {
@@ -62,7 +63,7 @@ func TestDerivedExample_GeneratesAndValidates(t *testing.T) {
 
 	// The generated profile carries the resolved derived rules the runtime deriver
 	// consumes — one integral (FLEXO, 2 emit leaves) + one sum (PTH, 2 addends).
-	var nIntegral, nSum int
+	var nIntegral, nSum, nExpr int
 	for _, r := range art.Profile.Derived {
 		if r.Integral != nil {
 			nIntegral++
@@ -79,9 +80,21 @@ func TestDerivedExample_GeneratesAndValidates(t *testing.T) {
 				t.Errorf("PTH sum addends not segment-qualified: %v", r.Sum.Addends)
 			}
 		}
+		if r.Expr != nil {
+			nExpr++
+			// The expr string is preserved verbatim; the VARS are segment-qualified
+			// (relative "/Status/DW0" → full "/L5/SCRAP/Status/DW0"). This is the
+			// authoring-through-generate proof for ADR-0058 Tier 1.
+			if r.Expr.Expr != "gross - net" {
+				t.Errorf("expr not preserved: %q", r.Expr.Expr)
+			}
+			if r.Expr.Vars["gross"] != "/L5/SCRAP/Status/DW0" || r.Expr.Vars["net"] != "/L5/SCRAP/Status/DW4" {
+				t.Errorf("expr vars not segment-qualified: %v", r.Expr.Vars)
+			}
+		}
 	}
-	if nIntegral != 1 || nSum != 1 {
-		t.Fatalf("profile derived rules: got %d integral + %d sum, want 1 + 1", nIntegral, nSum)
+	if nIntegral != 1 || nSum != 1 || nExpr != 1 {
+		t.Fatalf("profile derived rules: got %d integral + %d sum + %d expr, want 1 + 1 + 1", nIntegral, nSum, nExpr)
 	}
 
 	// UnmappedTopics must stay empty — every equipment synthesizes ≥1 metric.

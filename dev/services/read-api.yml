@@ -1,0 +1,62 @@
+# ── read-api (Tier 3) — ADR-0060 P2 ──────────────────────────────────────────
+# contract (docs/dev/contracts.md §2):
+#   inputs:   postgres packiot_analytics as readapi_ro (RLS, no bypass; the dev seed sets its password to
+#             "dev"), app-redis (cache, fails open), Cognito JWKS of the DEV pool (internet egress)
+#   outputs:  HTTP :9104 (/v1/query, /v1/language-packs, /healthz) — reached by the SPAs through read-api-cors
+#   external: dev Cognito pool (terraform/staging/cognito_dev.tf); historian gateway omitted (/v1/historian → 503)
+# Needs the dev seed (DEVDB_IMAGE): it brings readapi_ro, the database search_path and the data.
+# read-api sends no CORS headers and 401s the browser preflight; on staging host nginx answers CORS
+# (terraform/staging/user_data/nginx_setup.sh, refdata vhost) — read-api-cors is that block for dev.
+services:
+  read-api:
+    build: ../../services/read-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      REFDATA_FLOW: f3
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: readapi_ro
+      DB_PASSWORD: ${READAPI_RO_PASSWORD:-dev}
+      DB_NAME_F3: packiot_analytics
+      HEALTH_PORT: "9104"
+      COGNITO_AUTH_ENABLED: "true"
+      # default to the staging pool in code: without these every request 401s
+      COGNITO_ISSUER: ${DEV_COGNITO_ISSUER:?set in dev/.env.dev}
+      COGNITO_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
+      REDIS_CACHE_ENABLED: "true"
+      REDIS_URL: redis://app-redis:6379/0
+      # /internal/resolve-device for the decoder (device_key → equipment); fail-closed when unset
+      INTERNAL_API_KEY: ${DEV_INTERNAL_API_KEY:?set in dev/.env.dev}
+      # Opaque tenant read keys (key:tenant), as staging's QUERY_API_KEYS: the operator's nginx injects one on /v1 and
+      # /v2, and the dev smoke uses it to query without a Cognito login. Fake, dev-only.
+      QUERY_API_KEYS: ${DEV_QUERY_API_KEYS:-dev-read-key-3:3}
+    networks:
+      default:
+        aliases: ["refdata-api"] # SPA nginx templates still use refdata-api:9104
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/read-api", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  read-api-cors:
+    image: nginx:1.27-alpine
+    depends_on:
+      read-api:
+        condition: service_healthy
+    environment:
+      DEV_CORS_ORIGIN: ${DEV_CORS_ORIGIN:-http://localhost:5173}
+    volumes:
+      - ../read-api/cors.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "127.0.0.1:${DEV_READAPI_PORT:-9104}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

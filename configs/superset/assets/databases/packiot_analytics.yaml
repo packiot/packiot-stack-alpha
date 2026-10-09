@@ -6,12 +6,45 @@
 # Superset prompts for the DB password (or pass it via the import API's
 # `passwords` map). The real superset_ro password comes from Secrets Manager
 # (packiot/<env>/app key `superset_db_ro_password`) — NEVER commit it here.
-# Host/port: route through pgbouncer (see w2-embedded-superset.md §1.2). The DB
-# name is the analytics DB (`postgres` on the r7g), NOT the `superset` metadata DB.
+#
+# HOST: DIRECT to the DB box, NOT pgbouncer — verified against the LIVE
+# production registration (2026-08-20, via `superset shell` on i-0a5c5dadd9ea5e93e):
+# `postgresql+psycopg2://superset_ro:***@10.20.10.89:5432/packiot`, bypassing
+# pgbouncer entirely (this file used to say pgbouncer:6432/postgres — that was
+# STALE/drifted from what's actually deployed; corrected here). This is not
+# incidental: `superset_config.py`'s `DB_CONNECTION_MUTATOR` stamps the tenant as
+# a libpq startup option (`-c app.tenant_id=<id>`) on EVERY query — under
+# pgbouncer's transaction-pooling mode that option is set once per physical
+# server connection, not necessarily once per Superset request, so a pooled
+# connection could silently serve a DIFFERENT tenant's stamp than the caller's
+# (tenant-isolation-breaking). Connecting directly to the DB host makes every
+# Superset connection carry its own correctly-stamped GUC. Do not re-route this
+# through pgbouncer without re-verifying the mutator's per-connection semantics.
+#
+# STAGING NOTE (2026-08-20): production points dbname at `packiot`
+# (F3 assembled as its own `public` schema, ADR "W1.4") on host 10.20.10.89.
+# Staging has NOT done that swap — F3 lives in a SEPARATE physical database on
+# staging's DB box (`packiot-staging-db`, `POSTGRES_HOST=10.10.10.89` in
+# `/opt/packiot/.env`, confirmed live). That database was renamed
+# `packiot_shadow` -> `packiot_analytics` (2026-08-20). So on staging: host
+# `10.10.10.89`, dbname `packiot_analytics`, DIRECT (mirrors prod's
+# bypass-pgbouncer pattern above). `db/superset/01-superset-ro-role.sql` (the
+# `bi.*` views + superset_ro role) must be applied against THAT database for
+# these datasets to resolve.
+# ENV-TEMPLATED (T5 prod parity, 2026-09-24): host + dbname are resolved at import by
+# import_bundle.py — __ANALYTICS_HOST__ ← POSTGRES_HOST_UPSTREAM (staging 10.10.10.89,
+# prod 10.20.10.89), __ANALYTICS_DB__ ← SUPERSET_ANALYTICS_DB (default packiot_analytics;
+# prod MUST set packiot). Previously hardcoded to STAGING — promoting unchanged would
+# have pointed prod Superset at the staging DB. superset-init's sync_databases.py logs
+# the resolved user@host/db on every deploy.
 database_name: packiot_analytics
-sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@pgbouncer:6432/postgres
+sqlalchemy_uri: postgresql+psycopg2://superset_ro:XXXXXXXXXXXX@__ANALYTICS_HOST__:5432/__ANALYTICS_DB__
 cache_timeout: null
-expose_in_sqllab: true
+# HARDENING: authors get NO native SQL against the analytics DB. RLS rewrites
+# DATASET queries only; a SQL-Lab user could SELECT straight off a base table and
+# bypass dataset-scoped RLS. Keep this false (superset_config.py documents the same
+# posture) so the analytics connection never appears in SQL Lab.
+expose_in_sqllab: false
 allow_run_async: true
 allow_ctas: false
 allow_cvas: false

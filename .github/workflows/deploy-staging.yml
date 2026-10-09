@@ -15,7 +15,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Queued runs can execute OUT OF ORDER relative to the commits they deploy: on 2026-10-08 the run for an
+  # OLDER commit (5d0742c8, edge-api pin f314057e) executed after the run for the NEWER tip (b91c2ce8, pin
+  # 60c6ad08) and rolled edge-api back — both runs "success", the merged fix silently not running. Each run
+  # deploys its own github.sha, so the last one to finish wins. Gate: when this run starts (after the previous
+  # one finished — workflow-level concurrency), skip it if staging has moved past its commit; the newer
+  # commit's own run owns the deploy. Manual dispatches always deploy.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "push" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          tip=$(gh api "repos/${{ github.repository }}/commits/staging" --jq .sha)
+          status=$(gh api "repos/${{ github.repository }}/compare/${{ github.sha }}...${tip}" --jq .status)
+          echo "this run: ${{ github.sha }}  staging tip: ${tip}  (${status})"
+          if [ "$tip" != "${{ github.sha }}" ] && [ "$status" = "ahead" ]; then
+            echo "::notice::Superseded by ${tip}: that commit's own deploy run owns staging; skipping this one."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true'
     runs-on: [self-hosted, staging, linux, arm64]
 
     steps:
@@ -42,15 +70,57 @@ jobs:
         #   edge-api, edge-nodered, operator (frontend, built since the
         #   operator.staging.packiot.app SPA went live). oeecloud-node-red
         #   was removed in the 2026-06-24 decommission (replaced by the Go
-        #   worker baked into services/oeecloud-worker).
+        #   worker baked into services/stream-engine).
         run: |
+          # Self-heal persistent-runner drift: a live edit to a submodule checkout
+          # on the box (e.g. operator) blocks submodule update with "local changes
+          # would be overwritten". Reset dirty tracked files first, then --force.
+          git submodule foreach --recursive 'git reset --hard || true' 2>/dev/null || true
           git submodule sync edge-api edge-node-red operator csadmin
-          git submodule update --init edge-api edge-node-red operator csadmin
+          git submodule update --init --force edge-api edge-node-red operator csadmin
 
       - name: Link .env
         # Secrets live in /opt/packiot/.env (written by app_init.sh from Secrets Manager).
         # Symlinking makes it available as .env so Docker Compose picks it up.
         run: ln -sf /opt/packiot/.env "$GITHUB_WORKSPACE/.env"
+
+      - name: Ensure ALLOY_GATEWAY_BIND (DB-box observability relays)
+        # The Alloy gateway's 3101 (Loki) / 3102 (Prometheus remote-write) relays
+        # for the DB-box agent bind to ${ALLOY_GATEWAY_BIND:-127.0.0.1}. The key was
+        # never in .env (app_init.sh skips regeneration when .env exists), so every
+        # recreate bound LOOPBACK and the DB box's pushes were silently refused —
+        # DB slow-query logs missing from Loki since ≥2026-09-14. Self-heal: set it
+        # to this box's private IP if absent (source IP of the default route — exact
+        # even with docker bridges present; no IMDS dependency).
+        # Private IP only: the SG admits 3101/3102 from the DB SG, never the world.
+        run: |
+          if ! grep -qE '^ALLOY_GATEWAY_BIND=.+' /opt/packiot/.env; then
+            IP=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+            case "$IP" in 10.*) ;; *) echo "::error::unexpected VPC private IP '$IP' (staging VPC is 10.10.0.0/16)"; exit 1 ;; esac
+            printf '\n# DB-box observability relay bind (set by deploy-staging.yml)\nALLOY_GATEWAY_BIND=%s\n' "$IP" >> /opt/packiot/.env
+            echo "ALLOY_GATEWAY_BIND set to $IP"
+          else
+            echo "ALLOY_GATEWAY_BIND already set: $(grep -E '^ALLOY_GATEWAY_BIND=' /opt/packiot/.env | cut -d= -f2)"
+          fi
+
+      - name: Ensure HIST_GW_SVC_PASSWORD (historian least-privilege service login)
+        # T3: read-api + Superset reach the historian gateway as the NOSUPERUSER
+        # historian_svc. Source of truth = Secrets Manager packiot/staging/historian-svc;
+        # mirror it into .env when absent (app_init.sh never regenerates an existing
+        # .env — the same self-heal pattern as ALLOY_GATEWAY_BIND). Missing secret ⇒
+        # warn only: read-api's historian pool is nil-safe (503) and Superset skips.
+        run: |
+          if ! grep -qE '^HIST_GW_SVC_PASSWORD=.+' /opt/packiot/.env; then
+            P=$(aws secretsmanager get-secret-value --region us-east-1 --secret-id packiot/staging/historian-svc --query SecretString --output text 2>/dev/null | jq -r '.password // empty')
+            if [ -n "$P" ]; then
+              printf '\n# historian_svc gateway login (set by deploy-staging.yml from packiot/staging/historian-svc)\nHIST_GW_SVC_PASSWORD=%s\n' "$P" >> /opt/packiot/.env
+              echo "HIST_GW_SVC_PASSWORD mirrored from Secrets Manager"
+            else
+              echo "::warning::packiot/staging/historian-svc not readable — historian consumers stay disabled"
+            fi
+          else
+            echo "HIST_GW_SVC_PASSWORD present"
+          fi
 
       - name: Generate RabbitMQ definitions (durable least-priv users)
         # rabbitmq.conf sets load_definitions, which re-imports users/perms on
@@ -62,20 +132,106 @@ jobs:
         # would stop rabbitmq booting since load_definitions references it.
         run: |
           set -euo pipefail
+          install -d -m 0755 /opt/packiot/rabbitmq
           AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2)
           AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2)
-          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-oeecloud-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
-          EP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-edge-transformer-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
-          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$EP"
-          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg ep "$EP" '
+          # rename S1+S2 (oeecloud-worker -> stream-engine): MANUAL PRE-REQ —
+          # packiot/staging/rabbitmq-stream-engine-creds must exist (username
+          # "stream-engine", same password as the old rabbitmq-oeecloud-creds)
+          # before this step can succeed.
+          #
+          # rename (edge-transformer -> sparkplug-decoder, this PR): MANUAL
+          # PRE-REQ — packiot/staging/rabbitmq-sparkplug-decoder-creds must
+          # exist (username "sparkplug-decoder", same password as the old
+          # rabbitmq-edge-transformer-creds) + the RMQ user itself created,
+          # BEFORE this step can succeed. See
+          # docs/plans/rename-shadow-rabbitmq-addendum.md §A.
+          OP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-stream-engine-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          SDP=$(aws secretsmanager get-secret-value --secret-id packiot/staging/rabbitmq-sparkplug-decoder-creds --region us-east-1 --query SecretString --output text | jq -r '.password')
+          test -n "$AU" && test -n "$AP" && test -n "$OP" && test -n "$SDP"
+          jq --arg au "$AU" --arg ap "$AP" --arg op "$OP" --arg sdp "$SDP" '
             .users |= map(
               if .name=="__ADMIN__" then .name=$au | .password=$ap
-              elif .name=="oeecloud-worker" then .password=$op
-              elif .name=="edge-transformer" then .password=$ep
+              elif .name=="stream-engine" then .password=$op
+              elif .name=="sparkplug-decoder" then .password=$sdp
               else . end) |
             .permissions |= map(if .user=="__ADMIN__" then .user=$au else . end)
-          ' monitoring/rabbitmq/definitions.template.json > monitoring/rabbitmq/definitions.json
-          echo "Generated definitions.json: $(jq '.users|length' monitoring/rabbitmq/definitions.json) users, $(jq '.permissions|length' monitoring/rabbitmq/definitions.json) permission sets"
+          ' monitoring/rabbitmq/definitions.template.json > /opt/packiot/rabbitmq/definitions.json.tmp
+          # Durable path OUTSIDE the runner workspace (2026-09-25): rendered into
+          # monitoring/rabbitmq/ it was gitignored, so any later job's checkout on this
+          # self-hosted runner cleaned it; the running broker didn't care (inode already
+          # mounted), but the next host reboot found the path missing, dockerd created a
+          # DIRECTORY there, and rabbitmq exited 127 ("not a directory") → ingest down.
+          chmod 0644 /opt/packiot/rabbitmq/definitions.json.tmp
+          mv -f /opt/packiot/rabbitmq/definitions.json.tmp /opt/packiot/rabbitmq/definitions.json
+          echo "Generated definitions.json: $(jq '.users|length' /opt/packiot/rabbitmq/definitions.json) users, $(jq '.permissions|length' /opt/packiot/rabbitmq/definitions.json) permission sets"
+
+      - name: Materialize Alertmanager Slack webhook (optional — plug in later)
+        # Alertmanager reads the Slack incoming-webhook URL from a gitignored,
+        # deploy-mounted file (slack_api_url_file in alertmanager.yml). Build it
+        # from packiot/staging/app.slack_api_url when that key is set; otherwise
+        # write nothing — the `alerting` compose profile stays parked, so the
+        # missing file is harmless. TO GO LIVE: put the webhook URL in the
+        # packiot/staging/app secret under `slack_api_url`. That is the only step:
+        # "Resolve compose profiles" adds `alerting` whenever this file exists, so
+        # the next deploy materializes it and starts alertmanager (Prometheus is
+        # already wired to alertmanager:9093). Removing the key parks it again.
+        run: |
+          set -euo pipefail
+          URL=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app --region us-east-1 --query SecretString --output text | jq -r '.slack_api_url // ""')
+          if [ -n "$URL" ]; then
+            printf '%s' "$URL" > monitoring/alertmanager/slack_api_url
+            echo "Materialized alertmanager slack_api_url (len ${#URL})"
+          else
+            echo "SKIP: no slack_api_url in packiot/staging/app — alerting stays parked (expected until plugged in)"
+          fi
+
+      - name: Pull barcode-app from GHCR (optional — inert until the secret exists)
+        # barcode-scanner-v2 is a separate repo; its CI publishes the station-agnostic
+        # ghcr.io/packiot/barcode-edge:staging (station chosen at runtime). The box had no
+        # GHCR login, so barcode-app:staging was hand-built on the host. With the secret
+        # packiot/staging/ghcr-read = {"username":"<github user>","token":"<classic PAT,
+        # ONLY read:packages>"} (fine-grained tokens cannot pull from GHCR), this pulls the
+        # CI image and retags it as barcode-app:staging; the Deploy step's `up -d` then
+        # recreates the container because the tag now points at a new image id.
+        # The app role already reads packiot/staging/* (terraform/staging/ec2.tf). Absent
+        # secret or failed pull → SKIP, the hand-built image keeps running.
+        run: |
+          set -uo pipefail
+          S=$(aws secretsmanager get-secret-value --secret-id packiot/staging/ghcr-read --region us-east-1 --query SecretString --output text 2>/dev/null || true)
+          U=$(printf '%s' "$S" | jq -r '.username // empty' 2>/dev/null || true)
+          T=$(printf '%s' "$S" | jq -r '.token // empty' 2>/dev/null || true)
+          if [ -z "$U" ] || [ -z "$T" ]; then
+            echo "SKIP: no packiot/staging/ghcr-read {username,token} — barcode-app keeps the hand-built image"; exit 0
+          fi
+          if printf '%s' "$T" | docker login ghcr.io -u "$U" --password-stdin >/dev/null 2>&1 \
+             && docker pull -q ghcr.io/packiot/barcode-edge:staging; then
+            docker tag ghcr.io/packiot/barcode-edge:staging barcode-app:staging
+            echo "barcode-app:staging <- $(docker image inspect -f '{{index .RepoDigests 0}}' ghcr.io/packiot/barcode-edge:staging)"
+          else
+            echo "::warning::GHCR login/pull failed — barcode-app keeps the previous image (check the token has read:packages)"
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true  # don't leave the token in ~/.docker/config.json
+
+      - name: Resolve compose profiles (.env COMPOSE_PROFILES + shared-tee)
+        # ONE profile set for every later compose call (Build, Deploy, the state gate,
+        # the Loki restart), via $GITHUB_ENV. An explicit `--profile` flag REPLACES
+        # COMPOSE_PROFILES from .env instead of adding to it: from 0ba14d09 (09-29) the
+        # deploy's `--profile shared-tee` silently dropped the `superset` profile that
+        # .env enables, so deploys stopped managing Superset while the state gate (no
+        # flag, reads .env) still expected its one-shots → gate red on 10-06 once
+        # superset-db-init/superset-init were gone. It would also have blocked the
+        # documented `alerting` switch. .env stays the switch; shared-tee is always on.
+        # `alerting` follows the webhook: on when the Materialize step wrote a non-empty
+        # monitoring/alertmanager/slack_api_url (an alertmanager without it can't start
+        # and would redden the deploy), off otherwise.
+        run: |
+          P=$(grep -E '^COMPOSE_PROFILES=' .env | tail -1 | cut -d= -f2- | tr -d "\"'")
+          if [ -s monitoring/alertmanager/slack_api_url ] && ! echo ",$P," | grep -q ',alerting,'; then
+            P="${P:+$P,}alerting"
+          fi
+          echo "COMPOSE_PROFILES=shared-tee${P:+,$P}" >> "$GITHUB_ENV"
+          echo "compose profiles: shared-tee${P:+,$P}"
 
       - name: Build images
         # compose.superset.yml (W2 embedded BI) is a profile-gated overlay: every
@@ -85,6 +241,10 @@ jobs:
         # the Deploy step's --remove-orphans never reaps a running Superset — the
         # whole overlay stays dark until the profile is deliberately enabled per
         # docs/superset-golive-runbook.md.
+        # shared-tee (the shared multi-tenant agent, every client's cloud ingest) is
+        # profile-gated; without it the deploy never rebuilt it (staging ran a
+        # 2026-09-01 agent image until 2026-09-29). It now comes from COMPOSE_PROFILES,
+        # resolved in the previous step together with the .env profiles.
         run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack build
 
       - name: Deploy
@@ -95,10 +255,19 @@ jobs:
         # whole project — no other stack co-tenants on the host. The superset
         # overlay is profile-gated (see Build step) so this starts nothing extra
         # until COMPOSE_PROFILES=superset.
+        # COMPOSE_PROFILES (resolved step) includes shared-tee, so the shared agent is
+        # recreated when its image changed (seconds; readers retry/spool), plus the
+        # .env profiles (superset: its one-shots re-run each deploy, idempotent).
         run: docker compose -f compose.staging.yml -f compose.superset.yml -p stack up -d --remove-orphans
 
-      - name: Prune old images
-        run: docker image prune -f
+      - name: Prune old images + build cache
+        # `docker image prune` never touches the BUILD CACHE, which grows every deploy:
+        # it reached 15.4 GB (0 active) and pushed the 64 GB app disk to 94% on
+        # 2026-09-24 (HostDiskFilling) — the second time after the 22 GB incident.
+        # --keep-storage keeps the most recent 5 GB so builds stay warm.
+        run: |
+          docker image prune -f
+          docker builder prune -f --keep-storage 5GB | tail -1
 
       - name: Reload Prometheus config (dir-mount makes new file content visible; reload re-reads it)
         # Task #39. prometheus.yml/rules.yml are now a DIRECTORY bind mount, so a
@@ -133,6 +302,63 @@ jobs:
             sleep 3
           done
           echo "  reload not confirmed after 10 attempts — config will load on next restart"
+
+      - name: Reload Alloy gateway config (dir-mount + /-/reload, same as Prometheus)
+        # gateway.alloy is read via a DIRECTORY bind mount; Alloy re-reads it on
+        # POST /-/reload (its HTTP server, :12345). Reached over its own netns.
+        continue-on-error: true
+        run: |
+          set +e
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:alloy curlimages/curl:latest \
+                 -sf -X POST http://localhost:12345/-/reload >/dev/null 2>&1; then
+              echo "  alloy config reloaded (attempt $i)"; exit 0
+            fi
+            sleep 3
+          done
+          echo "  alloy reload not confirmed — config loads on next restart"
+
+      - name: Restart postgres-exporter when its queries changed (no hot-reload)
+        # Same inode-trap family as #39/#41: queries.yaml is now read via a
+        # DIRECTORY bind mount, but postgres-exporter only parses
+        # PG_EXPORTER_EXTEND_QUERY_PATH at startup and has no reload endpoint.
+        # Restart only when this push touched monitoring/postgres-exporter/ (or
+        # always on workflow_dispatch / unknown 'before', where we can't diff).
+        # Stateless exporter → one missed scrape, nothing lost.
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set +e
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             && git diff --quiet "$BEFORE" HEAD -- monitoring/postgres-exporter/; then
+            echo "postgres-exporter queries unchanged — no restart"
+          else
+            docker restart postgres-exporter && echo "postgres-exporter restarted to load queries"
+          fi
+
+      - name: Restart Loki when its config changed (config read only at startup)
+        # #1554 enabled compactor retention in loki-local-config.yaml on 10-02, but
+        # `up -d` never recreates Loki (its service spec is unchanged) and Loki reads
+        # -config.file only at startup, so the running container kept the pre-#1554
+        # config: retention stayed a no-op, loki-data grew to 17.8 GB, and the app host
+        # disk filled (ENOSPC failed the 10-06 build of #1558). Restart only when this
+        # push touched monitoring/loki/ (or always on workflow_dispatch / unknown
+        # 'before'). Promtail/Alloy buffer and retry, so a restart loses no logs.
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set +e
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             && git diff --quiet "$BEFORE" HEAD -- monitoring/loki/; then
+            echo "Loki config unchanged — no restart"
+          else
+            docker compose -f compose.staging.yml -f compose.superset.yml -p stack restart loki \
+              && echo "Loki restarted to load its config"
+          fi
 
       - name: Reload Alertmanager config (dir-mount makes new file content visible; reload re-reads it)
         # Task #41 — same inode trap as #39/#40, now on the NOTIFICATION path.
@@ -265,6 +491,17 @@ jobs:
               n for n, s in svcs.items()
               if s.get("healthcheck") and not s["healthcheck"].get("disable")
           }
+          # Also classify run-once init jobs that NOTHING waits on via
+          # service_completed_successfully — the edge-based heuristic above only
+          # catches one-shots something DEPENDS on (db-migrate). A terminal init
+          # like hasura-init (applies metadata, exits 0) has no such in-edge, so
+          # without this it is treated as long-running and fails on its correct
+          # exited(0). A `restart: "no"` policy is the canonical compose signal for
+          # "run once"; requiring "no healthcheck" too means a long-running service
+          # (which always carries one) can never be wrongly excused if mis-set.
+          for n, s in svcs.items():
+              if n not in has_hc and str(s.get("restart") or "").lower() in ("no", "none"):
+                  oneshot.add(n)
           expected = set(svcs.keys())
           print("Gate expects %d services (%d one-shot, %d healthchecked):"
                 % (len(expected), len(oneshot), len(has_hc)))
@@ -335,11 +572,14 @@ jobs:
         # so we can prove the Calc port ran. Runs BEFORE inspect so the
         # inspect step's /metrics output reflects the inject.
         # continue-on-error so an inject hiccup doesn't fail the deploy.
+        # The fixture publishes under the synthetic E2EFIXTURE group (no tenant
+        # registers it). It must never use a real tenant group: this broker
+        # carries CPACK's live feed (main_test.go enforces it).
         continue-on-error: true
         run: |
           set -x
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" \
+            -v "$PWD/services/sparkplug-decoder:/src" \
             -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
             golang:1.25-alpine \
@@ -347,38 +587,38 @@ jobs:
 
           docker run --rm \
             --network stack_packiot-net \
-            -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+            -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject:ro" \
             alpine:3.20 \
             /app/inject --broker tcp://mosquitto:1883 --value 100
 
-          rm -f services/edge-transformer/inject-counter-fixture
-          echo "Waiting 3s for edge-transformer to process..."
+          rm -f services/sparkplug-decoder/inject-counter-fixture
+          echo "Waiting 3s for sparkplug-decoder to process..."
           sleep 3
 
-      - name: Inspect edge-transformer post-deploy
+      - name: Inspect sparkplug-decoder post-deploy
         # Diagnostic step — verifies env vars, log tail, healthcheck exit,
         # and Prometheus metrics scoped to Calc port + MQTT subscriber. Runs
-        # after smoke test so we know edge-transformer is up before probing.
+        # after smoke test so we know sparkplug-decoder is up before probing.
         # Failures here don't fail the deploy (the container may be healthy
         # even if the diagnostic tooling itself has a hiccup).
         continue-on-error: true
         run: |
           echo "=== env (USE_GO_PORT / MQTT_ / LOG_LEVEL) ==="
-          docker inspect edge-transformer \
+          docker inspect sparkplug-decoder \
             --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -iE 'USE_GO_PORT|MQTT_|LOG_LEVEL' || echo "(no matching env vars)"
 
           echo ""
           echo "=== last 60 log lines ==="
-          docker logs --tail 60 edge-transformer 2>&1 || true
+          docker logs --tail 60 sparkplug-decoder 2>&1 || true
 
           echo ""
           echo "=== healthcheck exit code ==="
-          docker exec edge-transformer /usr/local/bin/edge-transformer --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
+          docker exec sparkplug-decoder /usr/local/bin/sparkplug-decoder --healthcheck && echo "healthy" || echo "unhealthy exit=$?"
 
           echo ""
           echo "=== /metrics (calc_ + mqtt_ + shadowpub_ + outbox_ scoped) ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(calc_|mqtt_|shadowpub_|outbox_)' \
             | head -80 || echo "(no matching metrics)"
@@ -561,7 +801,7 @@ jobs:
         # GATE 2 (int-overflow) was never a comparison — it's a per-plane invariant
         # (no row's running_time may exceed its bucket wall-clock span × 1.05 — the
         # guard that caught the L8 P0 overflow, ~112,000,000 vs ~11,195) — so it
-        # SURVIVES, now run on F3 (public in packiot_shadow) ONLY. Same binary
+        # SURVIVES, now run on F3 (public in packiot_analytics) ONLY. Same binary
         # subcommand + soft-launch/enforce mechanics as before; internal/bake/
         # sentinel.go is now overflow-only. Backstop: the #663 *_oee_bounds CHECK
         # constraints reject an overflow-driven oee blow-up at the DB write.
@@ -574,19 +814,19 @@ jobs:
           IDENTITY_SENTINEL_ENFORCE: "false"
         run: |
           set +e
-          echo "=== waiting for oeecloud-worker to report healthy before sentinel ==="
+          echo "=== waiting for stream-engine to report healthy before sentinel ==="
           for i in $(seq 1 30); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' oeecloud-worker 2>/dev/null || echo missing)
-            if [ "$status" = "healthy" ]; then echo "  oeecloud-worker healthy after ${i}s"; break; fi
+            status=$(docker inspect -f '{{.State.Health.Status}}' stream-engine 2>/dev/null || echo missing)
+            if [ "$status" = "healthy" ]; then echo "  stream-engine healthy after ${i}s"; break; fi
             sleep 2
           done
-          if ! docker ps --format '{{.Names}}' | grep -qx oeecloud-worker; then
-            echo "::warning title=f3-overflow-sentinel skipped::oeecloud-worker container not running — cannot run F3 overflow gate"
+          if ! docker ps --format '{{.Names}}' | grep -qx stream-engine; then
+            echo "::warning title=f3-overflow-sentinel skipped::stream-engine container not running — cannot run F3 overflow gate"
             exit 0
           fi
 
           echo "=== running F3 int-overflow sentinel (SELECT-only, F3 plane) ==="
-          docker exec oeecloud-worker /usr/local/bin/oeecloud-worker --identity-sentinel
+          docker exec stream-engine /usr/local/bin/stream-engine --identity-sentinel
           RC=$?
           echo "sentinel exit code: $RC"
 
@@ -619,14 +859,14 @@ jobs:
           echo "=== Chaos test: outbox durability under RMQ outage ==="
 
           get_outbox_depth() {
-            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
               -s http://localhost:9102/metrics 2>/dev/null \
               | awk '/^outbox_depth /{print $2}' \
               | head -1
           }
 
           get_shadowpub_confirmed() {
-            docker run --rm --network container:edge-transformer curlimages/curl:latest \
+            docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
               -s http://localhost:9102/metrics 2>/dev/null \
               | awk '/^shadowpub_confirmed_total /{print $2}' \
               | head -1
@@ -644,7 +884,7 @@ jobs:
 
           # Build the inject binary once so we can run it multiple times.
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" -w /src \
+            -v "$PWD/services/sparkplug-decoder:/src" -w /src \
             -e CGO_ENABLED=0 -e GOOS=linux \
             golang:1.25-alpine \
             go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
@@ -652,7 +892,7 @@ jobs:
           inject() {
             docker run --rm \
               --network stack_packiot-net \
-              -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject:ro" \
+              -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject:ro" \
               alpine:3.20 /app/inject --broker tcp://mosquitto:1883 --value "$1" 2>&1 | tail -3
           }
 
@@ -717,13 +957,13 @@ jobs:
 
           echo ""
           echo "=== Reconnect activity (proves NotifyClose monitor fired) ==="
-          docker logs --since 3m edge-transformer 2>&1 \
+          docker logs --since 3m sparkplug-decoder 2>&1 \
             | grep -iE 'shadowpub: connection|shadowpub: reconnect|outbox: publish' \
             | tail -30 || echo "  (no reconnect activity in logs — investigate)"
 
           echo ""
           echo "=== Final /metrics for outbox + shadowpub counters ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(outbox_|shadowpub_reconnects|shadowpub_confirmed|shadowpub_published)' \
             | head -20 || true

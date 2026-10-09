@@ -43,23 +43,47 @@ x-superset-env: &superset-env
   SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
   SUPERSET_GUEST_TOKEN_JWT_SECRET: ${SUPERSET_GUEST_TOKEN_JWT_SECRET}
   SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD}
-  # Metadata-DB host. pgbouncer only routes packiot/packiot_shadow (no `superset`
+  # Metadata-DB host. pgbouncer only routes packiot/packiot_analytics (no `superset`
   # route), so the low-traffic Superset metadata DB connects UPSTREAM-DIRECT to the
   # r7g (same host superset-db-init uses). See superset_config.py for the rationale.
   POSTGRES_HOST_UPSTREAM: ${POSTGRES_HOST_UPSTREAM}
   SUPERSET_COGNITO_ISSUER: ${SUPERSET_COGNITO_ISSUER}
   SUPERSET_COGNITO_CLIENT_ID: ${SUPERSET_COGNITO_CLIENT_ID}
   SUPERSET_COGNITO_CLIENT_SECRET: ${SUPERSET_COGNITO_CLIENT_SECRET}
+  # Durable human super-admin, SEPARATE from the guest-token minter service account
+  # so the minter can be scoped to a minimal role (bootstrap_guest_role.py). Sourced
+  # from Secrets Manager packiot/<env>/app (keys superset_admin_user/password) via
+  # app_init.sh. When UNSET the minter keeps Admin (lockout guard) — backward-safe.
+  SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-}
+  SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-}
   SUPERSET_FRAME_ANCESTOR: ${SUPERSET_FRAME_ANCESTOR:-https://front.prod.packiot.app}
+  # Stable embed uuid pinned onto the client dashboard by register_embed.py (superset-init)
+  # and referenced verbatim by the edge-api broker + front4 iframe. When UNSET the embed
+  # step is a no-op (embed unconfigured). SUPERSET_EMBED_TARGET_DASHBOARD selects which
+  # dashboard's bundle-uuid gets that embed (defaulted in the init command to the current one).
+  SUPERSET_OEE_DASHBOARD_UUID: ${SUPERSET_OEE_DASHBOARD_UUID:-}
+  SUPERSET_EMBED_TARGET_DASHBOARD: ${SUPERSET_EMBED_TARGET_DASHBOARD:-}
+  # Admin identity sync_assets.py imports as (default: SUPERSET_ADMIN_USER, else the oldest Admin).
+  SUPERSET_ASSET_SYNC_USER: ${SUPERSET_ASSET_SYNC_USER:-}
   SUPERSET_REDIS_HOST: superset-redis
   PYTHONPATH: /app/pythonpath
 
 x-superset-config-mounts: &superset-config-mounts
-  - ./configs/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
-  - ./configs/superset/custom_sso_security_manager.py:/app/pythonpath/custom_sso_security_manager.py:ro
-  # Guest/embed-role permission bootstrap. Inert on web/worker (only
-  # superset_config.py is auto-imported); superset-init runs it explicitly.
-  - ./configs/superset/bootstrap_guest_role.py:/app/pythonpath/bootstrap_guest_role.py:ro
+  # ONE directory mount (P7, 2026-09-24) — replaces 9 single-FILE binds. A single-file
+  # bind pins the host file's INODE at container start: git pull / editors replace the
+  # file (new inode), so the container kept serving the OLD config until a recreate —
+  # the inode trap behind #39/#41 and the stale-mount Superset incident. A directory
+  # bind follows the directory, so updates show up immediately. Safe to mount the whole
+  # dir here: the image's /app/pythonpath is EMPTY (verified: `ls -la` in
+  # packiot/superset:4.1.1-w2), so nothing is shadowed.
+  # Contents (only superset_config.py is auto-imported by web/worker; the rest are run
+  # explicitly by superset-init): superset_config.py + custom_sso_security_manager.py,
+  # bootstrap_guest_role.py (guest/embed role), import_bundle.py + assets/ (dashboards
+  # as code; injects SUPERSET_DB_RO_PASSWORD at import), sync_databases.py (DB assets
+  # no dashboard depends on), normalize_query_context.py (re-derives query_context lost
+  # by import-dashboards), harden_dashboard_roles.py (RBAC), register_embed.py (stable
+  # embed uuid). :ro — Python just skips writing __pycache__.
+  - ./configs/superset:/app/pythonpath:ro
 
 x-superset-logging: &superset-logging
   driver: json-file
@@ -136,12 +160,14 @@ services:
     restart: "no"
     logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
 
-  # ── superset-init — one-shot: DB migrate + built-in roles + guest-token admin ─
+  # ── superset-init — one-shot: DB migrate + built-in roles + BI security bootstrap ─
   # Runs AFTER the metadata DB exists. `superset db upgrade` migrates the metadata
-  # schema; `superset init` syncs Admin/Alpha/Gamma/Public + perms; then create
-  # the service account edge-api authenticates as to MINT guest tokens. In the
-  # real go-live, narrow it to a custom role with ONLY can_grant_guest_token
-  # (least privilege) — see spec §2.2.
+  # schema; `superset init` syncs Admin/Alpha/Gamma/Public + perms; then a durable
+  # human super-admin + the guest-token minter service account are created, and
+  # bootstrap_guest_role.py scopes the minter to a role with ONLY
+  # can_grant_guest_token (least privilege), strips the anon Public role, and sets up
+  # the dedicated GuestViewer embed role. Dashboards get explicit RBAC roles after
+  # import (harden_dashboard_roles.py).
   superset-init:
     build: *superset-build
     image: *superset-image
@@ -156,22 +182,78 @@ services:
         set -e
         superset db upgrade
         superset init
+        # Durable human super-admin (SEPARATE from the minter service account) so the
+        # minter can be scoped to a non-Admin role below. Only when SUPERSET_ADMIN_*
+        # are provisioned (Secrets Manager -> app_init.sh -> .env); otherwise skipped
+        # and the minter keeps Admin (lockout guard in bootstrap_guest_role.py).
+        if [ -n "$${SUPERSET_ADMIN_USER}" ] && [ -n "$${SUPERSET_ADMIN_PASSWORD}" ]; then
+          superset fab create-admin \
+            --username "$${SUPERSET_ADMIN_USER}" \
+            --firstname packiot --lastname superadmin --email superadmin@packiot.app \
+            --password "$${SUPERSET_ADMIN_PASSWORD}" || true
+        fi
+        # The guest-token minter SERVICE ACCOUNT edge-api authenticates as. Created as
+        # Admin here, then SCOPED DOWN to the minimal GuestTokenMinter role by
+        # bootstrap_guest_role.py (lockout-safe — only if the human admin above exists).
         superset fab create-admin \
           --username "$${SUPERSET_GUESTTOKEN_ADMIN_USER}" \
           --firstname guest --lastname minter --email guesttoken@packiot.app \
           --password "$${SUPERSET_GUESTTOKEN_ADMIN_PASSWORD}" || true
-        # Grant the guest/embed role (GUEST_ROLE_NAME, default "Public") the minimal
-        # perms the embedded chart-data path needs — WITHOUT this, @protect() 403s the
-        # request before RLS runs. Idempotent; runs after `superset init` creates the
-        # role. See configs/superset/bootstrap_guest_role.py.
+        # BI security bootstrap: dedicated GuestViewer embed role + minimal
+        # GuestTokenMinter role, STRIP the anonymous Public role to zero perms (closes
+        # the anon /api/v1/dashboard/ metadata leak), and scope the minter service
+        # account off Admin. Idempotent. See configs/superset/bootstrap_guest_role.py.
         python /app/pythonpath/bootstrap_guest_role.py
+        # Import the dashboards-as-code bundle (configs/superset/assets/**).
+        # import_bundle.py stages the assets and injects SUPERSET_DB_RO_PASSWORD (from
+        # .env, Secrets Manager) into the packiot_analytics connection URI — the git
+        # copy carries only a placeholder, no secret. `import-dashboards` CREATES what
+        # is missing on a fresh metadata DB but does NOT update existing assets: its
+        # overwrite reaches only the dashboard row (datasets/charts are imported with a
+        # hardcoded overwrite=False), and it runs as the minter, which has no can_write
+        # once scoped. sync_assets.py below is what makes the YAML win on every boot.
+        python /app/pythonpath/import_bundle.py
+        superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
+        # Apply EVERY database asset (URI + safety flags), dashboard-referenced or not —
+        # see configs/superset/sync_databases.py (historian_union was never imported).
+        python /app/pythonpath/sync_databases.py
+        # The YAML always wins: re-import EVERY dataset, chart and dashboard with
+        # overwrite=True as an Admin user, then verify each one against its YAML (exit 1
+        # on any difference). UI edits to an as-code asset are reverted here. Must run
+        # after sync_databases (connections) and before normalize_query_context (which
+        # rebuilds query_context against the final dataset ids). See
+        # configs/superset/sync_assets.py.
+        python /app/pythonpath/sync_assets.py
+        # Repair each chart's query_context (import-dashboards drops it — the baked
+        # numeric datasource id does not survive the UUID dataset remap). Re-derives it
+        # from the asset YAMLs against the live dataset ids so the stored-context path
+        # (GET /chart/<id>/data/, CSV/Excel export, Alerts & Reports) works. Idempotent;
+        # must run AFTER import (charts + datasets must exist). See
+        # configs/superset/normalize_query_context.py.
+        python /app/pythonpath/normalize_query_context.py
+        # Pin explicit non-Public RBAC roles on the imported dashboards (defense in
+        # depth for the anon leak). Runs LAST — dashboards must exist first. See
+        # configs/superset/harden_dashboard_roles.py.
+        python /app/pythonpath/harden_dashboard_roles.py
+        # Pin the STABLE embed uuid onto the client dashboard so front4/edge-api keep
+        # resolving it after a metadata rebuild (hand-registered embeds don't survive).
+        # SUPERSET_EMBED_TARGET_DASHBOARD selects WHICH dashboard is embedded (by its
+        # bundle uuid); defaults here to the CURRENT (Scanned Boxes) so a deploy is a
+        # no-op — set it to the OEE Overview uuid (6c4fa4a1-…) to show the OEE report.
+        # Idempotent; no-op when SUPERSET_OEE_DASHBOARD_UUID is unset. See register_embed.py.
+        SUPERSET_EMBED_TARGET_DASHBOARD="$${SUPERSET_EMBED_TARGET_DASHBOARD:-d1000001-0a1b-4c2d-8e3f-000000000001}" \
+          python /app/pythonpath/register_embed.py
     depends_on:
       superset-db-init:
         condition: service_completed_successfully
       superset-redis:
         condition: service_healthy
+    # NOTE: .44 collided with sparkplug-agent-shared (which grabbed it dynamically
+    # while the superset profile was inert), so superset-init stayed `created` with
+    # "Address already in use". Moved to .47 (free). A one-shot init needs no fixed
+    # IP at all, but keeping the static-IP pattern consistent with its siblings.
     networks:
-      packiot-net: {ipv4_address: 172.18.0.44}
+      packiot-net: {ipv4_address: 172.18.0.47}
     restart: "no"
     logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
 

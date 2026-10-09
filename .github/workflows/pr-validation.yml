@@ -7,7 +7,7 @@ name: PR Validation
 # whether the PR is safe to auto-merge.
 #
 # v0 is intentionally cheap — no submodule checkout, no PAT required, no docker
-# image builds. It validates that compose.staging.yml + compose.development.yml
+# image builds. It validates that compose.staging.yml + dev/compose.yml
 # are structurally well-formed via `docker compose config --no-interpolate`,
 # which parses the YAML and resolves $-references *without* needing .env or
 # the submodule build contexts to exist on disk. Catches:
@@ -44,5 +44,19 @@ jobs:
         # silent on success.
         run: docker compose -f compose.staging.yml config --no-interpolate -q
 
-      - name: Validate compose.development.yml
-        run: docker compose -f compose.development.yml config --no-interpolate -q
+      - name: Validate dev/ (ADR-0060 local environment)
+        run: docker compose -f dev/compose.yml --env-file dev/.env.dev config -q
+
+  packml-ratchet:
+    # ADR-0061 D8: PackML / topic-derived identity is being removed from the cloud. Until P5 deletes the rest,
+    # existing references are frozen per file and may only shrink (scripts/ci/packml-ratchet.sh).
+    name: packml ratchet (ADR-0061)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: No new packml references; shrinkage locked in
+        run: scripts/ci/packml-ratchet.sh

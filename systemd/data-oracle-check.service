@@ -1,0 +1,8 @@
+[Unit]
+Description=Data invariants against the legacy oracle (feed silent vs legacy, line net vs legacy) → ops.data_invariant_result
+After=docker.service network-online.target
+[Service]
+Type=oneshot
+# Installed to /opt/packiot/ops/ by scripts/install-data-invariants.sh. Read-only on legacy;
+# appends result rows to staging ops.data_invariant_result (alerts via postgres-exporter).
+ExecStart=/opt/packiot/ops/data-oracle-check.sh

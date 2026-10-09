@@ -1,30 +1,21 @@
-.PHONY: help init setup dev-setup up up-infra up-edge up-api up-operator up-simulator up-workers \
-        down logs logs-edge logs-api logs-infra logs-postgres logs-rabbitmq logs-adminer logs-operator logs-simulator \
-        logs-oeecloud-worker logs-mirror-worker \
-        build build-edge build-api build-operator build-simulator build-tests \
-        build-oeecloud-worker build-mirror-worker \
-        restart clean status psql shell-edge shell-api shell-operator \
-        publish-test update devctl \
-        db-equipments db-equipment-values db-packml db-enterprises db-sites db-areas \
-        db-events db-uns db-orders db-count db-rebuild apply-views \
-        watch-values watch-plc watch-pubsub \
-        stress-db sim-seed test-integration \
-        reset-events reset-sim \
+.PHONY: help init update dev dev-ps dev-down dev-reset dev-smoke \
         tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate \
         staging-deploy-key
-
-COMPOSE     = docker compose -f compose.development.yml
-ENV_FILE    = .env.local
 
 TF_DIR      = terraform/staging
 TF_BOOT_DIR = terraform/staging/bootstrap
 GITHUB_REPO = packiot/packiot-stack-alpha
-# Account ID is resolved once and reused — avoids repeated aws sts calls.
-AWS_ACCOUNT_ID  := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
-TF_STATE_BUCKET := packiot-terraform-state-$(AWS_ACCOUNT_ID)
+# Account ID is resolved lazily, at most once: the first expansion runs
+# `aws sts` and re-defines the variable as its result. Was `:=` (resolved at
+# parse time), which made EVERY make target — `make dev` included — call AWS.
+AWS_ACCOUNT_ID  = $(eval AWS_ACCOUNT_ID := $$(shell aws sts get-caller-identity --query Account --output text 2>/dev/null))$(AWS_ACCOUNT_ID)
+TF_STATE_BUCKET = packiot-terraform-state-$(AWS_ACCOUNT_ID)
 
-INFRA_SVCS  = rabbitmq postgres hasura hasura-init
-WORKER_SVCS = oeecloud-worker mirror-worker-go
+# ADR-0060 local dev environment (dev/) — the only local stack (compose.development.yml was removed in P2).
+DEV_COMPOSE = docker compose -f dev/compose.yml --env-file dev/.env.dev
+# Tier 0 = every service in dev/base.yml (derived, so the list never drifts).
+DEV_TIER0   = $(shell docker compose -f dev/base.yml --env-file dev/.env.dev config --services 2>/dev/null)
+SVC        ?=
 
 # ── Default ───────────────────────────────────────────────────────────────────
 help:
@@ -32,75 +23,15 @@ help:
 	@echo "  packiot-stack-alpha — integration orchestration"
 	@echo ""
 	@echo "  Setup"
-	@echo "    init             Clone/update submodules + copy env examples"
-	@echo "    dev-setup        First-time dev setup: checkout submodule development branches + wipe volumes"
-	@echo "    setup            Copy .env.example → .env.local (safe, won't overwrite)"
+	@echo "    init             Clone/update submodules"
 	@echo "    update           Pull latest commit for all submodules"
 	@echo ""
-	@echo "  Full stack"
-	@echo "    up               Start all services"
-	@echo "    down             Stop and remove all containers"
-	@echo "    restart          down + up"
-	@echo "    clean            down + delete volumes (destructive)"
-	@echo "    status           Show running containers"
-	@echo "    build            Build all service images"
-	@echo ""
-	@echo "  Partial stacks (infra always included)"
-	@echo "    up-infra         RabbitMQ + TimescaleDB + Hasura only"
-	@echo "    up-edge          Infra + edge-nodered"
-	@echo "    up-api           Postgres + edge-api"
-	@echo "    up-operator      Infra + edge-api + edge-nodered + operator UI"
-	@echo "    up-simulator     Start operator activity simulator (Simulator Corp)"
-	@echo "    up-workers       Start both Go workers (oeecloud-worker + mirror-worker-go)"
-	@echo ""
-	@echo "  Individual image builds"
-	@echo "    build-edge             Build edge-nodered image"
-	@echo "    build-api              Build edge-api image"
-	@echo "    build-operator         Build operator UI image"
-	@echo "    build-simulator        Build simulator image"
-	@echo "    build-oeecloud-worker  Build oeecloud-worker (Go) image"
-	@echo "    build-mirror-worker    Build mirror-worker-go image"
-	@echo ""
-	@echo "  Logs (follow mode — Ctrl+C to stop)"
-	@echo "    logs                    Tail all services"
-	@echo "    logs-edge               Tail edge-nodered"
-	@echo "    logs-api                Tail edge-api"
-	@echo "    logs-postgres           Tail TimescaleDB"
-	@echo "    logs-rabbitmq           Tail RabbitMQ"
-	@echo "    logs-adminer            Tail Adminer"
-	@echo "    logs-infra              Tail rabbitmq + postgres + hasura"
-	@echo "    logs-simulator          Tail operator simulator"
-	@echo "    logs-oeecloud-worker    Tail oeecloud-worker (Go AMQP consumer)"
-	@echo "    logs-mirror-worker      Tail mirror-worker-go (user_logs replay)"
-	@echo ""
-	@echo "  Database"
-	@echo "    db-rebuild          Wipe pg-data volume + rebuild from init scripts (schema parity)"
-	@echo "    db-equipments       List all equipments"
-	@echo "    db-packml           List packml_register routing table"
-	@echo "    db-enterprises      List enterprises + api keys"
-	@echo "    db-sites            List sites"
-	@echo "    db-areas            List areas"
-	@echo "    db-equipment-values Last 20 equipment_values rows"
-	@echo "    db-events           Last 20 equipment_events rows"
-	@echo "    db-uns              Last 20 uns_metrics rows"
-	@echo "    db-orders           List production_orders"
-	@echo "    db-count            Row counts for all key tables"
-	@echo ""
-	@echo "  Live monitoring (Ctrl+C to stop)"
-	@echo "    watch-values     Refresh equipment_values every 2s"
-	@echo "    watch-plc        Refresh PLC metric breakdown every 2s"
-	@echo "    watch-pubsub     Stream edge-nodered logs (RabbitMQ/AMQP publish path)"
-	@echo ""
-	@echo "  Utilities"
-	@echo "    psql             Open psql shell in the postgres container"
-	@echo "    shell-edge       sh into edge-nodered container"
-	@echo "    shell-operator   sh into operator container"
-	@echo "    shell-api        sh into edge-api container"
-	@echo "    publish-test     Publish a minimal test SparkPlug message to RabbitMQ"
-	@echo "    stress-db        Stress test: 1000 batch inserts + expensive aggregate"
-	@echo "    devctl           Interactive dev-user CLI (start/stop/justify POs, no sim deps)"
-	@echo "    reset-events     Clear unjustified Sim Corp events (guardian re-seeds ~4 in 30s)"
-	@echo "    reset-sim        Full reset: drop all sim events + re-seed 8h historical data"
+	@echo "  Local dev environment (ADR-0060, dev/)"
+	@echo "    dev              Tier 0 (postgres, rabbitmq, mosquitto, redis, minio)"
+	@echo "    dev SVC=\"grafana\" A slice: the service(s) + their depends_on closure"
+	@echo "    dev-ps           Show dev containers"
+	@echo "    dev-down         Stop + remove dev containers (volumes kept)"
+	@echo "    dev-smoke SVC=.. Smoke-check running slices: health + one real request each"
 	@echo ""
 	@echo "  Staging one-time setup"
 	@echo "    staging-deploy-key  Generate + register GitHub deploy key → Secrets Manager"
@@ -119,312 +50,34 @@ help:
 # ── Setup ─────────────────────────────────────────────────────────────────────
 init:
 	git submodule update --init --recursive
-	@$(MAKE) setup
 
 # dev-setup: first-time developer setup on the development branch.
 # Checks out each submodule to its own 'development' branch (not detached HEAD),
 # then wipes volumes so the fresh schema is applied on next 'make up'.
-dev-setup:
-	git submodule update --init --recursive
-	git submodule foreach 'git checkout development 2>/dev/null || echo "[SKIP] no development branch in $$name"'
-	@$(MAKE) setup
-	@echo ""
-	@echo "  Volumes wiped — DB will be re-initialised with the current schema on next 'make up'."
-	$(COMPOSE) down --volumes --remove-orphans
-
-setup:
-	@[ -f $(ENV_FILE) ] \
-		&& echo "$(ENV_FILE) already exists — skipping copy" \
-		|| (cp .env.example $(ENV_FILE) && echo "Created $(ENV_FILE) — fill in secrets before running make up")
-
 update:
 	git submodule update --remote --merge
 
-# ── Full stack ────────────────────────────────────────────────────────────────
-up:
-	$(COMPOSE) up -d --build
+# ── Local dev environment (ADR-0060) ──────────────────────────────────────────
+# make dev                  → Tier 0 only
+# make dev SVC="grafana"    → grafana + its depends_on closure
+# --wait blocks until every started service is healthy (one-shots: exited 0).
+dev:
+	$(DEV_COMPOSE) up -d --wait $(if $(strip $(SVC)),$(SVC),$(DEV_TIER0))
 
-down:
-	$(COMPOSE) down
+dev-ps:
+	$(DEV_COMPOSE) ps -a
 
-restart: down up
+dev-down:
+	$(DEV_COMPOSE) down --remove-orphans
 
-clean:
-	$(COMPOSE) down --volumes --remove-orphans
+# A stale dev volume ("Skipping initialization") never reloads the seed: wipe the dev volumes and start again.
+dev-reset:
+	$(DEV_COMPOSE) down --remove-orphans -v
+	$(DEV_COMPOSE) up -d --wait $(if $(strip $(SVC)),$(SVC),$(DEV_TIER0))
 
-status:
-	$(COMPOSE) ps
-
-build:
-	$(COMPOSE) build
-
-# ── Partial stacks ────────────────────────────────────────────────────────────
-up-infra:
-	$(COMPOSE) up -d $(INFRA_SVCS)
-
-up-edge:
-	$(COMPOSE) up -d $(INFRA_SVCS) edge-nodered
-
-up-api:
-	$(COMPOSE) up -d postgres edge-api
-
-up-operator:
-	$(COMPOSE) up -d $(INFRA_SVCS) edge-api edge-nodered operator
-
-up-simulator:
-	$(COMPOSE) up -d simulator
-
-up-workers:
-	$(COMPOSE) up -d $(WORKER_SVCS)
-
-# ── DevCtl — interactive dev-user action CLI ──────────────────────────────────
-# Runs devctl.py inside the simulator image (psycopg2 + requests already there).
-# Bind-mounts devctl.py so you always get the latest without rebuilding.
-# Stack must be running (make up or make up-api + make up-infra).
-devctl:
-	$(COMPOSE) run --rm -it \
-		-e EDGE_API_URL=http://edge-api:8080 \
-		-e DB_URL=postgresql://postgres:packiot@postgres:5432/packiot \
-		-v "$$(pwd)/simulator/devctl.py:/devctl.py:ro" \
-		--entrypoint python3 simulator /devctl.py
-
-# ── Individual builds ─────────────────────────────────────────────────────────
-build-edge:
-	$(COMPOSE) build edge-nodered
-
-build-api:
-	$(COMPOSE) build edge-api
-
-build-operator:
-	$(COMPOSE) build operator
-
-build-simulator:
-	$(COMPOSE) build simulator
-
-build-oeecloud-worker:
-	$(COMPOSE) build oeecloud-worker
-
-build-mirror-worker:
-	$(COMPOSE) build mirror-worker-go
-
-# ── Logs ──────────────────────────────────────────────────────────────────────
-logs:
-	$(COMPOSE) logs -f
-
-logs-edge:
-	$(COMPOSE) logs -f edge-nodered
-
-logs-api:
-	$(COMPOSE) logs -f edge-api
-
-logs-infra:
-	$(COMPOSE) logs -f rabbitmq postgres hasura
-
-logs-postgres:
-	$(COMPOSE) logs -f postgres
-
-logs-rabbitmq:
-	$(COMPOSE) logs -f rabbitmq
-
-logs-adminer:
-	$(COMPOSE) logs -f adminer
-
-logs-grafana:
-	$(COMPOSE) logs -f grafana
-
-logs-operator:
-	$(COMPOSE) logs -f operator
-
-logs-simulator:
-	$(COMPOSE) logs -f simulator
-
-logs-oeecloud-worker:
-	$(COMPOSE) logs -f oeecloud-worker
-
-logs-mirror-worker:
-	$(COMPOSE) logs -f mirror-worker-go
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
-psql:
-	$(COMPOSE) exec postgres psql -U postgres -d packiot
-
-shell-edge:
-	$(COMPOSE) exec edge-nodered sh
-
-shell-api:
-	$(COMPOSE) exec edge-api sh
-
-shell-operator:
-	$(COMPOSE) exec operator sh
-
-PSQL = $(COMPOSE) exec -T postgres psql -U postgres -d packiot
-
-# ── Database rebuild ─────────────────────────────────────────────────────────
-# Wipes the pg-data volume and restarts only postgres so all initdb.d scripts
-# re-run in order (00-schema → ... → 22-production-triggers).  All other
-# services (RabbitMQ, Grafana, edge-api, etc.) stay running.  Hasura is
-# restarted at the end so it picks up the fresh schema.
-db-rebuild:
-	@echo ""
-	@echo "  WARNING: this will wipe all database data and rebuild from schema scripts."
-	@echo "  RabbitMQ, Grafana, and other service data are NOT affected."
-	@echo "  Press Ctrl+C within 5s to abort."
-	@sleep 5
-	@echo ""
-	@echo "  Stopping postgres + hasura..."
-	$(COMPOSE) --env-file $(ENV_FILE) stop hasura hasura-init postgres
-	@echo "  Removing pg-data volume..."
-	docker volume rm packiot-stack-alpha_pg-data 2>/dev/null || true
-	@echo "  Starting postgres (init scripts will run)..."
-	$(COMPOSE) --env-file $(ENV_FILE) up -d postgres
-	@echo "  Waiting for postgres to be healthy..."
-	@until $(COMPOSE) --env-file $(ENV_FILE) exec -T postgres pg_isready -U postgres -d packiot >/dev/null 2>&1; do \
-		printf '.'; sleep 2; \
-	done
-	@echo ""
-	@echo "  Restarting hasura..."
-	$(COMPOSE) --env-file $(ENV_FILE) up -d hasura hasura-init
-	@echo ""
-	@echo "  Done. DB rebuilt with full production parity schema (65 tables)."
-	@echo "  Run 'make db-count' to verify row counts."
-	@echo ""
-
-# ── Database queries ──────────────────────────────────────────────────────────
-db-equipments:
-	@$(PSQL) -c "SELECT id_equipment, nm_equipment, tp_equipment, id_area, id_site FROM equipments ORDER BY id_equipment;"
-
-db-packml:
-	@$(PSQL) -c "SELECT id_packml_register, packml_topic, id_equipment, active, id_unit, signal_quality FROM packml_register ORDER BY id_packml_register;"
-
-db-enterprises:
-	@$(PSQL) -c "SELECT id_enterprise, nm_enterprise, api_key, active FROM enterprises;"
-
-db-sites:
-	@$(PSQL) -c "SELECT id_site, id_enterprise, nm_site FROM sites ORDER BY id_site;"
-
-db-areas:
-	@$(PSQL) -c "SELECT id_area, id_site, id_enterprise, nm_area, day_begin FROM areas ORDER BY id_area;"
-
-db-equipment-values:
-	@$(PSQL) -c "SELECT ts_value, id_equipment, net_production_incr, scrap_incr, state, mode, speed FROM equipment_values ORDER BY ts_value DESC LIMIT 20;"
-
-db-events:
-	@$(PSQL) -c "SELECT id, ts_event, id_equipment, event_type, event_value, txt_event FROM equipment_events ORDER BY ts_event DESC LIMIT 20;"
-
-db-uns:
-	@$(PSQL) -c "SELECT ts_value, id_equipment, metric_name, metric_value, metric_type FROM uns_metrics ORDER BY ts_value DESC LIMIT 20;"
-
-db-orders:
-	@$(PSQL) -c "SELECT id_production_order, id_equipment, status, ts_start, ts_end FROM production_orders ORDER BY id_production_order DESC LIMIT 20;"
-
-apply-views:
-	@echo "Applying operator UI views to running postgres..."
-	@$(COMPOSE) exec -T postgres psql -U postgres -d packiot \
-		< edge-node-red/db/04-operator-views.sql
-	@echo "Reloading Hasura metadata..."
-	@$(COMPOSE) restart hasura-init
-
-db-count:
-	@$(PSQL) -c "\
-		SELECT 'equipment_values'  AS tbl, COUNT(*) FROM equipment_values  UNION ALL \
-		SELECT 'equipment_events'  AS tbl, COUNT(*) FROM equipment_events  UNION ALL \
-		SELECT 'uns_metrics'       AS tbl, COUNT(*) FROM uns_metrics       UNION ALL \
-		SELECT 'production_orders' AS tbl, COUNT(*) FROM production_orders UNION ALL \
-		SELECT 'packml_register'   AS tbl, COUNT(*) FROM packml_register   UNION ALL \
-		SELECT 'equipments'        AS tbl, COUNT(*) FROM equipments        \
-		ORDER BY tbl;"
-
-# ── Live monitoring ───────────────────────────────────────────────────────────
-watch-values:
-	watch -n 2 'docker compose -f compose.development.yml exec -T postgres \
-		psql -U postgres -d packiot -c \
-		"SELECT ts_value, id_equipment, net_production_incr, scrap_incr, state, mode, speed \
-		 FROM equipment_values ORDER BY ts_value DESC LIMIT 15;"'
-
-watch-plc:
-	watch -n 2 'docker compose -f compose.development.yml exec -T postgres \
-		psql -U postgres -d packiot -c \
-		"SELECT \
-		   CASE WHEN net_production_incr IS NOT NULL THEN '"'"'ProdProcessed'"'"' \
-		        WHEN scrap_incr IS NOT NULL           THEN '"'"'ProdDefective'"'"' \
-		        WHEN state IS NOT NULL                THEN '"'"'StateCurrent'"'"' \
-		        WHEN mode  IS NOT NULL                THEN '"'"'UnitMode'"'"' \
-		        WHEN speed IS NOT NULL                THEN '"'"'MachSpeed'"'"' \
-		        ELSE '"'"'other'"'"' END AS metric, \
-		   COUNT(*) AS rows, \
-		   MAX(ts_value) AS latest \
-		 FROM equipment_values \
-		 GROUP BY 1 ORDER BY latest DESC;"'
-
-watch-pubsub:
-	$(COMPOSE) logs -f edge-nodered
-
-# ── Operator simulator ────────────────────────────────────────────────────────
-# Seed Simulator Corp enterprise with 8 hours of historical operator activity.
-# Run once to fill Grafana; the live simulator (make up-simulator) keeps it fresh.
-sim-seed:
-	@echo "Seeding Simulator Corp enterprise with historical operator data..."
-	@$(PSQL) -f /dev/stdin < edge-node-red/db/03-operator-simulator.sql
-	@echo "Done. Start live simulator with: make up-simulator"
-
-# ── Simulator reset helpers ───────────────────────────────────────────────────
-# reset-events: wipe unjustified events so devs start fresh; guardian auto-seeds
-#               PENDING_MIN (4) forced events within one AUTO_INTERVAL (30s).
-# reset-sim:    full slate — removes all Sim Corp events, re-seeds 8h historical.
-reset-events:
-	@echo "Clearing unjustified events for Simulator Corp..."
-	@$(PSQL) -c "\
-		DELETE FROM equipment_events ee \
-		USING enterprises e \
-		WHERE ee.id_enterprise = e.id_enterprise \
-		  AND e.nm_enterprise = 'Simulator Corp' \
-		  AND ee.status = 10 \
-		  AND (ee.cd_category IS NULL OR ee.cd_category = '');"
-	@echo "Done — guardian re-seeds fresh pending events within ~30s"
-
-reset-sim:
-	@echo "Full simulator reset for Simulator Corp..."
-	@$(PSQL) -c "\
-		DELETE FROM equipment_events ee \
-		USING enterprises e \
-		WHERE ee.id_enterprise = e.id_enterprise \
-		  AND e.nm_enterprise = 'Simulator Corp';"
-	@$(PSQL) -f /dev/stdin < edge-node-red/db/03-operator-simulator.sql
-	@echo "Done. Historical data re-seeded."
-
-# ── DB stress simulation ───────────────────────────────────────────────────────
-# Inserts 1000 synthetic rows via generate_series, then runs an expensive
-# GROUP BY aggregate (mirrors the Grafana OEE query). Useful for testing
-# connection pool saturation, TimescaleDB chunk planning, and lock contention.
-stress-db:
-	@echo "Stress test: inserting 1000 synthetic equipment_values rows..."
-	@$(PSQL) -c "INSERT INTO equipment_values (ts_value, id_equipment, net_production_incr, scrap_incr, state, speed) SELECT NOW() - (n || ' seconds')::interval, (CASE WHEN n % 2 = 0 THEN 2 ELSE 4 END), (random()*15)::int, (random()*3)::int, 6, (random()*120)::real FROM generate_series(1, 1000) n ON CONFLICT DO NOTHING; SELECT 'synthetic rows inserted' AS result;"
-	@echo "Running expensive Grafana-style aggregate..."
-	@$(PSQL) -c "SELECT id_equipment, date_trunc('minute', ts_value) AS bucket, SUM(net_production_incr) AS net, SUM(scrap_incr) AS scrap, ROUND((AVG(speed))::numeric, 1) AS avg_speed, ROUND((SUM(CASE WHEN state=6 THEN 1.0 ELSE 0 END) / NULLIF(COUNT(*),0) * 100)::numeric, 1) AS avail_pct FROM equipment_values WHERE ts_value > NOW() - INTERVAL '1 hour' GROUP BY id_equipment, bucket ORDER BY id_equipment, bucket DESC LIMIT 30;"
-	@echo "Stress test complete. Run 'make db-count' to see updated row counts."
-
-# Publish a minimal test SparkPlug message to RabbitMQ (oee exchange).
-# Uses the RabbitMQ management HTTP API on localhost:15672.
-# Credentials default to packiot/packiot (dev); adjust if changed in .env.local.
-publish-test:
-	@echo "Publishing test SparkPlug message to RabbitMQ..."
-	@PAYLOAD=$$(printf \
-		'{"properties":{},"routing_key":"sparkplug.data","payload_encoding":"string","payload":"{\"timestamp\":%s,\"metrics\":[{\"name\":\"30700\",\"value\":1},{\"name\":\"30701\",\"value\":100}],\"gateway\":\"machine-01\"}"}' \
-		$$(date +%s%3N)); \
-	curl -sf -u packiot:packiot -X POST \
-		http://localhost:15672/api/exchanges/%2F/oee/publish \
-		-H 'Content-Type: application/json' \
-		-d "$$PAYLOAD" \
-	&& echo "Message published"
-
-# ── Integration tests (Layer 2 — end-to-end against live stack) ───────────────
-# Builds the test image, runs pytest in a one-shot container on packiot-net,
-# tears it down. Stack must already be `make up` for this to be meaningful.
-build-tests:
-	$(COMPOSE) --profile tests build tests
-
-test-integration: build-tests
-	$(COMPOSE) --profile tests run --rm tests
+# Health + one real request per service (ADR-0060 D8; the same script CI runs). No SVC → Tier 0.
+dev-smoke:
+	bash dev/e2e/smoke.sh $(SVC)
 
 # ── Terraform — staging infrastructure ────────────────────────────────────────
 # Requires: terraform >= 1.10, aws CLI configured with the packiot account.

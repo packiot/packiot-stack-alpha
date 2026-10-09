@@ -1,0 +1,27 @@
+-- f3-cpack-twin-po-backfill.sql — one-shot reversible PO header backfill.
+--
+-- Closes the missing-PO gap the legacy-replicator user_logs replay cannot:
+-- POs started via order-changed (shouldOpenNewPo=true, shouldCreatePo=false)
+-- and PLC-created POs never emit a mirrorable user_log, so ~34% of legacy
+-- ent-1 CPACK POs (almost all finished) were absent from the twin (ent-3).
+--
+-- Reads legacy packiot40 (ent 1) via dblink (SELECT-only), maps equipment by
+-- packml base-topic + enterprise 1->3, and INSERTs any id_order missing on the
+-- twin. Idempotent (NOT EXISTS on id_order), guards the UNIQUE(id_equipment)
+-- WHERE status=2 partial index, records every inserted id_production_order in
+-- twin_backfill_po_log for reversal (see -down.sql). recalc_needed=true fires
+-- the OEE worker. Runtime windows are intentionally NOT inserted — the
+-- production_orders_runtime per-equipment no-overlap exclusion constraint
+-- collides with stuck-open twin windows; the durable fix is the PO reconciler
+-- (services/analytics-sync/internal/replicate/reconcile.go).
+--
+-- Run on the twin (:conn = a legacy dblink conninfo, :batch = a batch tag):
+--   psql -h 10.10.10.89 -U postgres -d packiot_analytics \
+--        -v conn='host=... dbname=packiot40 user=awslambda password=...' \
+--        -v batch='po-backfill-YYYY-MM-DD' -f f3-cpack-twin-po-backfill.sql
+--
+-- Prereq (once): CREATE TABLE IF NOT EXISTS twin_backfill_po_log (
+--   id_production_order bigint PRIMARY KEY, id_order bigint, id_equipment int,
+--   status int, ts_start timestamptz, ts_end timestamptz,
+--   inserted_at timestamptz DEFAULT now(), batch text);
+

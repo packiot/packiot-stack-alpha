@@ -1,5 +1,5 @@
 -- 11-shift-hours-nullsafe-unique.sql — close the shift_hours duplicate loophole.
--- __SCH__ = target schema (public on packiot_shadow / F3). Idempotent.
+-- __SCH__ = target schema (public on packiot_analytics / F3). Idempotent.
 --
 -- CONTEXT. `shift_hours` shipped with UNIQUE (begin_time, end_time, id_site,
 -- id_area, id_equipment). But every seeded/CS-Admin row has id_equipment = NULL,

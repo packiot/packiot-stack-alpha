@@ -1,0 +1,99 @@
+// Grafana Alloy — DB-box LOG AGENT.
+//
+// Runs on the analytics DB box (i-064bb36d...), which hosts ONLY the timescaledb
+// container. That box has no Loki and no app-box promtail reaching it, so its
+// PostgreSQL logs (log_min_duration_statement=3000 → every query slower than 3s
+// is logged, plus auto_explain plans) never reached the central Loki.
+//
+// This agent tails the timescaledb container's stdout/stderr via the Docker API
+// and pushes to the app-box Alloy gateway's Loki-push endpoint, which relays to
+// Loki. The gateway address is injected via the ALLOY_LOKI_GATEWAY env var so
+// the box's private IP is not hardcoded in git.
+
+discovery.docker "dockerd" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "timescaledb" {
+  targets = discovery.docker.dockerd.targets
+
+  // Keep only the timescaledb container.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/timescaledb"
+    action        = "keep"
+  }
+  // Stable labels so slow queries are queryable as
+  // {job="postgres", container="timescaledb"} in Loki/Grafana.
+  rule {
+    target_label = "job"
+    replacement  = "postgres"
+  }
+  rule {
+    target_label = "container"
+    replacement  = "timescaledb"
+  }
+  rule {
+    target_label = "host"
+    replacement  = "db-box"
+  }
+}
+
+loki.source.docker "pg" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.timescaledb.output
+  forward_to = [loki.write.gateway.receiver]
+}
+
+loki.write "gateway" {
+  endpoint {
+    url = env("ALLOY_LOKI_GATEWAY")   // http://<app-box-private-ip>:3101/loki/api/v1/push
+  }
+}
+
+// ── HOST METRICS (T0 grain-tiered retention, 2026-09-23) ───────────────────────
+// node_exporter-equivalent collectors for the DB box, pushed to the app-box
+// gateway (ALLOY_PROM_GATEWAY = http://<app-box-private-ip>:3102/api/v1/metrics/write).
+// The container must mount the host root at /host/root (read-only) so filesystem
+// metrics describe the HOST disk, not the container overlay — see
+// scripts/deploy-db-agent.sh. instance="db-box" keeps it distinct from the app
+// box's node-exporter in every alert and panel.
+prometheus.exporter.unix "host" {
+  rootfs_path = "/host/root"
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  set_collectors = ["filesystem", "cpu", "meminfo", "loadavg", "diskstats", "netdev", "uname", "textfile"]
+  // Nightly pg_dump results (terraform/staging/scripts/backup-db.sh writes
+  // backup_<db>.prom there) → BackupStale / BackupShrank alerts.
+  textfile {
+    directory = "/host/root/var/lib/packiot-backup/metrics"
+  }
+  filesystem {
+    fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs|vfat)$"
+    mount_points_exclude = "^/(dev|proc|sys|run|var/lib/docker/.+)($|/)"
+  }
+}
+
+discovery.relabel "host" {
+  targets = prometheus.exporter.unix.host.targets
+  rule {
+    target_label = "instance"
+    replacement  = "db-box"
+  }
+  rule {
+    target_label = "job"
+    replacement  = "node-exporter-db"
+  }
+}
+
+prometheus.scrape "host" {
+  targets         = discovery.relabel.host.output
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.gateway.receiver]
+}
+
+prometheus.remote_write "gateway" {
+  endpoint {
+    url = env("ALLOY_PROM_GATEWAY")
+  }
+}

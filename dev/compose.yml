@@ -1,0 +1,39 @@
+# dev/compose.yml — local development environment entry point (ADR-0060 D1).
+#
+#   make dev                    # Tier 0 only (data plane)
+#   make dev SVC="grafana"      # a slice: the service + its depends_on closure
+#   make dev-ps / make dev-down
+#
+# Equivalent raw command:
+#   docker compose -f dev/compose.yml --env-file dev/.env.dev up -d grafana
+#
+# Every fragment under services/ is listed here. No profiles: `up <svc>` already
+# starts the depends_on closure. Paths inside an included file resolve relative
+# to THAT file's directory.
+name: packiot-dev
+
+include:
+  - path: base.yml
+    env_file: .env.dev
+  - path: services/grafana.yml
+    env_file: .env.dev
+  - path: services/read-api.yml
+    env_file: .env.dev
+  - path: services/front4.yml
+    env_file: .env.dev
+  - path: services/sparkplug-decoder.yml
+    env_file: .env.dev
+  - path: services/stream-engine.yml
+    env_file: .env.dev
+  - path: services/seed-replay.yml
+    env_file: .env.dev
+  - path: services/edge-api.yml
+    env_file: .env.dev
+  - path: services/barcode-service.yml
+    env_file: .env.dev
+  - path: services/csadmin.yml
+    env_file: .env.dev
+  - path: services/customize.yml
+    env_file: .env.dev
+  - path: services/operator.yml
+    env_file: .env.dev

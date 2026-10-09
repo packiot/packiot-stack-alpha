@@ -42,6 +42,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/clientdescriptor"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/derivesim"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/rawtag"
 )
 
 // DefaultMaxBodyBytes caps one descriptor POST body. A whole-tenant descriptor is
@@ -105,6 +107,7 @@ func New(cfg Config, outcomes *prometheus.CounterVec, logger *slog.Logger) *Serv
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/onboard/generate", s.handleGenerate)
+	mux.HandleFunc("POST /v1/onboard/simulate", s.handleSimulate)
 	return mux
 }
 
@@ -128,6 +131,15 @@ type Artifacts struct {
 	PositionSQL string `json:"position_sql"`
 	AgentYAML   string `json:"agent_yaml"`
 	TeeNodeJSON string `json:"tee_node_json"`
+	// ClientYAML is the PLC reader's client.yaml (physical addressing). Non-empty
+	// ONLY when the descriptor has a plc block; empty for a tee-only tenant.
+	ClientYAML string `json:"client_yaml,omitempty"`
+	// ReaderFlow is the Node-RED PLC-reader flow (artifact 6) — the one that hosts
+	// the tenant's authored `customizations` on its "<Tenant> customizations" tab.
+	// Previously the HTTP path dropped it (only the onboard-gen CLI emitted it), so
+	// authored customizations never reached an API consumer (ADR-0058 P2.1 / G-B).
+	// Non-empty ONLY when the descriptor has a plc block.
+	ReaderFlow string `json:"reader_flow,omitempty"`
 }
 
 // InferredIndex is one member whose count index is still inferred (not confirmed
@@ -201,8 +213,14 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	//    (print everything; report inferred indices to stderr).
 	art, err := d.Generate(clientdescriptor.GenerateOptions{Cutover: false})
 	if err != nil {
-		// A descriptor that Validate() accepted should always Generate; a failure
-		// here is an internal generator fault, not a bad request → 500.
+		// An AUTHORING error only detectable at render time (customization id
+		// collision, bad spot link) is the caller's to fix → 400 with the reason.
+		if clientdescriptor.IsAuthoringError(err) {
+			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, err.Error(), int64(len(body)))
+			return
+		}
+		// Anything else, for a descriptor Validate() accepted, is an internal
+		// generator fault, not a bad request → 500.
 		s.inc(OutcomeError)
 		s.logger.Error("onboard generate failed after validation", slog.String("err", err.Error()))
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "generation failed: " + err.Error()})
@@ -235,6 +253,8 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			PositionSQL: art.PositionSQL,
 			AgentYAML:   string(art.AgentYAML),
 			TeeNodeJSON: string(art.TeeSnippet),
+			ClientYAML:  string(art.ClientYAML),
+			ReaderFlow:  string(art.ReaderFlow),
 		},
 		Validation: Validation{
 			InferredCountIndices: inferred,
@@ -251,6 +271,123 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		slog.Bool("cutover_eligible", resp.Validation.CutoverEligible),
 		slog.Int("bytes_in", len(body)))
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// SimulateRequest is the /v1/onboard/simulate body: a descriptor (its object,
+// as JSON — or a YAML string, both accepted by clientdescriptor.Parse) plus a
+// stream of raw input tags to feed through the tenant's derive/expr rules.
+type SimulateRequest struct {
+	Descriptor json.RawMessage `json:"descriptor"`
+	Samples    []SampleTag     `json:"samples"`
+}
+
+// SampleTag is one raw input tag (the tee/reader wire shape).
+type SampleTag struct {
+	Metric   string  `json:"metric"`
+	Value    float64 `json:"value"`
+	TsMillis int64   `json:"ts_millis"`
+}
+
+// SimRule is a compact summary of one active derive rule, so a preview can show
+// what would run before any samples are fed.
+type SimRule struct {
+	Segment string   `json:"segment"`
+	Emit    []string `json:"emit"`
+	Kind    string   `json:"kind"` // integral | sum | expr
+	Expr    string   `json:"expr,omitempty"`
+}
+
+// SimulateResponse reports the rules that ran and the tags they produced.
+type SimulateResponse struct {
+	Tenant       string             `json:"tenant"`
+	DerivedRules []SimRule          `json:"derived_rules"`
+	Emitted      []derivesim.Emitted `json:"emitted"`
+}
+
+// handleSimulate runs a descriptor's derive/expr rules against sample input tags
+// and returns the produced tags — the ADR-0058 simulate-before-deploy engine a
+// CS-Admin preview calls. It uses the SAME core the derive-replay CLI uses
+// (derivesim), so a preview matches what the box would actually synthesize.
+func (s *Server) handleSimulate(w http.ResponseWriter, r *http.Request) {
+	s.inc(OutcomeReceived)
+
+	got := []byte(bearerToken(r.Header.Get("Authorization")))
+	if subtle.ConstantTimeCompare(got, s.apiKey) != 1 {
+		s.reject(w, http.StatusUnauthorized, OutcomeRejectedAuth, "unauthorized", 0)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "payload too large", int64(len(body)))
+			return
+		}
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "cannot read body", int64(len(body)))
+		return
+	}
+	if len(body) == 0 {
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "empty body", 0)
+		return
+	}
+
+	var req SimulateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "invalid JSON body: "+err.Error(), int64(len(body)))
+		return
+	}
+	if len(req.Descriptor) == 0 {
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "missing descriptor", int64(len(body)))
+		return
+	}
+
+	// Parse + validate the descriptor through the same core as generate.
+	d, err := clientdescriptor.Parse(req.Descriptor)
+	if err != nil {
+		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, err.Error(), int64(len(body)))
+		return
+	}
+	profile, err := d.GenerateProfile()
+	if err != nil {
+		s.inc(OutcomeError)
+		s.reject(w, http.StatusInternalServerError, OutcomeError, "cannot build profile: "+err.Error(), int64(len(body)))
+		return
+	}
+
+	// Run the samples through the shared derive core.
+	samples := make([]rawtag.RawTag, 0, len(req.Samples))
+	for _, s := range req.Samples {
+		samples = append(samples, rawtag.RawTag{Metric: s.Metric, Value: s.Value, TsMillis: s.TsMillis, Quality: true})
+	}
+	emitted := derivesim.Run(profile, samples)
+	if emitted == nil {
+		emitted = []derivesim.Emitted{} // stable [] not null
+	}
+
+	rules := make([]SimRule, 0, len(profile.Derived))
+	for _, rl := range profile.Derived {
+		sr := SimRule{Segment: rl.Segment, Emit: rl.Emit}
+		switch {
+		case rl.Integral != nil:
+			sr.Kind = "integral"
+		case rl.Sum != nil:
+			sr.Kind = "sum"
+		case rl.Expr != nil:
+			sr.Kind = "expr"
+			sr.Expr = rl.Expr.Expr
+		}
+		rules = append(rules, sr)
+	}
+
+	s.inc(OutcomeGenerated)
+	s.logger.Info("onboard simulate",
+		slog.String("tenant", d.Tenant),
+		slog.Int("samples", len(samples)),
+		slog.Int("rules", len(rules)),
+		slog.Int("emitted", len(emitted)))
+	writeJSON(w, http.StatusOK, SimulateResponse{Tenant: d.Tenant, DerivedRules: rules, Emitted: emitted})
 }
 
 // reject centralises the metric bump + structured log (never the token or the

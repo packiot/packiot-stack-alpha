@@ -1,0 +1,46 @@
+# ── front4 (Tier 4) — ADR-0060 P2 ────────────────────────────────────────────
+# contract (docs/dev/contracts/ui-services.md, front4):
+#   inputs:   read-api via read-api-cors (POST /v1/query, GET /v1/language-packs, Bearer = Cognito ID token);
+#             edge-api optional (session/enterprises, i18n: both fail soft — not in this slice)
+#   outputs:  Vite dev server :5173 (hot reload from your checkout)
+#   external: dev Cognito pool (Amplify, USER_PASSWORD_AUTH) — internet needed for login
+# FRONT4_DIR must point at a front4 checkout of the branch you work on (normally `staging`). The submodule
+# pin in this repo is stale (2026-07); e.g. `git clone -b staging git@github.com:packiot/front4 ../front4-staging`
+# and set FRONT4_DIR=../front4-staging in your shell. node_modules live in a named volume (Linux-built, and
+# your checkout stays clean). VITE_* are read when the dev server starts: restart the service after changing.
+services:
+  front4:
+    image: node:20-bookworm
+    working_dir: /app
+    command: ["sh", "-c", "corepack enable && yarn install --frozen-lockfile --network-timeout 600000 && exec yarn dev --host 0.0.0.0 --port 5173 --strictPort"]
+    depends_on:
+      read-api-cors:
+        condition: service_healthy
+    environment:
+      VITE_AUTH_COGNITO_ENABLED: "true"
+      VITE_COGNITO_USER_POOL_ID: ${DEV_COGNITO_USER_POOL_ID:?set in dev/.env.dev}
+      VITE_COGNITO_USER_POOL_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
+      VITE_COGNITO_LINK_ENABLED: "false"
+      VITE_REFDATA_API_URL: http://localhost:${DEV_READAPI_PORT:-9104}
+      VITE_REFDATA_ENABLED: "true"
+      VITE_REFDATA_ANALYTICS: "true"
+      # front4's .env.development points at legacy REMOTE dev hosts (dev.api4 / edge-dev.api4.packiot.com). A
+      # local stack must not call out: pin them to a closed local port (refused at once). Every such call is
+      # fail-soft (enterprise switcher hidden, bundled i18n). To use the edge-api slice instead (its CORS allows
+      # localhost:5173): DEV_FRONT4_EDGE_API=http://localhost:8080 make dev SVC="front4 edge-api"
+      VITE_API_URL: http://127.0.0.1:9/
+      VITE_EDGE_API: ${DEV_FRONT4_EDGE_API:-http://127.0.0.1:9}
+    volumes:
+      - ${FRONT4_DIR:-../../front4}:/app
+      - front4-node-modules:/app/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 300s # first yarn install
+
+volumes:
+  front4-node-modules:

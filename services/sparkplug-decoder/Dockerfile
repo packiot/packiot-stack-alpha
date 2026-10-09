@@ -48,14 +48,27 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/sparkplug-agent ./cmd/sparkplug-ag
 # shop floor keeps live production visibility during an internet outage. Pure
 # stdlib HTTP, CGo-free.
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/edge-dashboard ./cmd/edge-dashboard
+# bispharma-twin: GAP-1 codified staging TWIN producer for Bispharma (ent 5,
+# group BISPHARMASTAGING). Publishes synthetic monotonic counter SparkPlug B
+# NBIRTH/NDATA straight to Mosquitto (the same internal path CPACK's
+# inject-counter-fixture twin uses), so ent-5 gets a continuous OEE feed
+# independent of the offline factory box. Flag-gated OFF (BISPHARMA_TWIN_ENABLED)
+# + compose profile "bispharma-twin" — STAGING ONLY, disable when a real feed
+# returns (double-source guard). CGo-free (paho + internal/sparkplug).
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/bispharma-twin ./cmd/bispharma-twin
+# seed-replay: ADR-0060 D7 dev-only producer — replays the dev seed's own week (T − 7 d) as SparkPlug B over
+# local MQTT so the dev pipeline runs on "now" data. Dev compose only (dev/services/seed-replay.yml).
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/seed-replay ./cmd/seed-replay
 
 # Intermediate stage: create the outbox directory with nonroot ownership.
 # Docker's named-volume mount copies file+dir OWNERSHIP from the container
 # image if the volume is empty at first mount. Without this step, the
 # volume gets root-owned + nonroot user can't write the SQLite DB.
-# ADR-0011 P2 outbox lives here.
+# ADR-0011 P2 outbox lives here; bispharma-twin persists its totalizer
+# state file under /var/lib/bispharma-twin (same root-owned-volume trap).
 FROM alpine AS outbox-dir
-RUN mkdir -p /out/var/lib/edge-transformer && chown -R 65532:65532 /out/var/lib
+RUN mkdir -p /out/var/lib/edge-transformer /out/var/lib/bispharma-twin \
+ && chown -R 65532:65532 /out/var/lib
 
 # Distroless `static` image: binary + ca-certs + non-root user. No shell,
 # no package manager — minimal attack surface.
@@ -68,6 +81,8 @@ COPY --from=builder /out/opcua-reader /usr/local/bin/opcua-reader
 COPY --from=builder /out/s7-softplc /usr/local/bin/s7-softplc
 COPY --from=builder /out/sparkplug-agent /usr/local/bin/sparkplug-agent
 COPY --from=builder /out/edge-dashboard /usr/local/bin/edge-dashboard
+COPY --from=builder /out/bispharma-twin /usr/local/bin/bispharma-twin
+COPY --from=builder /out/seed-replay /usr/local/bin/seed-replay
 COPY --from=outbox-dir /out/var/lib /var/lib
 USER nonroot:nonroot
 

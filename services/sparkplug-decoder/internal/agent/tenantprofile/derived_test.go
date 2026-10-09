@@ -33,7 +33,7 @@ func TestProfileDerivedValidation(t *testing.T) {
 		{
 			name:    "both set",
 			rule:    DerivedRule{Segment: "/x", Emit: []string{"/x/c"}, Type: "double", Integral: &IntegralSource{Source: "/x/s"}, Sum: &SumSource{Addends: []string{"/x/a", "/x/b"}}},
-			wantErr: "exactly one of {integral, sum}",
+			wantErr: "exactly one of {integral, sum, expr}",
 		},
 		{
 			name:    "empty emit",

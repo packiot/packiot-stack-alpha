@@ -322,7 +322,8 @@ func TestCacheMaxAge(t *testing.T) {
 // non-null enterprise, and never selects the api_key/secret.
 func TestUsersEnterpriseSQLIsHardened(t *testing.T) {
 	sql := usersEnterpriseSQL
-	for _, must := range []string{"id_user_firebase = $1", "active = true", "id_enterprise IS NOT NULL"} {
+	// #159: Firebase retired — the subject now resolves by id_user_cognito only.
+	for _, must := range []string{"id_user_cognito = $1", "active = true", "id_enterprise IS NOT NULL"} {
 		if !contains(sql, must) {
 			t.Errorf("usersEnterpriseSQL missing guard %q:\n%s", must, sql)
 		}

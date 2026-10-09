@@ -70,8 +70,8 @@ func loadConfig() config {
 		dbPort:          getenv("DB_PORT", "5432"),
 		dbUser:          getenv("DB_USER", "postgres"),
 		dbPassword:      os.Getenv("DB_PASSWORD"),
-		dbName:          getenv("DB_NAME", "packiot_shadow"),
-		firebaseProject: getenv("FIREBASE_PROJECT_ID", defaultFirebaseProject),
+		dbName:          getenv("DB_NAME", "packiot_analytics"),
+		firebaseProject: lookupenv("FIREBASE_PROJECT_ID", defaultFirebaseProject), // "" ⇒ off (#159); see lookupenv
 		cognitoIssuer:   os.Getenv("COGNITO_ISSUER"),
 		cognitoAudience: os.Getenv("COGNITO_CLIENT_ID"), // aud on Cognito ID tokens; same var refdata-api uses
 		logLevel:        getenv("LOG_LEVEL", "info"),
@@ -215,6 +215,18 @@ func runHealthcheck(port string) int {
 
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// lookupenv returns k's value whenever k is SET — including "" — and def only
+// when k is absent. Use it for settings where an explicit empty value means
+// "disabled"; getenv cannot express that. FIREBASE_PROJECT_ID needs it: staging
+// sets "" to retire Firebase (#159), and getenv silently mapped that back to
+// fbpackiot, keeping Firebase verification live.
+func lookupenv(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok {
 		return v
 	}
 	return def

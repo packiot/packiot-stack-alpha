@@ -10,7 +10,7 @@
 # MEMORY-family (r7g) instance in the private subnet.
 #
 # SINGLE-FLOW F3-NATIVE (ADR-0032, roadmap §3.1): this is ONE database whose
-# `public` schema *is* the F3 schema. No packiot_shadow suffix (nothing to
+# `public` schema *is* the F3 schema. No packiot_analytics suffix (nothing to
 # disambiguate with a single flow), no F1 legacy `public`, no F2 shadow_go_port,
 # no comparator schemas. Greenfield prod is *born* at ADR-0032's end-state.
 #

@@ -66,6 +66,12 @@ type CountersAvail struct {
 	// lead_machine's cagg. See line_lead.go.
 	LineLeadEnabled     bool
 	LineLeadEnterprises []int // enterprises whose tp=3 lines derive from lead_machine
+	// Per-LINE overrides from the client's OEE settings (oee_profile.lines):
+	// LineLeadOptIn lines derive from their lead even when their enterprise is
+	// not opted in; LineLeadOptOut lines do NOT even when it is. Both empty ⇒
+	// the rendered SQL is byte-identical to the enterprise-only predicate.
+	LineLeadOptIn  []int
+	LineLeadOptOut []int
 
 	// ── ADR-0048 §Fault-2: availability count-floor ────────────────────────
 	// The state/downtime stream has GAPS: stretches with NO event where the
@@ -94,6 +100,10 @@ type CountersAvail struct {
 	// OFF → byte-identical (legacy top-down oee + residual oee_p). Load-bearing
 	// on availability, so sequence it AFTER AvailFloorEnabled. See oee.go.
 	OeeCanonicalAPQ bool
+	// AvailabilityExclusions (2026-10-01): subtract out-of-service windows and
+	// PLC no-data time from available_time after every writer (see
+	// availability_exclusions.go). Inert without windows / status-20 events.
+	AvailabilityExclusions bool
 }
 
 // engaged reports whether the fallback pass should run this tick. Requires the
@@ -106,7 +116,7 @@ func (c CountersAvail) engaged() bool {
 
 // engagedLineLead reports whether the line-from-lead derivation pass should run.
 func (c CountersAvail) engagedLineLead() bool {
-	return c.LineLeadEnabled && len(c.LineLeadEnterprises) > 0 && c.IdleTimeoutSec > 0
+	return c.LineLeadEnabled && c.LineLead().Any() && c.IdleTimeoutSec > 0
 }
 
 // engagedFloor reports whether the availability count-floor pass should run.
@@ -119,6 +129,9 @@ func (c CountersAvail) engagedFloor() bool {
 // the legacy top-down oee / residual oee_p. Purely a master flag — it reshapes
 // how every batch row's oee is stored, independent of the equipment opt-in.
 func (c CountersAvail) engagedCanonical() bool { return c.OeeCanonicalAPQ }
+
+// engagedExclusions reports whether the availability-exclusions step runs.
+func (c CountersAvail) engagedExclusions() bool { return c.AvailabilityExclusions }
 
 // pgIntArrayLiteral renders a []int as a Postgres bigint[] literal, e.g.
 // {91,92,93}. The ids come from config (config.CSVInts of an env var), never
@@ -140,7 +153,7 @@ type rollupStep struct {
 }
 
 // hourCountsAvailSQL — the hour-grain fallback. %[1]s = EvSchema, %[2]s =
-// opted-in equipment array literal, %[3]d = idle timeout (seconds). Targets
+// opted-in equipment array literal, %[7]d = idle timeout (seconds). Targets
 // ONLY opted-in rows the events phase left flagged (recalc_needed still true
 // ⇒ no state events). Leaves oee_p to hourOeePSQL (runs next, drives off the
 // just-cleared rows). See file header for the inference model.
@@ -150,25 +163,25 @@ const hourCountsAvailSQL = `
 	           LEAST(el.ts_value + interval '1 hour', now()) AS bend,
 	           extract(epoch FROM (LEAST(el.ts_value + interval '1 hour', now()) - el.ts_value)) AS ts_total
 	      FROM hour_elig el
-	     WHERE el.id_equipment = ANY(%[2]s)
+	     WHERE el.id_equipment = ANY(%[6]s)
 	), prod_min AS (
 	    SELECT b.id_equipment, b.ts_value, b.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
 	       AND m.gross_production_incr > 0
 	), islanded AS (
 	    SELECT id_equipment, ts_value, bend, mts,
-	           sum(CASE WHEN gap IS NULL OR gap > %[3]d THEN 1 ELSE 0 END)
+	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
 	               OVER (PARTITION BY id_equipment, ts_value ORDER BY mts) AS island
 	      FROM prod_min
 	), sessions AS (
 	    SELECT id_equipment, ts_value,
-	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[3]d), min(bend)) - min(mts))) AS span
+	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY id_equipment, ts_value, island
 	), active AS (
@@ -176,7 +189,7 @@ const hourCountsAvailSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       available_time   = b.ts_total,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), b.ts_total),
 	       stopped_time     = b.ts_total - LEAST(COALESCE(a.raw_running, 0), b.ts_total),
@@ -185,9 +198,9 @@ const hourCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
+	       oee   = GREATEST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0), 1), 0), -- ADR-0037 clamp (#663)
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
@@ -195,7 +208,7 @@ const hourCountsAvailSQL = `
 	   AND e.ts_value >= now() - interval '6 hour'`
 
 // shiftCountsAvailSQL — the shift-grain fallback. %[1]s = EvSchema, %[2]s =
-// opted-in equipment array literal, %[3]d = idle timeout (seconds). Detects
+// opted-in equipment array literal, %[7]d = idle timeout (seconds). Detects
 // state-less buckets via NOT EXISTS shift_ev (the event-hit temp table) since
 // the shift phase V clears recalc_needed for every row. Bounded to recent
 // buckets (2 days) where the 1-min cagg is guaranteed materialized, so an
@@ -209,7 +222,7 @@ const shiftCountsAvailSQL = `
 	           LEAST(el.ts_end, now()) AS bend,
 	           extract(epoch FROM (LEAST(el.ts_end, now()) - el.ts_value)) AS ts_total
 	      FROM shift_elig el
-	     WHERE el.id_equipment = ANY(%[2]s)
+	     WHERE el.id_equipment = ANY(%[6]s)
 	       AND el.ts_value >= now() - interval '2 days'
 	       AND NOT EXISTS (SELECT 1 FROM shift_ev ev
 	                        WHERE ev.id_equipment = el.id_equipment AND ev.ts_value = el.ts_value)
@@ -218,19 +231,19 @@ const shiftCountsAvailSQL = `
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
 	       AND m.gross_production_incr > 0
 	), islanded AS (
 	    SELECT id_equipment, ts_value, bend, mts,
-	           sum(CASE WHEN gap IS NULL OR gap > %[3]d THEN 1 ELSE 0 END)
+	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
 	               OVER (PARTITION BY id_equipment, ts_value ORDER BY mts) AS island
 	      FROM prod_min
 	), sessions AS (
 	    SELECT id_equipment, ts_value,
-	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[3]d), min(bend)) - min(mts))) AS span
+	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY id_equipment, ts_value, island
 	), active AS (
@@ -238,7 +251,7 @@ const shiftCountsAvailSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       available_time   = b.ts_total,
 	       running_time     = LEAST(COALESCE(a.raw_running, 0), b.ts_total),
 	       stopped_time     = b.ts_total - LEAST(COALESCE(a.raw_running, 0), b.ts_total),
@@ -247,21 +260,21 @@ const shiftCountsAvailSQL = `
 	       changeover_time  = 0,
 	       ideal_production = COALESCE((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0),
 	       recalc_needed    = false,
-	       oee   = GREATEST(LEAST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 1), 0), -- ADR-0037 clamp
+	       oee   = GREATEST(COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0), 0), -- ADR-0037 clamp
 	       oee_a = GREATEST(LEAST(COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0), 1), 0), -- ADR-0037 clamp (#663)
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(
 	             COALESCE(e.net / NULLIF((b.ts_total / 60.0) * NULLIF(e.ideal_speed, 0), 0), 0)
 	             / NULLIF(
 	                 COALESCE(LEAST(COALESCE(a.raw_running, 0), b.ts_total) / NULLIF(b.ts_total, 0), 0)
-	                 * COALESCE(e.net / NULLIF(e.gross, 0), 0), 0), 0), 1), 0) -- ADR-0037 clamp (#663)
+	                 * COALESCE(e.net / NULLIF(e.gross, 0), 0), 0), 0), 0) -- ADR-0037 clamp (#663)
 	  FROM bounds b
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value
 	 WHERE e.id_equipment = b.id_equipment AND e.ts_value = b.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
 
 // shiftAvailFloorSQL — ADR-0048 §Fault-2 count-floor for the SHIFT grain.
-// %[1]s = EvSchema, %[2]s = opted-in equipment array literal, %[3]d = idle
+// %[1]s = EvSchema, %[2]s = opted-in equipment array literal, %[7]d = idle
 // timeout (seconds). Same idle-timeout sessionization as shiftCountsAvailSQL,
 // but applied to rows that ALREADY carry a state-derived running_time: it RAISES
 // running_time to the count-active time (capped at available_time) only where
@@ -275,26 +288,26 @@ const shiftAvailFloorSQL = `
 	    SELECT el.id_equipment, el.ts_value,
 	           LEAST(el.ts_end, now()) AS bend
 	      FROM shift_elig el
-	     WHERE el.id_equipment = ANY(%[2]s)
+	     WHERE el.id_equipment = ANY(%[6]s)
 	       AND el.ts_value >= now() - interval '2 days'
 	), prod_min AS (
 	    SELECT b.id_equipment, b.ts_value, b.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
 	       AND m.gross_production_incr > 0
 	), islanded AS (
 	    SELECT id_equipment, ts_value, bend, mts,
-	           sum(CASE WHEN gap IS NULL OR gap > %[3]d THEN 1 ELSE 0 END)
+	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
 	               OVER (PARTITION BY id_equipment, ts_value ORDER BY mts) AS island
 	      FROM prod_min
 	), sessions AS (
 	    SELECT id_equipment, ts_value,
-	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[3]d), min(bend)) - min(mts))) AS span
+	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY id_equipment, ts_value, island
 	), active AS (
@@ -302,7 +315,7 @@ const shiftAvailFloorSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       running_time = LEAST(GREATEST(e.running_time, a.raw_running), e.available_time),
 	       stopped_time = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
 	       downtime     = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
@@ -322,25 +335,25 @@ const hourAvailFloorSQL = `
 	    SELECT el.id_equipment, el.ts_value,
 	           LEAST(el.ts_value + interval '1 hour', now()) AS bend
 	      FROM hour_elig el
-	     WHERE el.id_equipment = ANY(%[2]s)
+	     WHERE el.id_equipment = ANY(%[6]s)
 	), prod_min AS (
 	    SELECT b.id_equipment, b.ts_value, b.bend, m.ts_value AS mts,
 	           extract(epoch FROM (m.ts_value - lag(m.ts_value) OVER (
 	               PARTITION BY b.id_equipment, b.ts_value ORDER BY m.ts_value))) AS gap
 	      FROM bounds b
-	      JOIN %[1]s.ca_agg_equipment_values_1min m
+	      JOIN %[3]s.equipment_categorical_1min m
 	        ON m.id_equipment = b.id_equipment
 	       AND m.ts_value >= b.ts_value
 	       AND m.ts_value <  b.bend
 	       AND m.gross_production_incr > 0
 	), islanded AS (
 	    SELECT id_equipment, ts_value, bend, mts,
-	           sum(CASE WHEN gap IS NULL OR gap > %[3]d THEN 1 ELSE 0 END)
+	           sum(CASE WHEN gap IS NULL OR gap > %[7]d THEN 1 ELSE 0 END)
 	               OVER (PARTITION BY id_equipment, ts_value ORDER BY mts) AS island
 	      FROM prod_min
 	), sessions AS (
 	    SELECT id_equipment, ts_value,
-	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[3]d), min(bend)) - min(mts))) AS span
+	           extract(epoch FROM (LEAST(max(mts) + make_interval(secs => %[7]d), min(bend)) - min(mts))) AS span
 	      FROM islanded
 	     GROUP BY id_equipment, ts_value, island
 	), active AS (
@@ -348,7 +361,7 @@ const hourAvailFloorSQL = `
 	      FROM sessions
 	     GROUP BY id_equipment, ts_value
 	)
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       running_time = LEAST(GREATEST(e.running_time, a.raw_running), e.available_time),
 	       stopped_time = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
 	       downtime     = GREATEST(e.available_time - LEAST(GREATEST(e.running_time, a.raw_running), e.available_time), 0),
@@ -375,25 +388,25 @@ const hourAvailFloorSQL = `
 // cast reproduces that same value (a_new == a_old, verified live) — but the cast
 // removes the integer-division trap for any future refactor (matches day/week/month).
 const shiftOeeReconcileSQL = `
-	UPDATE %[1]s.equipment_oee_shift e SET
+	UPDATE %[4]s.equipment_oee_shift e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM shift_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '25 day'`
 
 const hourOeeReconcileSQL = `
-	UPDATE %[1]s.equipment_oee_hourly e SET
+	UPDATE %[4]s.equipment_oee_hourly e SET
 	       oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0),
-	       oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0),
-	       oee_p = GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0),
+	       oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0),
+	       oee_p = GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0),
 	       oee   = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 1), 0)
-	             * GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)
+	             * GREATEST(COALESCE(e.gross / NULLIF(e.ideal_speed * e.running_time / 60.0, 0), 0), 0)
+	             * GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '6 hour'`
@@ -463,4 +476,34 @@ func plannedDowntimeExpr(changeoverAvailability bool) string {
 		return "ee.planned_downtime = true AND ee.change_over IS DISTINCT FROM true"
 	}
 	return "ee.planned_downtime = true"
+}
+
+// LineLeadScope is WHICH lines derive their counters/availability from their
+// lead machine: every line of an opted-in enterprise, minus per-line opt-outs,
+// plus per-line opt-ins (the client's per-line OEE settings).
+type LineLeadScope struct {
+	Enterprises []int
+	OptIn       []int
+	OptOut      []int
+}
+
+// LineLead returns this config's line-lead scope.
+func (c CountersAvail) LineLead() LineLeadScope {
+	return LineLeadScope{Enterprises: c.LineLeadEnterprises, OptIn: c.LineLeadOptIn, OptOut: c.LineLeadOptOut}
+}
+
+// Any reports whether at least one line can be in scope.
+func (s LineLeadScope) Any() bool { return len(s.Enterprises) > 0 || len(s.OptIn) > 0 }
+
+// Predicate renders the scope over the equipments alias "eq". entExpr is the
+// enterprise array expression (a literal or a bind like $2::int[]). With no
+// per-line overrides it is EXACTLY "eq.id_enterprise = ANY(<entExpr>)" — the
+// pre-override SQL, byte for byte — so tenants without overrides are unchanged.
+func (s LineLeadScope) Predicate(entExpr string) string {
+	base := "eq.id_enterprise = ANY(" + entExpr + ")"
+	if len(s.OptIn) == 0 && len(s.OptOut) == 0 {
+		return base
+	}
+	return "((" + base + " AND NOT eq.id_equipment = ANY(" + pgIntArrayLiteral(s.OptOut) +
+		")) OR eq.id_equipment = ANY(" + pgIntArrayLiteral(s.OptIn) + "))"
 }

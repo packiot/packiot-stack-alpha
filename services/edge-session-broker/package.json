@@ -1,0 +1,14 @@
+{
+  "name": "edge-session-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ADR-0057 SSM session data-plane bridge (session-manager-plugin ↔ WebSocket)",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

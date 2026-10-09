@@ -12,8 +12,9 @@
 // INVARIANT. A machine running at its CONFIGURED rated speed can produce at
 // most rated_speed · Δt parts between two readings. Any increment above
 // K · rated_speed · Δt is therefore not physically possible production — it is
-// a baseline/reorder/double-source artifact. We reject it (emit 0) BEFORE it
-// reaches the equipment_values UPSERT, i.e. before the cagg SUM, and surface a
+// a baseline/reorder/double-source artifact. We reject it BEFORE it
+// reaches the equipment_values UPSERT, i.e. before the cagg SUM (writing the
+// totalizer's own plausible movement instead, else 0 — totalizerDelta), and surface a
 // ClampEvent so the rejection is observable (a data_quality_event), never
 // silent.
 //
@@ -41,6 +42,13 @@ type ClampEvent struct {
 	BucketTS     time.Time // sample ts truncated to the second (== ts_value)
 	Observed     float64   // the original (rejected) increment
 	Bound        float64   // the plausible-max bound it exceeded
+	// Replacement is what was written instead: the TOTALIZER's own movement since
+	// the previous reading on this stream when that passes the same physical checks
+	// (see totalizerDelta), else 0. Before 2026-09-29 the clamp always wrote 0 —
+	// right to reject the bogus increment, but it also threw away the real
+	// production of that interval (audit: 184 CPACK gross rejections in 30 days
+	// whose totalizer had moved 6,694 units at a plausible rate).
+	Replacement float64
 }
 
 // clampKey identifies one production-counter STREAM (per equipment, per
@@ -66,74 +74,132 @@ type incrementClamp struct {
 	logger *slog.Logger
 
 	// spikeFloor is the rate-INDEPENDENT backstop for the ADR-0045 P1 first-boot
-	// spike: when an increment consumes the ENTIRE absolute totalizer
-	// (value >= absolute) and that totalizer is >= spikeFloor, the upstream
-	// differenced cur−0 on a missing/reset baseline — a physically-impossible
-	// "whole totalizer as one increment". This catch fires even when no rated
-	// speed is configured (the counters-only LINE-LEAD path, where the rate·Δt
-	// bound fails open) and on the first sample after a worker restart (empty Δt
+	// spike: when an increment consumes a large FRACTION of the absolute
+	// totalizer (value >= absolute·spikeFraction) and that totalizer is
+	// >= spikeFloor, the upstream differenced cur−baseline against a
+	// missing/reset/stale baseline — a physically-impossible "most of the
+	// totalizer as one increment". This catch fires even when no rated speed is
+	// configured (the counters-only LINE-LEAD path, where the rate·Δt bound
+	// fails open) and on the first sample after a worker restart (empty Δt
 	// cache), the two holes the rate·Δt bound alone leaves open. The floor keeps
-	// a genuinely-small totalizer (a legit reset that ticked up a few parts,
-	// where value==absolute is benign) from being clamped.
+	// a genuinely-small totalizer (a legit reset that ticked up a few parts) from
+	// being clamped.
 	spikeFloor float64
 
-	mu   sync.Mutex
-	last map[clampKey]int64 // stream → last sample ts (unix ms)
+	// spikeFraction is the share of the absolute totalizer above which a single
+	// increment is treated as a phantom (default 0.5). The original catch used
+	// value >= absolute (delta-from-EXACTLY-zero, incr==val), which MISSED the
+	// real staging signature: a delta from a small STALE baseline — e.g. incr
+	// 920090 vs val 920390 (baseline ~300, ratio 0.9997) AND incr 479222 vs val
+	// 558076 (baseline ~78k, ratio 0.859). Both are impossible real production
+	// (a steady-state delta is ~0.00003 of the cumulative) yet incr < val, so a
+	// bare value>=absolute test let them through on the rate-less / first-sample
+	// paths. A fraction ≥0.5 catches every observed spike (min ratio 0.858) with
+	// vast margin while never touching a legitimate delta.
+	spikeFraction float64
+
+	mu      sync.Mutex
+	last    map[clampKey]int64   // stream → last sample ts (unix ms)
+	lastAbs map[clampKey]float64 // stream → last positive absolute totalizer seen
+	seeded  map[clampKey]bool    // stream → database seed already attempted
 }
 
 // eval applies the clamp to one counter increment. It returns the value to
-// actually write (unchanged, or 0 when clamped) and — only when it clamped —
+// actually write (unchanged; or, when clamped, the totalizer delta if it is
+// physically plausible, else 0 — see totalizerDelta) and — only when it clamped —
 // a ClampEvent for the caller to record. ratePerMin is the equipment's
 // configured rated speed (equipments.production_speed, units/min); a
 // non-positive rate fails the clamp open for this stream.
 func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsMs int64, ratePerMin, value, absolute float64) (float64, *ClampEvent) {
 	key := clampKey{eq, kind}
+	// Every path advances the stream clock and the totalizer memory exactly once.
+	last, had := c.observe(key, tsMs)
+	prevAbs, hadAbs := c.swapAbs(key, absolute)
 
 	// Only positive increments can be phantom over-counts; 0/negative are
-	// upstream reset artifacts and pass untouched. Still advance the clock so
-	// the next positive sample has a Δt.
+	// upstream reset artifacts and pass untouched.
 	if value <= 0 {
-		c.observe(key, tsMs)
 		return value, nil
 	}
 
-	// ── Delta-from-zero spike catch (rate-independent, first-sample-proof) ──
-	// The ADR-0045 P1 first-boot signature: the increment equals/exceeds the
-	// whole absolute totalizer because the upstream differenced cur−0 on a
-	// missing/reset baseline (*_incr == *_val). In steady state a delta is a
-	// tiny fraction of the cumulative, so value >= absolute >= spikeFloor is
-	// never real production. Checked BEFORE the rate·Δt path so it also guards
-	// the counters-only LINE-LEAD path (ratePerMin==0 → fails open below) and
-	// the first sample after a worker restart (no Δt yet → fails open below).
-	if c.spikeFloor > 0 && absolute >= c.spikeFloor && value >= absolute {
-		c.observe(key, tsMs)
+	// ── Delta-from-(near)-zero spike catch (rate-independent, first-sample-proof) ──
+	// First-boot / reconnect signature: the increment is a large FRACTION of the
+	// whole absolute totalizer because the upstream differenced cur against a
+	// missing/reset/STALE baseline. In steady state a delta is a tiny fraction of
+	// the cumulative (~0.00003), so value >= absolute·spikeFraction >= spikeFloor
+	// is never real production. This uses a fraction (not value>=absolute) so it
+	// also catches a delta from a small NON-zero stale baseline (incr < val by
+	// the baseline), the shape that leaked on staging CPACK. Checked BEFORE the
+	// rate·Δt path so it also guards the counters-only LINE-LEAD path
+	// (ratePerMin==0 → fails open below) and the first sample after a worker
+	// restart (no Δt yet → fails open below).
+	if c.spikeFloor > 0 && absolute >= c.spikeFloor && value >= absolute*c.spikeFraction {
+		repl := c.totalizerDelta(prevAbs, hadAbs, absolute, value, ratePerMin, last, had, tsMs)
 		if c.logger != nil {
-			c.logger.Warn("increment sanity clamp REJECTED delta-from-zero spike (increment ≈ absolute totalizer)",
+			c.logger.Warn("increment sanity clamp REJECTED delta-from-near-zero spike (increment is a large fraction of the absolute totalizer)",
 				slog.Int("id_equipment", eq),
 				slog.String("kind", kind.String()),
 				slog.Float64("observed", value),
 				slog.Float64("absolute", absolute),
 				slog.Float64("spike_floor", c.spikeFloor),
+				slog.Float64("spike_fraction", c.spikeFraction),
+				slog.Float64("replacement_from_totalizer", repl),
 			)
 		}
-		return 0, &ClampEvent{
+		return repl, &ClampEvent{
 			IDEnterprise: enterprise,
 			IDEquipment:  eq,
 			Kind:         kind,
 			BucketTS:     time.UnixMilli(tsMs).Truncate(time.Second).UTC(),
 			Observed:     value,
 			Bound:        c.spikeFloor,
+			Replacement:  repl,
+		}
+	}
+
+	// ── Counter-movement catch (2026-10-01, rate-independent, gap-proof) ──
+	// An increment is the production between two readings of the SAME
+	// totalizer, so it can never be much larger than how far that totalizer
+	// moved. The rate·Δt bound grows with the gap (a 20 h silence allows
+	// K·rate·20 h) and the spike catch needs half the whole totalizer, so a
+	// stale upstream baseline after a long gap slipped through both: Bispharma
+	// M673 2026-09-25 wrote 263,098 while its counter moved 4 (0.40 of the
+	// totalizer); 13 machines on 09-18 wrote 5k–14k each against a few hundred.
+	// The thresholds come from 14 days of live silver: CPACK's sparse counter
+	// lags its increments by <100 units in 99.99% of mismatches (summing to the
+	// totalizer over time), so only an UNBACKED part of ≥ unbackedFloor that is
+	// also most of the increment is a phantom. The previous totalizer comes
+	// from memory, or from the database once per stream after a restart (seed).
+	if hadAbs && absolute > 0 && absolute >= prevAbs {
+		d := absolute - prevAbs
+		if unbacked := value - d; unbacked >= unbackedFloor && unbacked*2 > value {
+			if c.logger != nil {
+				c.logger.Warn("increment sanity clamp REJECTED increment not backed by the totalizer (stale upstream baseline)",
+					slog.Int("id_equipment", eq),
+					slog.String("kind", kind.String()),
+					slog.Float64("observed", value),
+					slog.Float64("totalizer_delta", d),
+					slog.Float64("absolute", absolute),
+				)
+			}
+			return d, &ClampEvent{
+				IDEnterprise: enterprise,
+				IDEquipment:  eq,
+				Kind:         kind,
+				BucketTS:     time.UnixMilli(tsMs).Truncate(time.Second).UTC(),
+				Observed:     value,
+				Bound:        d + unbackedFloor,
+				Replacement:  d,
+			}
 		}
 	}
 
 	// The rate·Δt bound needs a configured rated speed; without one, fail open
 	// (the spike catch above is the only defense for rate-less streams).
 	if ratePerMin <= 0 {
-		c.observe(key, tsMs)
 		return value, nil
 	}
 
-	last, had := c.observe(key, tsMs)
 	if !had {
 		return value, nil // first sample on this stream — no Δt yet
 	}
@@ -159,14 +225,113 @@ func (c *incrementClamp) eval(eq, enterprise int, kind sparkplug.MetricKind, tsM
 			slog.Float64("rate_per_min", ratePerMin),
 		)
 	}
-	return 0, &ClampEvent{
+	repl := c.totalizerDelta(prevAbs, hadAbs, absolute, value, ratePerMin, last, had, tsMs)
+	return repl, &ClampEvent{
 		IDEnterprise: enterprise,
 		IDEquipment:  eq,
 		Kind:         kind,
 		BucketTS:     time.UnixMilli(tsMs).Truncate(time.Second).UTC(),
 		Observed:     value,
 		Bound:        bound,
+		Replacement:  repl,
 	}
+}
+
+// unbackedFloor is the smallest unbacked increment (increment − totalizer
+// movement) the counter-movement catch acts on. Below it, a sparse or lagging
+// counter explains the gap (CPACK: <100 in 99.99% of live mismatches).
+const unbackedFloor = 100.0
+
+// NeedsSeed reports whether the stream has no remembered totalizer and no seed
+// attempt yet — the caller then looks the last stored one up once (SeedAbs).
+func (c *incrementClamp) NeedsSeed(eq int, kind sparkplug.MetricKind) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := clampKey{eq, kind}
+	if _, ok := c.lastAbs[key]; ok {
+		return false
+	}
+	if c.seeded == nil {
+		c.seeded = make(map[clampKey]bool)
+	}
+	if c.seeded[key] {
+		return false
+	}
+	c.seeded[key] = true
+	return true
+}
+
+// SeedAbs installs the last stored totalizer for a stream (from the database),
+// unless a live reading got there first.
+func (c *incrementClamp) SeedAbs(eq int, kind sparkplug.MetricKind, abs float64) {
+	if abs <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastAbs == nil {
+		c.lastAbs = make(map[clampKey]float64)
+	}
+	key := clampKey{eq, kind}
+	if _, ok := c.lastAbs[key]; !ok {
+		c.lastAbs[key] = abs
+	}
+}
+
+// totalizerDelta returns the production to write in place of a REJECTED
+// increment: the PLC totalizer's own movement since this stream's previous
+// reading, but only when that movement passes the same physical tests the clamp
+// applies to increments; otherwise 0 (the pre-2026-09-29 behaviour).
+//
+// Why this is measurement, not a guess: the rejected increment is the upstream
+// Calc's cur−baseline against a LOST/stale baseline, but the absolute totalizer
+// on the same message is the PLC's own cumulative count. When it moved by d since
+// the last reading, d parts were produced. Every test below is there to keep the
+// clamp's original targets at 0:
+//   - no previous totalizer (first sample / restart), or the totalizer dropped
+//     (a reset): unknown → 0;
+//   - d must be smaller than the rejected value (otherwise nothing is gained and
+//     the totalizer is as suspect as the increment);
+//   - the double-publisher phantom (two totalizer origins ~828k apart) makes d
+//     itself a "large fraction of the totalizer" → the spike test rejects it;
+//   - with a rated speed and a Δt, d must fit K·rate·Δt like any increment.
+func (c *incrementClamp) totalizerDelta(prevAbs float64, hadAbs bool, absolute, rejected, ratePerMin float64, lastTs int64, hadTs bool, tsMs int64) float64 {
+	if !hadAbs || absolute <= 0 {
+		return 0
+	}
+	d := absolute - prevAbs
+	if d <= 0 || d >= rejected {
+		return 0
+	}
+	if c.spikeFloor > 0 && absolute >= c.spikeFloor && d >= absolute*c.spikeFraction {
+		return 0
+	}
+	if ratePerMin > 0 && hadTs && tsMs > lastTs {
+		dtMs := tsMs - lastTs
+		if floor := c.minDt.Milliseconds(); dtMs < floor {
+			dtMs = floor
+		}
+		if d > c.k*ratePerMin*(float64(dtMs)/60000.0) {
+			return 0
+		}
+	}
+	return d
+}
+
+// swapAbs records absolute as the stream's latest totalizer (when present, >0)
+// and returns the previous one. Out-of-order samples are not special-cased: a
+// lower totalizer reads as d<=0 above and falls back to 0.
+func (c *incrementClamp) swapAbs(key clampKey, absolute float64) (prev float64, had bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastAbs == nil {
+		c.lastAbs = make(map[clampKey]float64)
+	}
+	prev, had = c.lastAbs[key]
+	if absolute > 0 {
+		c.lastAbs[key] = absolute
+	}
+	return prev, had
 }
 
 // evalSpeed decides whether a DERIVED speed sample (equipment_values.speed,

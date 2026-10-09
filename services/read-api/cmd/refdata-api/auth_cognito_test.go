@@ -291,14 +291,17 @@ func TestUnverifiedIssuer(t *testing.T) {
 	}
 }
 
-// TestUsersEnterpriseSQLUnifiedLookup locks in the ADR-0034 dual-IdP mapping:
-// the tenant query must match EITHER id column so a Cognito sub OR a Firebase
-// uid resolves through the SAME hardened, fail-closed lookup.
+// TestUsersEnterpriseSQLUnifiedLookup — #159: Firebase retired. The tenant
+// query now resolves the verified Cognito sub by id_user_cognito ONLY, and must
+// NO LONGER reference id_user_firebase (that column is dropped on cutover).
 func TestUsersEnterpriseSQLUnifiedLookup(t *testing.T) {
 	sql := usersEnterpriseSQL
-	for _, must := range []string{"id_user_firebase = $1", "id_user_cognito = $1", "active = true", "id_enterprise IS NOT NULL"} {
+	for _, must := range []string{"id_user_cognito = $1", "active = true", "id_enterprise IS NOT NULL"} {
 		if !contains(sql, must) {
 			t.Errorf("usersEnterpriseSQL missing clause %q:\n%s", must, sql)
 		}
+	}
+	if contains(sql, "id_user_firebase") {
+		t.Errorf("usersEnterpriseSQL must no longer reference id_user_firebase (#159):\n%s", sql)
 	}
 }

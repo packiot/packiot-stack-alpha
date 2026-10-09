@@ -31,8 +31,8 @@
       "properties": {
         "device_key": {
           "type": "string",
-          "minLength": 1,
-          "description": "Stable equipment key = SparkPlug <device_id>. The stack resolves it to id_equipment via packml_register (identity SSoT). Producers assert keys, never ids."
+          "pattern": "^dk_[0-9a-f]{32}$",
+          "description": "Opaque, declared equipment key (ADR-0061 D1): the dk_<32 hex> key of the equipment's active core.device_bindings row, carried per metric as properties.device_key (node-scoped NBIRTH) or as the SparkPlug <device_id> (DBIRTH). The stack resolves it to (id_equipment, id_enterprise) via core.device_bindings. Never derived from a name. Producers assert keys, never ids."
         },
         "metrics": {
           "type": "array",

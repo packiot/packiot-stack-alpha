@@ -36,5 +36,5 @@ data without any factory pointing at it.
 ## Post-flip
 
 The mirror continues feeding the ONE consolidated flow (target DB
-switches to `packiot_shadow`); the value fan-out collapses to
+switches to `packiot_analytics`); the value fan-out collapses to
 single-write (`VALUE_FANOUT=false`, R3).

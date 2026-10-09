@@ -152,7 +152,11 @@ Plus, outside the flow:
 PR in flight: `feat/reader-gen-rawtag-turnkey-fixes` (reader-gen + compose + workflow).
 
 - [~] F0 `upload-artifact@v4` → `include-hidden-files: true` — *in PR*
-- [~] F1 Node-RED contrib nodes (idempotent install-on-boot in the seed init) — *in PR*
+- [x] F1 Node-RED contrib nodes — DURABLE: baked into `packiot/nodered-reader:4.0`
+      (`docs/clients/edge-deployment/Dockerfile.nodered-reader`, pins s7@3.1.3 /
+      modbus@5.45.0 / opcua@0.2.354), embedded in the bundle via `docker save`; the
+      seed's install-on-boot stays as a self-heal fallback for a vanilla NODERED_IMAGE
+      override only. (superseded the install-on-boot-only fix)
 - [ ] F2 generator: `uplink_broker` = cloud `ssl://…:8883`, never = internal_broker
       (descriptor-level default; fixed live in the DB descriptor already)
 - [~] F3 reader reads the concrete `AGENT_INGEST_API_KEY` (no `${VAR}` env KEY) — *in PR*

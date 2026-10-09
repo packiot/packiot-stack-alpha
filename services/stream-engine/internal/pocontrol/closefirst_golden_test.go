@@ -122,7 +122,7 @@ func TestCloseFirstOnStartHealsZombie(t *testing.T) {
 	}
 	// If close-first were missing/misordered, the INSERT of [t1,∞) would
 	// overlap PO 100's still-open [t0,∞) and this would fail with 23P01.
-	if err := h.execStart(ctx, tx, "cf", info, 200, plan, paramPayload{}, t1, t1.Add(time.Second)); err != nil {
+	if err := h.execStart(ctx, tx, Schemas{Core: "cf", Gold: "cf", Silver: "cf", Ev: "cf", Identity: "cf"}, info, 200, plan, paramPayload{}, t1, t1.Add(time.Second)); err != nil {
 		tx.Rollback(ctx)
 		t.Fatalf("execStart raised (EXCLUDE poison not prevented?): %v", err)
 	}
@@ -202,7 +202,7 @@ func TestFinishClosesUpper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.execEnd(ctx, tx, "cf", info, plan, paramPayload{}, t2, t2.Add(time.Second), t2.Add(-time.Second)); err != nil {
+	if err := h.execEnd(ctx, tx, Schemas{Core: "cf", Gold: "cf", Silver: "cf", Ev: "cf", Identity: "cf"}, info, plan, paramPayload{}, t2, t2.Add(time.Second), t2.Add(-time.Second)); err != nil {
 		tx.Rollback(ctx)
 		t.Fatalf("execEnd: %v", err)
 	}

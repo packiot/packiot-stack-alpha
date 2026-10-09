@@ -1,5 +1,5 @@
 -- 12-users-id-cognito.sql — add users.id_user_cognito (ADR-0034 Cognito auth).
--- __SCH__ = target schema (public on packiot_shadow / F3). Idempotent.
+-- __SCH__ = target schema (public on packiot_analytics / F3). Idempotent.
 --
 -- The Cognito Bearer auth path maps a verified token's `sub` to a user row via
 -- users.id_user_cognito (see auth.middleware.ts). It was added ad-hoc on prod

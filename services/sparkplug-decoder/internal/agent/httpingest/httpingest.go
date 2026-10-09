@@ -85,6 +85,13 @@ type Config struct {
 	// /v1/counters that resolved to no canonical metric — the onboarding DQ
 	// signal (ADR-0045 §2.4a "reject-don't-drop"). Optional.
 	NumericUnmapped prometheus.Counter
+
+	// Link, when non-nil, receives the envelope's optional PLC connection
+	// report (rawtag.Link) with the resolved tenant group — only for requests
+	// that passed auth and tenant routing. Must not block (linkhealth.Recorder
+	// enqueues). Nil ⇒ link reports are ignored, as before. Honoured by New and
+	// NewRouter alike.
+	Link func(group string, l rawtag.Link)
 }
 
 // Outcome label values for the ingest counter (mirrors ingest-shim/metrics so
@@ -119,6 +126,7 @@ type Server struct {
 	outcomes        *prometheus.CounterVec
 	numeric         *numeric.Translator
 	numericUnmapped prometheus.Counter
+	link            func(group string, l rawtag.Link)
 	logger          *slog.Logger
 }
 
@@ -177,6 +185,7 @@ func newServer(cfg Config, outcomes *prometheus.CounterVec, logger *slog.Logger)
 		apiKey:   []byte(cfg.APIKey),
 		maxBody:  maxBody,
 		outcomes: outcomes,
+		link:     cfg.Link,
 		logger:   logger,
 	}
 }
@@ -244,6 +253,15 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "undecodable envelope", "", int64(len(body)))
 		return
+	}
+
+	// 4b. PLC connection report (optional `link` field). Recorded only now —
+	//     after auth + routing + a valid envelope — so a rejected body never
+	//     writes health rows. A failed read arrives as tags: [] + link.ok=false.
+	if s.link != nil {
+		if l, ok := rawtag.DecodeLink(body); ok {
+			s.link(s.linkGroup(r.Header.Get("X-Ingest-Group"), body), l)
+		}
 	}
 
 	// 5. Feed the routed pipeline. accepted<total means some tags were
@@ -375,6 +393,19 @@ func (s *Server) resolveSink(w http.ResponseWriter, headerGroup string, body []b
 		}
 	}
 	return s.sink, true
+}
+
+// linkGroup names the tenant a link report belongs to, with the same
+// precedence resolveSink routes by: body group, then (multi mode) the
+// X-Ingest-Group header, then (single mode) the configured scope.
+func (s *Server) linkGroup(headerGroup string, body []byte) string {
+	if g, ok := probeGroup(body); ok {
+		return g
+	}
+	if s.routes != nil {
+		return strings.TrimSpace(headerGroup)
+	}
+	return s.scopeGroup
 }
 
 // reject centralises the metric bump + structured log (never the key or tag

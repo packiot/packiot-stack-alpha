@@ -7,10 +7,11 @@ import (
 )
 
 func TestProvisionMatrixFidelity(t *testing.T) {
-	// equipment×6 plain + metrics special + area×2 (day, shift). #186 retired the
-	// area live hour/week/month grains, so provisioning drops to 8; NO site provisioning.
-	if len(provisionMatrix) != 8 {
-		t.Errorf("matrix size %d != 8", len(provisionMatrix))
+	// equipment×4 plain (day/job/month/shift) + metrics special + area×2 (day, shift).
+	// #186 retired the area live hour/week/month grains; #263 retired the unread
+	// equipment live hour + week grains → provisioning drops to 6; NO site provisioning.
+	if len(provisionMatrix) != 6 {
+		t.Errorf("matrix size %d != 6", len(provisionMatrix))
 	}
 	for _, m := range provisionMatrix {
 		if strings.HasPrefix(m.unsTable, "uns_site") {
@@ -87,7 +88,7 @@ func TestEquipmentFreshnessStamp(t *testing.T) {
 	cases := []struct {
 		name, sql string
 	}{
-		{"hour", refreshHourEquipmentSQL},
+		// #263: "hour" case removed with refreshHourEquipmentSQL (equipment_live_hour unread).
 		{"week/month", refreshEquipmentSQL},
 		{"job", refreshJobsSQL},
 	}
@@ -101,12 +102,15 @@ func TestEquipmentFreshnessStamp(t *testing.T) {
 // TestEquipmentShiftDaySQLBuilds ensures both statements schema-qualify
 // cleanly with no leftover Sprintf verbs for both flow layouts.
 func TestEquipmentShiftDaySQLBuilds(t *testing.T) {
-	for _, schemas := range [][2]string{
-		{"shadow_go_port", "public"}, // F2 comparator layout
-		{"public", "public"},         // single-flow F3-native
+	// [ev, ref, grain] — the grain-sink schema (equipment_live_*) is now a
+	// separate arg (t237 GrainSchema knob; flips public→silver at P-silver).
+	for _, schemas := range [][3]string{
+		{"shadow_go_port", "public", "shadow_go_port"}, // F2 comparator layout
+		{"public", "public", "public"},                 // single-flow F3-native
+		{"public", "public", "silver"},                 // staging post P-silver
 	} {
 		for _, q := range []string{refreshDayEquipmentSQL, refreshShiftEquipmentSQL} {
-			out := fmt.Sprintf(q, schemas[0], schemas[1])
+			out := fmt.Sprintf(q, schemas[0], schemas[1], schemas[2])
 			if strings.Contains(out, "%!") || strings.Contains(out, "%[") {
 				t.Errorf("Sprintf verb residue for %v", schemas)
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -38,10 +39,30 @@ func NewHandler(r *sparkplug.Resolver, logger *slog.Logger) *Handler {
 // the lifecycle commands read.
 type paramPayload struct {
 	Value     json.Number `json:"value"`      // id_production_order (may be absent)
-	IDOrder   json.Number `json:"id_order"`   // natural-key fallback
+	IDOrder   OrderNumber `json:"id_order"`   // natural-key fallback: client PO number, string or number (ADR-0062)
 	Timestamp json.Number `json:"timestamp"`  // ms
 	Note      string      `json:"note"`       // URI-encoded in prod; stored decoded upstream
 	ProdFinal json.Number `json:"prod_final"` // optional final production count
+}
+
+// Schemas carries the medallion homes for the PO-control write path (#251 P2).
+// The former single `schema` (the public/shim "ev" plane) is fractured into the
+// real per-table homes so the public compat shims can be dropped:
+//
+//	Core     — production_orders + dims: products, product_families, clients, packml_register
+//	Gold     — production_orders_runtime
+//	Silver   — equipment_values, equipment_events, equipment_live_job (current-state grain)
+//	Ev       — equipment_events_man (a GENUINE public table, NOT a shim) + shadow-swallow key
+//	Identity — user_logs
+//
+// On the prod/default route all five collapse to "public" (prod is not yet
+// medallion-split), so behaviour there is byte-identical until the forward-port.
+type Schemas struct {
+	Core     string
+	Gold     string
+	Silver   string
+	Ev       string
+	Identity string
 }
 
 // Handles reports whether this param id belongs to a ported slice.
@@ -53,8 +74,11 @@ func Handles(id int) bool {
 // Failures are logged + counted + DROPPED (nodered catch semantics —
 // see package doc #3). The returned error is always nil by design;
 // callers must not retry.
-func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
-	if err := h.execute(ctx, pool, m, schema); err != nil {
+// s carries the per-table medallion homes for the PO write path (#251 P2) —
+// production_orders→Core, production_orders_runtime→Gold, equipment_values/events
+// →Silver, equipment_events_man→Ev, user_logs→Identity.
+func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, s Schemas) error {
+	if err := h.execute(ctx, pool, m, s); err != nil {
 		h.dropped.Add(1)
 		h.logger.Error("po-control command dropped (no retry — nodered catch semantics)",
 			slog.Int("param", derefID((*int)(m.ID))), slog.String("err", err.Error()))
@@ -62,7 +86,7 @@ func (h *Handler) Execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	return nil
 }
 
-func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
+func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, s Schemas) error {
 	paramID := derefID((*int)(m.ID))
 
 	info, ok, err := h.resolveOrNoop(ctx, m)
@@ -88,16 +112,16 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	// Slice 2 (30700 topology) has its own tx + table set — dispatch
 	// before the lifecycle tx begins (topology.go guardrail note).
 	if paramID == 30700 {
-		return h.executeTopology(ctx, pool, m, schema)
+		return h.executeTopology(ctx, pool, m, s)
 	}
 	if paramID == 30805 {
-		return h.executeCreatePO(ctx, pool, m, schema)
+		return h.executeCreatePO(ctx, pool, m, s)
 	}
 	if HandlesEvents(paramID) {
-		return h.executeEvents(ctx, pool, m, schema)
+		return h.executeEvents(ctx, pool, m, s)
 	}
 	if HandlesSetup(paramID) {
-		return h.executeSetupOrUserlog(ctx, pool, m, schema)
+		return h.executeSetupOrUserlog(ctx, pool, m, s)
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -106,7 +130,7 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 	}
 	defer tx.Rollback(ctx)
 
-	targetID, err := h.resolveTargetID(ctx, tx, schema, info.IDEquipment, p)
+	targetID, err := h.resolveTargetID(ctx, tx, s.Core, info.IDEquipment, p)
 	if err != nil {
 		return err
 	}
@@ -119,11 +143,11 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 		}
 		var targetStatus int
 		if err := tx.QueryRow(ctx,
-			fmt.Sprintf(`SELECT status FROM %s.production_orders WHERE id_production_order=$1`, schema),
+			fmt.Sprintf(`SELECT status FROM %s.production_orders WHERE id_production_order=$1`, s.Core),
 			targetID).Scan(&targetStatus); err != nil {
 			return fmt.Errorf("target status: %w", err)
 		}
-		running, err := h.runningPO(ctx, tx, schema, info.IDEquipment)
+		running, err := h.runningPO(ctx, tx, s, info.IDEquipment)
 		if err != nil {
 			return err
 		}
@@ -132,25 +156,25 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 			h.noops.Add(1)
 			return nil
 		}
-		if err := h.execStart(ctx, tx, schema, info, targetID, plan, p, ts, ts1); err != nil {
+		if err := h.execStart(ctx, tx, s, info, targetID, plan, p, ts, ts1); err != nil {
 			return err
 		}
 		if plan.EndPrev != nil {
-			if err := h.execEnd(ctx, tx, schema, info, *plan.EndPrev, p, ts, ts1, tsPrev); err != nil {
+			if err := h.execEnd(ctx, tx, s, info, *plan.EndPrev, p, ts, ts1, tsPrev); err != nil {
 				return err
 			}
 			// Juggle completion: restore the target to running, clear
 			// the temporary ts_end.
 			if _, err := tx.Exec(ctx, fmt.Sprintf(
 				`UPDATE %s.production_orders SET status=2, ts_end=NULL WHERE id_production_order=$1`,
-				schema), plan.RestoreID); err != nil {
+				s.Core), plan.RestoreID); err != nil {
 				return fmt.Errorf("juggle restore: %w", err)
 			}
 		}
 		h.started.Add(1)
 
 	case 30801, 30803:
-		running, err := h.runningPO(ctx, tx, schema, info.IDEquipment)
+		running, err := h.runningPO(ctx, tx, s, info.IDEquipment)
 		if err != nil {
 			return err
 		}
@@ -159,7 +183,7 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 			h.noops.Add(1)
 			return nil
 		}
-		if err := h.execEnd(ctx, tx, schema, info, plan, p, ts, ts1, tsPrev); err != nil {
+		if err := h.execEnd(ctx, tx, s, info, plan, p, ts, ts1, tsPrev); err != nil {
 			return err
 		}
 		h.ended.Add(1)
@@ -173,32 +197,57 @@ func (h *Handler) execute(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.
 
 // resolveTargetID: prod used msg value (id_po) or a subselect by
 // id_order. Same tx here (equivalent, injection-safe).
+//
+// ADR-0062 step 2: the natural-key fallback matches the client's TEXT number
+// (id_order_text). Transition shim: when no PO carries that text but the
+// number is an int4 integer, the deprecated integer id_order still matches —
+// a text match always wins — so a PLC that sends 8396260 keeps resolving the
+// legacy PO whose client text is "08396260" (behaviour identical to the
+// integer lookup). The shim goes with id_order in the contract step.
 func (h *Handler) resolveTargetID(ctx context.Context, tx pgx.Tx, schema string, eq int, p paramPayload) (int64, error) {
 	if id, err := p.Value.Int64(); err == nil && id > 0 {
 		return id, nil
 	}
-	idOrder, err := p.IDOrder.Int64()
-	if err != nil {
+	if p.IDOrder.IsZero() {
 		return 0, nil // neither id_po nor id_order — lifecycle no-op
 	}
 	var id int64
-	err = tx.QueryRow(ctx, fmt.Sprintf(
-		`SELECT id_production_order FROM %s.production_orders WHERE id_equipment=$1 AND id_order=$2`,
-		schema), eq, idOrder).Scan(&id)
+	err := tx.QueryRow(ctx, fmt.Sprintf(lcTargetByNumber, schema),
+		eq, p.IDOrder.String(), legacyIntOrder(p.IDOrder)).Scan(&id)
 	if err == pgx.ErrNoRows {
 		return 0, nil
 	}
 	return id, err
 }
 
-func (h *Handler) runningPO(ctx context.Context, tx pgx.Tx, schema string, eq int) (*RunningPO, error) {
+// lcTargetByNumber resolves a lifecycle target on the equipment by the client
+// number text ($2), falling back to the deprecated integer ($3, NULL when the
+// number is not an int4) — text match first.
+const lcTargetByNumber = `
+	SELECT id_production_order FROM %s.production_orders
+	 WHERE id_equipment = $1 AND (id_order_text = $2 OR id_order = $3)
+	 ORDER BY (id_order_text = $2) DESC, id_production_order DESC
+	 LIMIT 1`
+
+// legacyIntOrder returns the number as an int4 for the transition-shim
+// integer match, or nil when the text is not a plain int4 integer.
+func legacyIntOrder(o OrderNumber) *int32 {
+	n, err := strconv.ParseInt(o.String(), 10, 32)
+	if err != nil {
+		return nil
+	}
+	v := int32(n)
+	return &v
+}
+
+func (h *Handler) runningPO(ctx context.Context, tx pgx.Tx, s Schemas, eq int) (*RunningPO, error) {
 	var r RunningPO
 	err := tx.QueryRow(ctx, fmt.Sprintf(`
 		SELECT po.id_production_order, lower(por.runtime_timerange)
 		  FROM %s.production_orders_runtime por
 		  JOIN %s.production_orders po USING (id_production_order)
 		 WHERE po.id_equipment = $1 AND po.status = 2
-		 ORDER BY lower(por.runtime_timerange) DESC LIMIT 1`, schema, schema), eq).
+		 ORDER BY lower(por.runtime_timerange) DESC LIMIT 1`, s.Gold, s.Core), eq).
 		Scan(&r.ID, &r.TsLower)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -236,23 +285,23 @@ const sqlCloseOpenSegmentOnEquipment = `UPDATE %s.production_orders_runtime
 	     AND lower(runtime_timerange) < $1`
 
 // execStart = the captured 6-statement start block, order preserved.
-func (h *Handler) execStart(ctx context.Context, tx pgx.Tx, schema string, info *sparkplug.EquipmentInfo, targetID int64, plan StartPlan, p paramPayload, ts, ts1 time.Time) error {
+func (h *Handler) execStart(ctx context.Context, tx pgx.Tx, s Schemas, info *sparkplug.EquipmentInfo, targetID int64, plan StartPlan, p paramPayload, ts, ts1 time.Time) error {
 	stmts := []struct {
 		sql  string
 		args []any
 	}{
-		{fmt.Sprintf(sqlCloseOpenSegmentOnEquipment, schema),
+		{fmt.Sprintf(sqlCloseOpenSegmentOnEquipment, s.Gold),
 			[]any{ts, info.IDEquipment}},
 		{fmt.Sprintf(`INSERT INTO %s.production_orders_runtime
 		     (id_production_order, runtime_timerange, recalc_needed, id_equipment)
-		   VALUES ($1, tstzrange($2, NULL, '[)'), true, $3)`, schema),
+		   VALUES ($1, tstzrange($2, NULL, '[)'), true, $3)`, s.Gold),
 			[]any{targetID, ts, info.IDEquipment}},
 		{fmt.Sprintf(`UPDATE %s.production_orders SET status = $1, ts_end = $2
-		   WHERE id_equipment = $3 AND status = 2`, schema),
+		   WHERE id_equipment = $3 AND status = 2`, s.Core),
 			[]any{plan.PrevStatus, ts1, info.IDEquipment}},
 	}
-	for _, s := range stmts {
-		if _, err := tx.Exec(ctx, s.sql, s.args...); err != nil {
+	for _, st := range stmts {
+		if _, err := tx.Exec(ctx, st.sql, st.args...); err != nil {
 			return fmt.Errorf("start stmt: %w", err)
 		}
 	}
@@ -271,19 +320,19 @@ func (h *Handler) execStart(ctx context.Context, tx pgx.Tx, schema string, info 
 		args = append(args, ts1)
 	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(
-		`UPDATE %s.production_orders SET `+set+` WHERE id_production_order = $3`, schema),
+		`UPDATE %s.production_orders SET `+set+` WHERE id_production_order = $3`, s.Core),
 		args...); err != nil {
 		return fmt.Errorf("start stmt 4: %w", err)
 	}
-	return h.evMarkerAndRestamp(ctx, tx, schema, info, targetID, ts, ts)
+	return h.evMarkerAndRestamp(ctx, tx, s, info, targetID, ts, ts)
 }
 
 // execEnd = the captured end block: close runtime range, PO status,
 // EV marker at ts-1s, re-stamp after ts+1s.
-func (h *Handler) execEnd(ctx context.Context, tx pgx.Tx, schema string, info *sparkplug.EquipmentInfo, plan EndPlan, p paramPayload, ts, ts1, tsPrev time.Time) error {
+func (h *Handler) execEnd(ctx context.Context, tx pgx.Tx, s Schemas, info *sparkplug.EquipmentInfo, plan EndPlan, p paramPayload, ts, ts1, tsPrev time.Time) error {
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`UPDATE %s.production_orders_runtime
 	     SET runtime_timerange = tstzrange($1, $2), recalc_needed = true
-	   WHERE id_production_order = $3 AND upper(runtime_timerange) IS NULL`, schema),
+	   WHERE id_production_order = $3 AND upper(runtime_timerange) IS NULL`, s.Gold),
 		plan.TsLower, ts, plan.ID); err != nil {
 		return fmt.Errorf("end stmt 1: %w", err)
 	}
@@ -301,16 +350,16 @@ func (h *Handler) execEnd(ctx context.Context, tx pgx.Tx, schema string, info *s
 		args = append(args, p.Note)
 	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(
-		`UPDATE %s.production_orders SET `+set+` WHERE id_production_order = $3`, schema),
+		`UPDATE %s.production_orders SET `+set+` WHERE id_production_order = $3`, s.Core),
 		args...); err != nil {
 		return fmt.Errorf("end stmt 2: %w", err)
 	}
-	return h.evMarkerAndRestamp(ctx, tx, schema, info, plan.ID, tsPrev, ts1)
+	return h.evMarkerAndRestamp(ctx, tx, s, info, plan.ID, tsPrev, ts1)
 }
 
 // evMarkerAndRestamp = the shared tail of both blocks: the EV PO-marker
 // upsert (tp_equipment=3) + the forward re-stamp.
-func (h *Handler) evMarkerAndRestamp(ctx context.Context, tx pgx.Tx, schema string, info *sparkplug.EquipmentInfo, poID int64, markerTs, restampAfter time.Time) error {
+func (h *Handler) evMarkerAndRestamp(ctx context.Context, tx pgx.Tx, s Schemas, info *sparkplug.EquipmentInfo, poID int64, markerTs, restampAfter time.Time) error {
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.equipment_values
 	     (ts_value, id_enterprise, id_site, id_area, id_equipment,
 	      id_production_order, id_production_order_quality, tp_equipment)
@@ -318,14 +367,14 @@ func (h *Handler) evMarkerAndRestamp(ctx context.Context, tx pgx.Tx, schema stri
 	   ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 	      id_production_order = EXCLUDED.id_production_order,
 	      id_production_order_quality = EXCLUDED.id_production_order_quality,
-	      tp_equipment = 3`, schema),
+	      tp_equipment = 3`, s.Silver),
 		markerTs, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		poID, info.SignalQuality); err != nil {
 		return fmt.Errorf("ev marker: %w", err)
 	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`UPDATE %s.equipment_values
 	     SET id_production_order = $1
-	   WHERE id_equipment = $2 AND ts_value > $3 AND id_production_order IS NOT NULL`, schema),
+	   WHERE id_equipment = $2 AND ts_value > $3 AND id_production_order IS NOT NULL`, s.Silver),
 		poID, info.IDEquipment, restampAfter); err != nil {
 		return fmt.Errorf("ev restamp: %w", err)
 	}
@@ -350,7 +399,7 @@ func (h *Handler) Stats() Stats {
 // resolveOrNoop is the shared preamble of every executor: resolve the
 // topic; unregistered → count a noop and signal skip.
 func (h *Handler) resolveOrNoop(ctx context.Context, m *sparkplug.Metric) (*sparkplug.EquipmentInfo, bool, error) {
-	info, err := h.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := h.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, false, fmt.Errorf("resolve: %w", err)
 	}

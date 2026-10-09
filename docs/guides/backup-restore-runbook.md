@@ -5,7 +5,7 @@
   ready to execute on any scratch instance. ADR-0017 §3: *"a restore
   drill is part of the definition of done — an untested backup is a
   hope, not a backup."*
-- **Scope**: the consolidated DB (`packiot_shadow`, promoted at flip)
+- **Scope**: the consolidated DB (`packiot_analytics`, promoted at flip)
   on DB EC2 `i-064bb36d1c454d861` (timescaledb container, single node).
 
 ## 1. What we have today (and why it is not enough)

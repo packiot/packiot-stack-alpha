@@ -25,7 +25,7 @@ this runbook is executable as-written:
    worker/init services now `build:` it and tag it `packiot/superset:4.1.1-w2`
    (arm64-buildable on the t4g runner). No more manual `pip install` in the container.
 2. **Metadata DB is UPSTREAM-DIRECT, not pgbouncer.** pgbouncer routes only
-   `packiot`/`packiot_shadow` (no `superset` route, no wildcard). Rather than edit
+   `packiot`/`packiot_analytics` (no `superset` route, no wildcard). Rather than edit
    the shared base `pgbouncer` service `command:` (out of overlay scope; affects the
    whole stack), the low-traffic Superset metadata DB connects direct to the r7g via
    `POSTGRES_HOST_UPSTREAM` — the same host `superset-db-init` already uses, and the

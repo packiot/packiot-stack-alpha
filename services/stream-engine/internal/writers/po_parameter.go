@@ -83,7 +83,7 @@ func (w *POParameter) Build(ctx context.Context, m *sparkplug.Metric, _ string, 
 // UPSERT equipment_values.ideal_production_speed for (ts_value, id_equipment).
 func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
@@ -131,7 +131,7 @@ func (w *POParameter) buildIdealProductionSpeed(ctx context.Context, m *sparkplu
 // jsonb-vs-bytea under simple protocol (the PR #218 lesson).
 func (w *POParameter) buildAnalogs(ctx context.Context, m *sparkplug.Metric, schema string) (*Query, error) {
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}

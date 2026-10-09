@@ -1,0 +1,136 @@
+name: Dev slices
+
+# ADR-0060 D8 — the dev environment cannot rot again: every PR that touches dev/, the schema, or a service boots the
+# standard slices with `make dev SVC=…` on a clean runner (the published anonymized seed, ghcr.io/packiot/devseed)
+# and runs dev/e2e/smoke.sh on each service: health + one real request that reaches its data.
+# Same commands a developer runs locally:  make dev SVC="…" && make dev-smoke SVC="…"
+#
+# Slices (one runner each, ubuntu-latest = 4 vCPU / 16 GB; each slice stays well under that):
+#   tier0-grafana  Tier 0 + grafana
+#   pipeline       seed-replay → sparkplug-decoder → stream-engine (+ read-api, read-api-cors): live rows at "now"
+#   barcode        barcode-service
+#   edge           edge-api (+ its knex migrations on the seed) + csadmin, customize, operator, front4
+#
+# The edge slice needs the PRIVATE submodule repos (edge-api, csadmin, operator4, front4). GITHUB_TOKEN only reads
+# this repository, so it uses the repository secret DEV_SUBMODULES_TOKEN (read-only Contents on those four repos).
+# Without that secret (or on a fork PR) the edge slice is SKIPPED with a warning in the run summary — it does not
+# fail the PR, and it does not pretend to have run.
+#
+# The seed image is a private GHCR package published by dev-seed-build.yml from this repo, so this workflow's
+# GITHUB_TOKEN can pull it (packages: read). Nothing here talks to staging or AWS; the services only reach the
+# public dev Cognito JWKS.
+
+on:
+  pull_request:
+    branches: [staging]
+    paths:
+      - 'dev/**'
+      - 'db/migrations/**'
+      - 'services/**'
+      - 'customize/**'
+      - 'grafana/**'
+      - 'monitoring/rabbitmq/**'
+      - 'configs/mosquitto/**'
+      - 'edge-api'
+      - 'csadmin'
+      - 'operator'
+      - 'front4'
+      - 'Makefile'
+      - '.github/workflows/dev-slices.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: dev-slices-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  slice:
+    name: slice ${{ matrix.slice }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slice: tier0-grafana
+            up: postgres rabbitmq mosquitto redis minio grafana
+            smoke: postgres rabbitmq mosquitto redis minio grafana
+          - slice: pipeline
+            up: seed-replay stream-engine read-api-cors
+            smoke: postgres rabbitmq mosquitto read-api read-api-cors sparkplug-decoder stream-engine seed-replay
+          - slice: barcode
+            up: barcode-service
+            smoke: postgres barcode-service
+          - slice: edge
+            submodules: true
+            up: edge-api csadmin customize operator front4
+            smoke: postgres edge-api read-api read-api-cors csadmin customize operator front4
+    env:
+      FRONT4_DIR: ${{ github.workspace }}/.ci/front4-staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          # the submodule fetch below must not reuse this repo-scoped token
+          persist-credentials: false
+
+      - name: Private submodules (edge slice)
+        id: subs
+        if: matrix.submodules
+        env:
+          TOKEN: ${{ secrets.DEV_SUBMODULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            msg="edge slice SKIPPED: secret DEV_SUBMODULES_TOKEN is not available (not set, or a fork PR). edge-api, csadmin, customize, operator and front4 were NOT smoke-tested."
+            echo "::warning::$msg"; echo "### $msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "::add-mask::$TOKEN"
+          auth=(-c "url.https://x-access-token:${TOKEN}@github.com/.insteadOf=https://github.com/")
+          git "${auth[@]}" submodule update --init --depth 1 edge-api csadmin operator
+          # front4: the pin is stale (2026-07, dev/README.md); the dev slice runs the branch people work on
+          git "${auth[@]}" clone --depth 1 -b staging https://github.com/packiot/front4.git "$FRONT4_DIR"
+          git submodule status edge-api csadmin operator
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR (dev seed)
+        if: steps.subs.outputs.run != 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: make dev SVC="${{ matrix.up }}"
+        # `up --wait` builds the closure's images that are missing and returns when every service is healthy
+        if: steps.subs.outputs.run != 'false'
+        run: time make dev SVC="${{ matrix.up }}"
+
+      - name: make dev-smoke
+        if: steps.subs.outputs.run != 'false'
+        run: make dev-smoke SVC="${{ matrix.smoke }}"
+
+      - name: Every host port binds 127.0.0.1
+        if: steps.subs.outputs.run != 'false'
+        run: |
+          bad=$(docker ps --filter label=com.docker.compose.project=packiot-dev --format '{{.Names}} {{.Ports}}' \
+                | grep -E '0\.0\.0\.0:|\[::\]:' || true)
+          [ -z "$bad" ] || { echo "::error::host port not on 127.0.0.1: $bad"; exit 1; }
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker compose -f dev/compose.yml --env-file dev/.env.dev ps -a
+          for c in $(docker ps -a --filter label=com.docker.compose.project=packiot-dev --format '{{.Names}}'); do
+            echo "::group::$c"; docker logs --tail 80 "$c" 2>&1; echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f dev/compose.yml --env-file dev/.env.dev down -v --remove-orphans || true

@@ -1,0 +1,26 @@
+# Bispharma scanned-boxes — boxes per day, split by line. bi.scanned_boxes box_count by day.
+slice_name: Boxes per day by line
+description: Boxes scanned per day, split by line (bi.scanned_boxes). Daily time-series bar.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: b5c1d2e3-0a1b-4c2d-8e3f-000000000001__table
+  viz_type: echarts_timeseries_bar
+  x_axis: ts_value
+  time_grain_sqla: P1D
+  metrics:
+  - box_count
+  groupby:
+  - nm_equipment
+  adhoc_filters: []
+  stack: true
+  y_axis_format: ',d'
+  x_axis_time_format: smart_date
+  show_legend: true
+  time_range: No filter
+query_context: '{"datasource": {"id": 0, "type": "table"}, "force": false, "queries": [{"time_range": "No filter", "filters": [], "extras": {"time_grain_sqla": "P1D", "having": "", "where": ""}, "applied_time_extras": {}, "columns": [{"timeGrain": "P1D", "columnType": "BASE_AXIS", "sqlExpression": "ts_value", "label": "ts_value", "expressionType": "SQL"}, "nm_equipment"], "metrics": ["box_count"], "orderby": [["box_count", false]], "annotation_layers": [], "row_limit": 10000, "series_columns": ["nm_equipment"], "series_limit": 0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data": {}, "time_offsets": [], "post_processing": [{"operation": "pivot", "options": {"index": ["ts_value"], "columns": ["nm_equipment"], "aggregates": {"box_count": {"operator": "mean"}}, "drop_missing_columns": false}}, {"operation": "flatten"}]}], "form_data": {"datasource": "b5c1d2e3-0a1b-4c2d-8e3f-000000000001__table", "viz_type": "echarts_timeseries_bar", "x_axis": "ts_value", "time_grain_sqla": "P1D", "metrics": ["box_count"], "groupby": ["nm_equipment"], "adhoc_filters": [], "stack": true, "y_axis_format": ",d", "x_axis_time_format": "smart_date", "show_legend": true, "time_range": "No filter", "annotation_layers": [], "result_format": "json", "result_type": "full"}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: c1000002-0a1b-4c2d-8e3f-000000000002
+version: 1.0.0
+dataset_uuid: b5c1d2e3-0a1b-4c2d-8e3f-000000000001

@@ -17,6 +17,7 @@ package clientdescriptor
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -220,6 +221,15 @@ func (d *Descriptor) GenerateProfile() (*tenantprofile.Profile, error) {
 		return nil, err
 	}
 	p.Derived = derived
+	// ADR-0050 plc.types[].derive → ADR-0058 expr rules on the line (P1.4). Appended
+	// after the per-equipment rules so both feed the same deriver + allowlist. The
+	// reader tags + allowlist entries this also produces (P1.4b non-member sensors)
+	// are consumed by effectiveS7TagMap + GenerateAgentConfig respectively.
+	typeDerived, _, _, err := d.generateTypeDeriveRules(p)
+	if err != nil {
+		return nil, err
+	}
+	p.Derived = append(p.Derived, typeDerived...)
 	if err := p.Validate(); err != nil {
 		return nil, fmt.Errorf("generated profile invalid: %w", err)
 	}
@@ -289,10 +299,224 @@ func (d *Descriptor) generateDerivedRules(p *tenantprofile.Profile) ([]tenantpro
 				}
 				r.Sum = sum
 			}
+			if dm.Expr != nil {
+				vars := make(map[string]string, len(dm.Expr.Vars))
+				for name, leaf := range dm.Expr.Vars {
+					if !strings.HasPrefix(leaf, "/") {
+						// ABSOLUTE var (another machine's full topic, validated to be a
+						// mapped equipment): resolve as-is, never under this segment.
+						vars[name] = d.localSegment(leaf)
+						continue
+					}
+					full, err := resolveLeaf(leaf)
+					if err != nil {
+						return nil, err
+					}
+					vars[name] = full
+				}
+				r.Expr = &tenantprofile.ExprSource{Expr: dm.Expr.Expr, Vars: vars}
+			}
 			rules = append(rules, r)
 		}
 	}
 	return rules, nil
+}
+
+// deriveRoleLeaf maps a plc.types[].derive ROLE key to its canonical count leaf.
+// It accepts both the terse role (scrap/gross/net) and the canonical line-role
+// name (defective/consumed/processed) so a descriptor can use either.
+var deriveRoleLeaf = map[string]string{
+	"scrap":     lineRoleLeaf[LineRoleDefective],
+	"defective": lineRoleLeaf[LineRoleDefective],
+	"gross":     lineRoleLeaf[LineRoleConsumed],
+	"consumed":  lineRoleLeaf[LineRoleConsumed],
+	"net":       lineRoleLeaf[LineRoleProcessed],
+	"processed": lineRoleLeaf[LineRoleProcessed],
+}
+
+// exprIdentRe matches the free identifiers in a derive expression — the sensor
+// keys (S1, S6, …) an operand references. Numbers and operators are ignored.
+var exprIdentRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
+// exprIdentifiers returns the distinct identifiers used in expr, in first-seen
+// order (so the resolved var map + any error is deterministic).
+func exprIdentifiers(expr string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range exprIdentRe.FindAllString(expr, -1) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// sortedDeriveRoles returns a derive map's role keys sorted, for a stable rule
+// order (and thus a reviewable generated diff).
+func sortedDeriveRoles(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// equipmentByTopicTP finds the equipment with an exact topic + tp_equipment.
+func (d *Descriptor) equipmentByTopicTP(topic string, tp int) (Equipment, bool) {
+	for _, e := range d.Equipment {
+		if e.Topic == topic && e.TPEquipment == tp {
+			return e, true
+		}
+	}
+	return Equipment{}, false
+}
+
+// countLeafType returns the SparkPlug type of the tenant's canonical count leaf,
+// read from the member NET template (ProdProcessedCount). Defaults to "double"
+// (the CPACK/PTH count type) when no such template is present.
+func (d *Descriptor) countLeafType() string {
+	net := lineRoleLeaf[LineRoleProcessed] // "ProdProcessedCount"
+	for _, t := range d.MetricTemplates.Member {
+		if strings.Contains(t.Leaf, net) && t.Type != "" {
+			return t.Type
+		}
+	}
+	return "double"
+}
+
+// generateTypeDeriveRules wires ADR-0050's plc.types[].derive (previously parsed
+// but never executed, ADR-0050 §4) into ADR-0058's expr derive primitive. For each
+// S7 endpoint whose type declares a derive block, each `role: "<expr>"` entry
+// becomes a DerivedRule on the endpoint's LINE equipment (tp=3): the role picks the
+// emit leaf (scrap→ProdDefectiveCount, …), and each sensor key in the expression
+// binds to an arriving suffix. The line owns the derived tag (it has a resolved
+// count index; the sensors are its members).
+//
+// A referenced sensor resolves one of two ways:
+//   - MEMBER (P1.4): the sensor is a member (tp=1) publishing a NET count, so it
+//     binds to that member's already-allowlisted arriving suffix (localSegment +
+//     /Admin/ProdProcessedCount/<idx>/Unit) — no extra reader tag.
+//   - NON-MEMBER (P1.4b, reader-publishes-sensors): the sensor has a sensor_offset
+//     but no member. The generator synthesizes (a) a reader S7 tag that physically
+//     reads that offset, published under the LINE topic as an internal leaf
+//     `/Derive/<key>`; (b) an agent raw_tag_map allowlist entry for it, so the §C
+//     client⇄agent check passes and the agent ACCEPTS it. The DerivedRule marks
+//     that var as CONSUMED, so the deriver folds it into the expression and DROPS
+//     it from passthrough — it never reaches the cloud uplink.
+//
+// It returns the derived rules (for the profile), the synthetic reader tags (for
+// the client s7_tag_map), and the synthetic allowlist entries (for the agent
+// raw_tag_map). All three callers pass the same profile, so the artifacts agree.
+func (d *Descriptor) generateTypeDeriveRules(p *tenantprofile.Profile) ([]tenantprofile.DerivedRule, []clientconfig.S7EndpointTags, []agentcfg.TagMapEntry, error) {
+	if d.PLC == nil {
+		return nil, nil, nil, nil
+	}
+	netLeaf := lineRoleLeaf[LineRoleProcessed]
+	countType := d.countLeafType()
+	var rules []tenantprofile.DerivedRule
+	var readerTags []clientconfig.S7EndpointTags
+	var allowlist []agentcfg.TagMapEntry
+	for _, ep := range d.PLC.Endpoints {
+		if ep.Type == "" {
+			continue
+		}
+		t, ok := d.plcType(ep.Type)
+		if !ok || len(t.Derive) == 0 {
+			continue
+		}
+		if t.Protocol != PLCProtocolS7 {
+			return nil, nil, nil, fmt.Errorf("plc.types[%q]: derive is only supported for s7 types (got %q)", ep.Type, t.Protocol)
+		}
+		members := d.membersOnEndpointLine(ep)
+		if len(members) == 0 {
+			return nil, nil, nil, fmt.Errorf("plc.endpoints %q: type %q declares a derive block but expands to NO members (line %s)",
+				ep.Name, ep.Type, endpointLineLabel(ep))
+		}
+		lineTopic := ep.Line
+		if lineTopic == "" {
+			lineTopic = parentLineTopic(members[0].Topic)
+		}
+		lineEquip, ok := d.equipmentByTopicTP(lineTopic, 3)
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("plc.endpoints %q: type %q derive needs a line (tp_equipment=3) equipment %q to own the derived count — none found (add the line equipment, or set the endpoint's line)",
+				ep.Name, ep.Type, lineTopic)
+		}
+		lineSeg := d.localSegment(lineTopic)
+		lineDK := lineEquip.ResolvedDeviceKey()
+		lineIdx, err := p.ResolveCountIndex(lineSeg, lineEquip.IDEquipment)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("plc.endpoints %q: line %q derived count index: %w", ep.Name, lineTopic, err)
+		}
+		// sensor key → that member's NET arriving suffix (the published count).
+		memberSuffix := map[string]string{}
+		for _, m := range members {
+			key := sensorKeyOf(lastSegment(m.Topic))
+			if key == "" {
+				continue
+			}
+			seg := d.localSegment(m.Topic)
+			idx, err := p.ResolveCountIndex(seg, m.IDEquipment)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("plc.endpoints %q: member %s count index: %w", ep.Name, m.Topic, err)
+			}
+			memberSuffix[key] = seg + fmt.Sprintf("/Admin/%s/%d/Unit", netLeaf, idx)
+		}
+		synthAdded := map[string]bool{} // dedupe a non-member sensor's reader tag across roles
+		for _, role := range sortedDeriveRoles(t.Derive) {
+			exprStr := t.Derive[role]
+			leaf, ok := deriveRoleLeaf[strings.ToLower(strings.TrimSpace(role))]
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("plc.types[%q]: derive role %q is not one of scrap|defective|gross|consumed|net|processed", ep.Type, role)
+			}
+			vars := map[string]string{}
+			var consume []string
+			for _, id := range exprIdentifiers(exprStr) {
+				if suffix, isMember := memberSuffix[id]; isMember {
+					vars[id] = suffix
+					continue
+				}
+				offset, hasOffset := t.SensorOffsets[id]
+				if !hasOffset {
+					return nil, nil, nil, fmt.Errorf("plc.types[%q]: derive %q references %q which is neither a member sensor key nor a declared sensor_offset", ep.Type, role, id)
+				}
+				// Non-member sensor (P1.4b): the reader publishes it as an internal
+				// derive-input leaf under the line; the agent allowlists + consumes it.
+				metric := "/Derive/" + id
+				suffix := lineSeg + metric
+				vars[id] = suffix
+				consume = append(consume, id)
+				if !synthAdded[id] {
+					synthAdded[id] = true
+					readerTags = append(readerTags, clientconfig.S7EndpointTags{
+						Endpoint:    ep.Name,
+						PackMLTopic: lineTopic,
+						IDEquipment: lineEquip.IDEquipment,
+						Tags: []clientconfig.S7Tag{{
+							Metric: metric,
+							DB:     t.DB,
+							Offset: offset,
+							Type:   t.Word,
+						}},
+					})
+					allowlist = append(allowlist, agentcfg.TagMapEntry{
+						MetricSuffix: suffix,
+						Type:         countType,
+						DeviceKey:    lineDK,
+					})
+				}
+			}
+			sort.Strings(consume) // stable rule + reviewable diff
+			rules = append(rules, tenantprofile.DerivedRule{
+				Segment: lineSeg,
+				Emit:    []string{lineSeg + fmt.Sprintf("/Admin/%s/%d/Unit", leaf, lineIdx)},
+				Type:    countType,
+				Expr:    &tenantprofile.ExprSource{Expr: exprStr, Vars: vars, Consume: consume},
+			})
+		}
+	}
+	return rules, readerTags, allowlist, nil
 }
 
 // GenerateRegisterSQL builds the packml_register INSERT (artifact 2): one row
@@ -312,7 +536,10 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 	fmt.Fprintf(&b, "-- packml_register rows for tenant %s (enterprise %d) — generated from the\n",
 		d.Tenant, d.EnterpriseID)
 	fmt.Fprintf(&b, "-- client descriptor (ADR-0045 P1). DO NOT hand-edit; edit the descriptor + regenerate.\n")
-	b.WriteString("INSERT INTO packml_register (id_enterprise, id_equipment, packml_topic, active, id_unit, device_key)\nVALUES\n")
+	// No device_key (ADR-0061 step c): identity is core.device_bindings, minted by edge-api and read by
+	// read-api's resolver. Writing the descriptor's key here would put dk_ keys into topic_routing (whose
+	// global unique index and t-device-bindings verify V4 forbid a binding key there).
+	b.WriteString("INSERT INTO packml_register (id_enterprise, id_equipment, packml_topic, active, id_unit)\nVALUES\n")
 	for i, e := range d.Equipment {
 		idUnit := "NULL"
 		if e.IDUnit != nil {
@@ -322,11 +549,8 @@ func (d *Descriptor) GenerateRegisterSQL() string {
 		if i == len(d.Equipment)-1 {
 			sep = ""
 		}
-		// device_key is the DECLARED-else-derived stable identity (ADR-0046 §2),
-		// persisted so the register loader + birth resolution key off it instead of
-		// re-parsing the topic string.
-		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s, %s)%s\n",
-			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sqlQuote(e.ResolvedDeviceKey()), sep)
+		fmt.Fprintf(&b, "    (%d, %d, %s, true, %s)%s\n",
+			d.EnterpriseID, e.IDEquipment, sqlQuote(e.Topic), idUnit, sep)
 	}
 	b.WriteString("ON CONFLICT (packml_topic) WHERE active DO NOTHING;\n")
 	// Populate id_site/id_area from the equipment. The stream-engine registry
@@ -458,6 +682,7 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 				MetricSuffix: m.Suffix,
 				Type:         m.Type,
 				DeviceKey:    dk,
+				Role:         m.Role,
 			})
 		}
 		// A line's line_roles add indexed count leaves the class template can't
@@ -467,6 +692,14 @@ func (d *Descriptor) GenerateAgentConfig() (*agentcfg.Config, error) {
 		for _, m := range lineRoleMetrics(seg, dk, e.LineRoles) {
 			cfg.RawTagMap = append(cfg.RawTagMap, m)
 		}
+	}
+	// P1.4b: allowlist the synthetic derive-input sensors (non-member sensors a
+	// type derive references + the reader publishes) so the §C check passes and the
+	// agent accepts them; the deriver then consumes them (never republished).
+	if _, _, allowlist, err := d.generateTypeDeriveRules(profile); err != nil {
+		return nil, err
+	} else {
+		cfg.RawTagMap = append(cfg.RawTagMap, allowlist...)
 	}
 	// ADR-0045 counter_derive: carry each count tag's derivation mode from the plc
 	// tag map onto its matching raw_tag_map entry, so the agent-side counterderive
@@ -555,6 +788,7 @@ func lineRoleMetrics(seg, deviceKey string, roles []LineRole) []agentcfg.TagMapE
 			MetricSuffix: fmt.Sprintf("%s/Admin/%s/%d/Unit", seg, leaf, r.CountIndex),
 			Type:         "double",
 			DeviceKey:    deviceKey,
+			Role:         tenantprofile.DefaultRole(leaf),
 		})
 	}
 	return out
@@ -694,6 +928,7 @@ func teeFunctionBody(tenant, gateway, keyEnv string) string {
 //  2. the client⇄agent consistency invariant holds (checkClientAgentConsistency);
 //  3. it marshals to YAML.
 func (d *Descriptor) GenerateClientYAML() (string, error) {
+	d = d.activePLC()
 	if d.PLC == nil {
 		return "", fmt.Errorf("descriptor has no plc block — nothing to generate for client.yaml")
 	}
@@ -818,6 +1053,16 @@ func (d *Descriptor) effectiveS7TagMap() ([]clientconfig.S7EndpointTags, error) 
 			return nil, err
 		}
 		out = append(out, entries...)
+	}
+	// P1.4b: synthetic reader tags for non-member derive-input sensors (a sensor a
+	// derive expression references that has an offset but no member equipment). The
+	// reader physically reads these; the agent allowlists + consumes them.
+	if profile != nil {
+		_, synthTags, _, err := d.generateTypeDeriveRules(profile)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, synthTags...)
 	}
 	if len(out) == 0 {
 		return nil, nil
@@ -1026,6 +1271,7 @@ func (d *Descriptor) checkClientAgentConsistency(cfg *clientconfig.Config) error
 // cutover gate. It is the one entry point a caller (CLI / CS-Admin surface)
 // should use.
 func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
+	d = d.activePLC() // PLC connections switched off in CS Admin are not generated
 	if opts.Cutover {
 		if inferred := d.InferredMembers(); len(inferred) > 0 {
 			return nil, fmt.Errorf(
@@ -1072,7 +1318,12 @@ func (d *Descriptor) Generate(opts GenerateOptions) (*Artifacts, error) {
 		}
 		clientYAML = []byte(s)
 
-		rf, err := d.GeneratePlcReaderFlow(ReaderFlowOptions{StagingTee: opts.StagingTee})
+		var rf []byte
+		if d.NodeRedHelper {
+			rf, err = d.GenerateHelperFlow()
+		} else {
+			rf, err = d.GeneratePlcReaderFlow(ReaderFlowOptions{StagingTee: opts.StagingTee})
+		}
 		if err != nil {
 			return nil, fmt.Errorf("generate plc reader flow: %w", err)
 		}

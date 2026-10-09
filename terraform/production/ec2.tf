@@ -99,10 +99,14 @@ resource "aws_iam_policy" "app_custom" {
         Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
         Resource = [
           "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/production/*",
+          # PROMOTION 2026-10 (B11): the legacy-replicator reads CPACK operator
+          # actions from the legacy prod DB (packiot40) with the SELECT-only
+          # awslambda user whose creds live in the top-level `databaseCredentials`
+          # secret — the same grant staging's role has. ?????? = the 6-char suffix
+          # AWS appends (a `databaseCredentials-foo-XXXXXX` would NOT match).
+          # AUTHORED, NOT APPLIED.
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:databaseCredentials-??????",
         ]
-        # NOTE: staging's policy includes `databaseCredentials-??????` to give
-        # the mirror-worker SELECT-only access to the real prod DB. Production
-        # does NOT need this — no mirror-worker runs here. Explicitly absent.
       },
       {
         Sid      = "ReadInitScript"

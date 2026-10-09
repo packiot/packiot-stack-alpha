@@ -12,7 +12,6 @@ package rollup
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"testing"
@@ -30,16 +29,22 @@ const goldenSchema = `
 	    id_equipment int NOT NULL,
 	    status int NOT NULL,
 	    ts_start timestamptz NOT NULL,
+	    ts_end timestamptz,
 	    recalc_needed boolean NOT NULL DEFAULT false,
 	    gross_production double precision,
 	    net_production double precision,
-	    oee double precision, oee_quality double precision,
-	    oee_availability double precision, oee_performance double precision,
+	    oee double precision, oee_q double precision,
+	    oee_a double precision, oee_p double precision,
 	    speed double precision, available_time double precision,
 	    running_time double precision, stopped_time double precision,
 	    planned_downtime double precision, total_time double precision,
 	    ideal_production_speed double precision,
 	    last_update timestamptz
+	);
+	-- Line-lead reads planned events from here (planned-downtime fix).
+	CREATE TABLE golden.equipment_events (
+	    id_equipment int, ts_event timestamptz, ts_end timestamptz,
+	    status int, planned_downtime boolean, change_over boolean
 	);
 	CREATE TABLE golden.equipments (
 	    id_equipment int PRIMARY KEY,
@@ -95,7 +100,7 @@ func TestGoldenRecalc(t *testing.T) {
 		}
 	}
 	// The verified statement, verbatim from the port (single source).
-	if _, err := pool.Exec(ctx, fmt.Sprintf(RecalcSQLForParity(), "golden", "golden"),
+	if _, err := pool.Exec(ctx, fmtRP(RecalcSQLForParity(), "golden"),
 		"1 month", []int{6}); err != nil {
 		t.Fatalf("recalc: %v", err)
 	}
@@ -108,7 +113,7 @@ func TestGoldenRecalc(t *testing.T) {
 		var p po
 		if err := pool.QueryRow(ctx,
 			`SELECT COALESCE(gross_production,-1), COALESCE(net_production,-1),
-			        COALESCE(oee_quality,-1), recalc_needed
+			        COALESCE(oee_q,-1), recalc_needed
 			   FROM golden.production_orders WHERE id_production_order=$1`, id).
 			Scan(&p.gross, &p.net, &p.quality, &p.recalc); err != nil {
 			t.Fatal(err)
@@ -153,23 +158,25 @@ const grainGoldenSchema = `
 	    target double precision, proportional_target double precision,
 	    target_customized boolean DEFAULT false, recalc_needed boolean DEFAULT false,
 	    -- ADR-0036 §5A lineage columns (T0-2) — mirror the migrated prod schema.
-	    computed_at timestamptz, source_watermark timestamptz
+	    computed_at timestamptz, source_watermark timestamptz,
+	    -- t-availability-exclusions (2026-10-01)
+	    no_data_time integer NOT NULL DEFAULT 0, out_of_service_time integer NOT NULL DEFAULT 0
 	);
 	-- 1day/1week/1month inherit oee_a/oee_p/oee_q + computed_at/source_watermark via LIKE (they now live on 1hour too — ADR-0037 C).
 	CREATE TABLE golden.equipment_oee_daily (LIKE golden.equipment_oee_hourly INCLUDING ALL);
 	CREATE TABLE golden.equipment_oee_weekly (LIKE golden.equipment_oee_daily INCLUDING ALL);
 	CREATE TABLE golden.equipment_oee_monthly (LIKE golden.equipment_oee_daily INCLUDING ALL);
 	-- #186: golden.area_oee_hourly fixture removed with the retired area-hour grain.
-	CREATE TABLE golden.ca_agg_equipment_values_1hour (
+	CREATE TABLE golden.equipment_categorical_1hour (
 	    id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
-	    state int, speed double precision, ideal_production_speed double precision,
+	    state int, sum_speed double precision, cnt_speed integer DEFAULT 1, ideal_production_speed double precision,
 	    net_production_incr double precision, gross_production_incr double precision, id_shift int
 	);
-	CREATE TABLE golden.ca_agg_equipment_values_1min (LIKE golden.ca_agg_equipment_values_1hour INCLUDING ALL);
+	CREATE TABLE golden.equipment_categorical_1min (LIKE golden.equipment_categorical_1hour INCLUDING ALL);
 	CREATE TABLE golden.equipment_values (
 	    id_equipment int, ts_value timestamptz, ideal_production_speed double precision
 	);
-	CREATE TABLE golden.equipment_events (
+	CREATE TABLE IF NOT EXISTS golden.equipment_events (
 	    id_equipment int, ts_event timestamptz, ts_end timestamptz,
 	    status int, planned_downtime boolean, change_over boolean
 	);
@@ -191,8 +198,8 @@ const grainGoldenFixture = `
 	-- hour bucket (current hour, flagged) with one ca row: gross 50, net 45, state-6 speed 40
 	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (20, date_trunc('hour', now()), date_trunc('day', now()), true);
-	INSERT INTO golden.ca_agg_equipment_values_1hour
-	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
+	INSERT INTO golden.equipment_categorical_1hour
+	    (id_equipment, ts_value, ts_value_production, state, sum_speed, net_production_incr, gross_production_incr)
 	VALUES (20, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
 	-- day bucket (yesterday, flagged) summing two hour rows: 100+60 / 90+55
 	INSERT INTO golden.equipment_oee_daily (id_equipment, ts_value, recalc_needed, target_customized, target)
@@ -211,15 +218,31 @@ const grainGoldenFixture = `
 	INSERT INTO golden.equipments VALUES (21,1,1,35,3,NULL);
 	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), true);
-	INSERT INTO golden.ca_agg_equipment_values_1hour
-	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
+	INSERT INTO golden.equipment_categorical_1hour
+	    (id_equipment, ts_value, ts_value_production, state, sum_speed, net_production_incr, gross_production_incr)
 	VALUES (21, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
-	INSERT INTO golden.ca_agg_equipment_values_1min
-	    (id_equipment, ts_value, state, speed, ideal_production_speed)
+	INSERT INTO golden.equipment_categorical_1min
+	    (id_equipment, ts_value, state, sum_speed, ideal_production_speed)
 	VALUES (21, date_trunc('hour', now()), 6, 40, NULL);
 	INSERT INTO golden.equipment_values VALUES (21, now() - interval '3 hours', 120);
 	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
 	VALUES (21, date_trunc('hour', now()), NULL, 6, false, false);
+	-- THE BOUNDED-LOCF CASE (2026-09-28): eq 29 is eq 21 with its only 30701 report
+	-- 10 DAYS old and a configured production_speed of 90. The look-back is bounded
+	-- to 7 days (unbounded, it scanned the whole retained history per minute), so the
+	-- stale 120 is NOT carried forward and ideal_speed falls back to 90.
+	INSERT INTO golden.equipments VALUES (29,1,1,35,3,90);
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (29, date_trunc('hour', now()), date_trunc('day', now()), true);
+	INSERT INTO golden.equipment_categorical_1hour
+	    (id_equipment, ts_value, ts_value_production, state, sum_speed, net_production_incr, gross_production_incr)
+	VALUES (29, date_trunc('hour', now()), date_trunc('day', now()), 6, 40, 45, 50);
+	INSERT INTO golden.equipment_categorical_1min
+	    (id_equipment, ts_value, state, sum_speed, ideal_production_speed)
+	VALUES (29, date_trunc('hour', now()), 6, 40, NULL);
+	INSERT INTO golden.equipment_values VALUES (29, now() - interval '10 days', 120);
+	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
+	VALUES (29, date_trunc('hour', now()), NULL, 6, false, false);
 	-- THE TRAILING-OPEN-EVENT CASE (CPACK status_type=0, ADR trailing-event fix).
 	-- eq 22 is an idle line whose telemetry stopped 2h ago (its last 1-hour cagg
 	-- bucket is at now()-2h) but still carries a TRAILING open RUNNING event
@@ -234,8 +257,8 @@ const grainGoldenFixture = `
 	INSERT INTO golden.equipments VALUES (22,1,1,35,3,100);
 	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
 	VALUES (22, date_trunc('hour', now()), date_trunc('day', now()), true);
-	INSERT INTO golden.ca_agg_equipment_values_1hour
-	    (id_equipment, ts_value, ts_value_production, state, speed, net_production_incr, gross_production_incr)
+	INSERT INTO golden.equipment_categorical_1hour
+	    (id_equipment, ts_value, ts_value_production, state, sum_speed, net_production_incr, gross_production_incr)
 	VALUES (22, date_trunc('hour', now()) - interval '2 hours', date_trunc('day', now()), 6, 40, 45, 50);
 	INSERT INTO golden.equipment_events (id_equipment, ts_event, ts_end, status, planned_downtime, change_over)
 	VALUES
@@ -243,7 +266,16 @@ const grainGoldenFixture = `
 	    -- unaffected by the fix) → sets up a reduced available_time for the hour.
 	    (22, date_trunc('hour', now()) - interval '4 hours', date_trunc('hour', now()) + interval '20 minutes', 5, true, false),
 	    -- the trailing open RUNNING event (last event, ts_end NULL, no successor).
-	    (22, date_trunc('hour', now()) - interval '3 hours', NULL, 6, false, false);`
+	    (22, date_trunc('hour', now()) - interval '3 hours', NULL, 6, false, false);
+	-- #256 PHANTOM-FLAG GUARD: eq 23 is a MACHINE (tp_equipment=1). Machines roll
+	-- up at shift/day, NEVER hourly (hourEligibleSQL is tp>1). Its current-hour row
+	-- starts recalc_needed=false; the hour pass must LEAVE it false — the re-flag
+	-- tail must not re-enqueue a row the eligibility pass can never compute (else a
+	-- permanent phantom backlog, measured 6,276 rows on 2026-09-10). Pre-fix the
+	-- unfiltered re-flag flipped this to true.
+	INSERT INTO golden.equipments VALUES (23,1,1,35,1,100);
+	INSERT INTO golden.equipment_oee_hourly (id_equipment, ts_value, ts_value_production, recalc_needed)
+	VALUES (23, date_trunc('hour', now()), date_trunc('day', now()), false);`
 
 func TestGoldenGrains(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
@@ -327,6 +359,17 @@ func TestGoldenGrains(t *testing.T) {
 		t.Errorf("line oee: %v (must be > 0 — net 45 against LOCF'd ideal)", oee21)
 	}
 
+	// THE BOUNDED-LOCF SEMANTIC (eq 29): a 10-day-old 30701 report is outside the
+	// 7-day look-back, so ideal_speed falls back to production_speed (90), not 120.
+	var ideal29 float64
+	if err := pool.QueryRow(ctx, `SELECT ideal_speed FROM golden.equipment_oee_hourly
+	    WHERE id_equipment=29 AND ts_value=date_trunc('hour', now())`).Scan(&ideal29); err != nil {
+		t.Fatal(err)
+	}
+	if ideal29 != 90 {
+		t.Errorf("bounded LOCF ideal_speed: %v (want 90 = production_speed; the 10-day-old 120 is out of the 7-day look-back)", ideal29)
+	}
+
 	// THE TRAILING-OPEN-EVENT SEMANTIC (eq 22): the idle line's last telemetry was
 	// 2h ago, so its trailing open RUNNING event must NOT credit running to the
 	// current hour. running_time must be 0 (bounded to last-data + 1h = now()-1h,
@@ -344,6 +387,20 @@ func TestGoldenGrains(t *testing.T) {
 	}
 	if run22 > avail22 {
 		t.Errorf("trailing-open-event: running_time=%v > available_time=%v (the masked-by-clamp defect — fix failed)", run22, avail22)
+	}
+
+	// #256 PHANTOM-FLAG GUARD (eq 23, tp_equipment=1): the machine's current-hour
+	// row started recalc_needed=false and the hour pass (eligibility tp>1) can never
+	// compute it, so the re-flag tail MUST leave it false. Pre-fix the unfiltered
+	// re-flag flipped it to true, creating a flag no pass ever clears → permanent
+	// backlog. This assertion fails if the tp>1 guard is dropped from hourReflagSQL.
+	var recalc23 bool
+	if err := pool.QueryRow(ctx, `SELECT recalc_needed FROM golden.equipment_oee_hourly
+	    WHERE id_equipment=23 AND ts_value=date_trunc('hour', now())`).Scan(&recalc23); err != nil {
+		t.Fatal(err)
+	}
+	if recalc23 {
+		t.Error("phantom-flag: eq23 (tp=1 machine) hour row was re-flagged — hour re-flag must be scoped to tp>1 (the eligible set) or it creates a permanent phantom backlog")
 	}
 
 	// day2 pass: sums the two hour rows; target_customized=true must PRESERVE 777.
@@ -447,8 +504,9 @@ func TestGoldenGrainOeeReconcile(t *testing.T) {
 		}
 		seen++
 		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
-			if v < 0 || v > 1 {
-				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			// Uncapped since 2026-09-29: every factor >= 0, only availability <= 1.
+			if v < 0 || (name == "oee_a" && v > 1) {
+				t.Errorf("eq %d: %s=%v out of range (>=0; oee_a <= 1)", id, name, v)
 			}
 		}
 		// THE IDENTITY: oee is the product of the three factors (last step). Tolerance
@@ -536,8 +594,9 @@ func TestGoldenDayOeeReconcile(t *testing.T) {
 			t.Fatal(err)
 		}
 		for name, v := range map[string]float64{"oee_a": a, "oee_p": p, "oee_q": q, "oee": oee} {
-			if v < 0 || v > 1 {
-				t.Errorf("eq %d: %s=%v out of [0,1]", id, name, v)
+			// Uncapped since 2026-09-29: every factor >= 0, only availability <= 1.
+			if v < 0 || (name == "oee_a" && v > 1) {
+				t.Errorf("eq %d: %s=%v out of range (>=0; oee_a <= 1)", id, name, v)
 			}
 		}
 		if diff := oee - a*p*q; diff < -1e-4 || diff > 1e-4 { // identity (last step)

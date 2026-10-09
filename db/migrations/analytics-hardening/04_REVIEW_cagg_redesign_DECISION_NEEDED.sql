@@ -1,0 +1,36 @@
+-- ============================================================================
+-- CAGG REDESIGN — DECISION NEEDED (do NOT auto-apply). Hardproof below.
+-- ============================================================================
+-- The audit proposed making agg_*_10min/1hour hierarchical (build on _1min).
+-- HARDPROOF that this is NOT a mechanical migration: the tiers have DIFFERENT
+-- grouping semantics, so "10min from 1min" would silently change what 10min means.
+--
+--   agg_equipment_values_1min   GROUP BY: time, enterprise, site, area, equipment, tp   (6 keys)
+--                               -> collapses mode/state/order via max(); 1 row/min/machine
+--   agg_equipment_values_10min  GROUP BY: the 6 ABOVE + mode, id_production_order,
+--                               conversion_factor, number_cavities, signal_quality,
+--                               id_shift, id_team, id_shift_hour, box_code,
+--                               transaction_code, ts_value_production,
+--                               id_equipment_line_connected, position_in_equipment_line,
+--                               is_equipment_line_infeed, is_equipment_line_outfeed  (~20 keys)
+--                               -> PRESERVES state/order transitions; N rows/10min/machine
+--   agg_equipment_values_1hour  same 20-key grouping as 10min
+--
+-- So 1min is a MACHINE rollup; 10min/1hour are STATE/ORDER-PRESERVING rollups.
+-- You cannot derive 10min from 1min (1min already collapsed mode/order). And this
+-- also explains the agg_ vs ca_agg overlap (ca_agg_* is the same state-preserving idea).
+--
+-- DECISION REQUIRED (drives the redesign):
+--   1. What grain does each tier NEED to be? (collapsed machine-level, or
+--      state/order-preserving?) — check the real consumers of each:
+--        agg_equipment_values_1min  -> read-api external_integration.go, procs, v_sap_*
+--        agg_equipment_values_10min/1hour -> (map consumers; likely timeline/state reports)
+--   2. If a clean tier family is wanted: pick ONE grouping, define
+--        _1min (base, from raw) -> _10min (from _1min) -> _1hour (from _10min),
+--      and for avg(speed) expose sum(speed)+count in the base so higher tiers do
+--      weighted avg (avg-of-avgs is WRONG). Then repoint consumers + drop the old.
+--   3. Consolidate agg_ and ca_ once the canonical grouping is chosen.
+--
+-- Until that decision: the existing caggs are CORRECT (each reads raw directly) and
+-- now compressed + retention-bounded. The only cost of "flat" is modest refresh
+-- compute (caggs refresh incrementally over the recent window, not full re-scan).

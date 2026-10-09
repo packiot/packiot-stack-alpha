@@ -1,0 +1,71 @@
+# Dockerfile.nodered-reader — the PLC-capable edge Node-RED image (ADR-0045).
+#
+# WHY THIS EXISTS
+# -----------------------------------------------------------------------------
+# The vanilla `nodered/node-red:4.0` image ships ZERO fieldbus palettes. A
+# generated reader-flow (onboard-gen artifact 6, built from the descriptor's
+# `plc:` block) contains s7 / modbus / opcua INPUT nodes, so on a fresh box the
+# flow never starts — Node-RED logs:
+#
+#   Waiting for missing types to be registered: modbus-client, modbus-read,
+#   s7 endpoint, s7 in, OpcUa-Endpoint, OpcUa-Item, OpcUa-Client
+#
+# That is the exact CPACK live-box F1 finding
+# (docs/clients/cpack-edge-deploy-findings.md §F1), hot-fixed on-box with a
+# manual `npm install` and never made durable. compose.edge.yml carries a
+# first-boot `npm install` fallback into /data, but that needs npm-registry
+# egress ON FIRST BOOT at the factory floor — often firewalled — and adds ~30-60s
+# to every fresh deploy. Baking the palettes into the image makes a fresh box
+# work OFFLINE and INSTANTLY: the palettes are already resolvable when the seeded
+# reader-flow loads.
+#
+# HOW IT SHIPS TO THE CLIENT
+# -----------------------------------------------------------------------------
+# The GitHub bundle workflow (.github/workflows/generate-client-bundle.yml)
+# `docker build`s this on the runner (which HAS npm egress), `docker save`s it
+# into the bundle as images/nodered-reader.tar.gz, and the client `docker load`s
+# it — no npm, no registry auth, no build on the factory box (bundle-artifact,
+# runner-free-at-CLIENT model). A client with egress can instead
+# `docker compose build` (compose.edge.yml carries a matching `build:` stanza).
+#
+# PALETTE VERSION PINS (state them + why — reproducible builds, no silent drift)
+# -----------------------------------------------------------------------------
+# Base `nodered/node-red:4.0` ships Node.js v20.19 (verified from the image), so
+# every pin below must run on Node 20:
+#
+#   node-red-contrib-s7      3.1.3    latest; st-one-io; no `engines` restriction
+#                                     (Node-agnostic). Provides `s7 endpoint`,
+#                                     `s7 in`, `s7 out`.
+#   node-red-contrib-modbus  5.45.0   NEWEST release still compatible with Node 20:
+#                                     it declares `engines.node >=18.5`. The very
+#                                     next release (5.46.0) bumped `engines.node`
+#                                     to `>=22`, which the base image's Node 20
+#                                     cannot satisfy — installing a >=22 build here
+#                                     risks runtime use of Node-22-only APIs. Pin
+#                                     to 5.45.0 until the base image moves to a
+#                                     Node-22 tag. Provides `modbus-client`,
+#                                     `modbus-read`, etc.
+#   node-red-contrib-opcua   0.2.354  latest; `engines.node >=15` (OK on Node 20).
+#                                     Provides `OpcUa-Endpoint`, `OpcUa-Item`,
+#                                     `OpcUa-Client`, …
+#
+# Regenerate the pins deliberately: bump a version, rebuild, and re-run a fresh
+# reader-flow so the "missing types" regression cannot creep back in.
+
+FROM nodered/node-red:4.0
+
+# The image's WORKDIR is /usr/src/node-red (Node-RED's install dir). Installing
+# the palettes HERE (not into /data) puts them in the image layer, so they are
+# present the instant the container starts — independent of the /data named
+# volume that the compose seed writes flows.json into at runtime. Node-RED scans
+# /usr/src/node-red/node_modules for node types, so the reader-flow's s7/modbus/
+# opcua nodes resolve with no first-boot install. This is the pattern the
+# official Node-RED docs prescribe for "adding nodes to a custom Docker image".
+#
+# --no-audit --no-fund: no registry chatter beyond the installs themselves,
+# matching the compose fallback's flags so the two paths install identically.
+RUN cd /usr/src/node-red \
+    && npm install --no-audit --no-fund --save \
+        node-red-contrib-s7@3.1.3 \
+        node-red-contrib-modbus@5.45.0 \
+        node-red-contrib-opcua@0.2.354

@@ -32,6 +32,11 @@ import (
 // the full rationale (dev-only ergonomics; SECURITY: never set in prod).
 const credsSourceEnv = "env"
 
+// fetchSecretJSON is the Secrets Manager fetch, held in a package var purely as
+// a test seam: secrets_test.go swaps it for a stub so "CREDS_SOURCE unset → SM
+// path taken" can be asserted without AWS. Production never reassigns it.
+var fetchSecretJSON = getSecretJSON
+
 type AMQPCreds struct {
 	Username string
 	Password string
@@ -85,7 +90,7 @@ func FetchAMQPCreds(ctx context.Context, region, secretID, host string, port int
 	if os.Getenv("CREDS_SOURCE") == credsSourceEnv {
 		return fetchAMQPCredsFromEnv(host, port)
 	}
-	raw, err := getSecretJSON(ctx, region, secretID)
+	raw, err := fetchSecretJSON(ctx, region, secretID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +121,19 @@ func (a *AMQPCreds) Redacted() string {
 	return fmt.Sprintf("amqp://%s:***@%s:%d/", url.PathEscape(a.Username), a.Host, a.Port)
 }
 
+// fetchAMQPCredsFromEnv is the CREDS_SOURCE=env path (local dev only, ADR-0060
+// P1). It replaces the RabbitMQ secret ($RABBITMQ_SECRET_ID → {username|user,
+// password}) with:
+//
+//	RABBITMQ_USER      required (secret field username/user)
+//	RABBITMQ_PASSWORD  required (secret field password)
+//	RABBITMQ_HOST      optional, overrides the caller-supplied host
+//	RABBITMQ_PORT      optional, overrides the caller-supplied port (integer)
+//
+// Missing user/password fails closed — never falls back to Secrets Manager or
+// to empty creds. SECURITY: plaintext env is visible in `docker inspect` and to
+// any same-UID process via /proc/<pid>/environ; keep CREDS_SOURCE unset in
+// staging/prod.
 func fetchAMQPCredsFromEnv(host string, port int) (*AMQPCreds, error) {
 	user := os.Getenv("RABBITMQ_USER")
 	password := os.Getenv("RABBITMQ_PASSWORD")

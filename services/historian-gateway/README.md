@@ -13,6 +13,16 @@ consumer ──SQL──► historian-gateway (Postgres)
                      └─ ev_all = live ∪ hist     ← query THIS
 ```
 
+**Serving surface (canonical, narrow):** `{ts_value, id_enterprise, year, month,
+id_equipment, gross_production_incr, net_production_incr, speed}`. This is a
+production-series server, not a raw mirror — widen only on demand.
+
+**Prune-proof FDW import:** `live.equipment_values` is a **pinned** foreign table
+declaring ONLY those served columns, not `IMPORT FOREIGN SCHEMA` (which pulls all
+~58). The analytics clean-schema cutover prunes the dead columns off the remote
+`equipment_values`; a pinned import can never break when that happens (postgres_fdw
+only ships referenced columns).
+
 ## Why a gateway (not pg_duckdb in the timescaledb instance)
 
 - The operational DB image is **Alpine/musl** (`timescale/timescaledb:*-pg15`);
@@ -46,13 +56,17 @@ the Postgres view (`Custom Scan (DuckDBScan)`).
    (it is the deep-remap of the still-live legacy packiot40 source), and live also
    holds ent3 from its F3 cutover (2026-07-23) onward — so on 2026-09-03 BOTH sides
    had ent3 rows (hist 196,671 / live 155,465) and a plain `UNION ALL` returned
-   352,136 == **double-count**. Fixed with `hist_cutover(id_enterprise, cutover_ts =
+   352,136 == **double-count**. Fixed with `ev_union_boundary(id_enterprise, cutover_ts =
    max(hist.ts_value))`: COLD owns `ts <= cutover`, HOT owns `ts > cutover` (disjoint;
    live fills forward from the archive's end). Hardproof of the fix: the same day now
    returns **196,671** (HOT 0 + COLD 196,671), 1 parquet file. **Operational
-   invariant:** `refresh_hist_cutover()` MUST be re-run after every historian
-   backfill/append, and every in-historian enterprise MUST have a `hist_cutover` row,
-   or the double-count returns.
+   invariant:** the cutover refresh (top-level `refresh-equipment_values-cutover.sql`) MUST be
+   re-run after every historian backfill/append, and every in-historian enterprise
+   MUST have a `ev_union_boundary` row, or the double-count returns. **Never** wrap this
+   refresh in a PL/pgSQL function — pg_duckdb cannot scan the `hist` parquet inside a
+   function body, so it throws and leaves the cutover silently stale (a broken
+   `refresh_ev_union_boundary()` fn of exactly this shape was found live on staging and
+   dropped 2026-09-08).
    *(A naïve `live ∪ all-historian` double-counted 2026 and surfaced 99e9 gross.)*
 2. **Tenant RLS must be a LITERAL.** pg_duckdb pushes predicates into DuckDB,
    which has **no PG session context** — `current_setting('app.tenant_id')` and a
@@ -81,13 +95,55 @@ the Postgres view (`Custom Scan (DuckDBScan)`).
 | old-timestamp lookup | 1/181 files scanned |
 | via Superset (SQL Lab + engine) | `2022→242 (cold)`, `2026→17281 (hot)` |
 
+## Serving rules (2026-09-28 audit: t-historian-serving-guards)
+
+**1. Never bound a `live.*` query with `now()`.** postgres_fdw only ships immutable
+expressions to the remote, and `now()` is stable, so a `ts_value > now() - interval '2h'`
+filter is evaluated locally after pulling the WHOLE remote table: measured 173 s vs 59 ms
+with a literal timestamp. Pass literal bounds (read-api binds literals through the simple
+protocol). Check with `EXPLAIN (VERBOSE)`: the `Remote SQL:` line must carry the time filter.
+
+**2. Long windows read daily rollups, never per-second rows.** Re-aggregating the cold
+archive at query time costs about 25 s per 30 days (a CPACK month is 6-8 M rows), and a
+mixed pg_duckdb + FDW plan loses the FDW pushdown. read-api (`historian_split.go`) runs
+hot and cold as separate statements and merges them (production is served at whole-UTC-day
+resolution; the per-second `silver.equipment_values` union stays for Superset/raw use):
+
+| Endpoint | Cold (pure DuckDB) | Hot (pure Postgres/FDW) |
+|---|---|---|
+| production-series, any window | `cold.equipment_values_daily`, days < `ev_daily_watermark.covered_until` | `live.equipment_values_1hour` (analytics hourly rollup), days ≥ watermark |
+| downtime-series, any window | `cold.equipment_events`, only for EE-promoted tenants and only before `ee_union_boundary` | `live.equipment_events`, aggregated per UTC day |
+
+The daily rollup is written by `scripts/historian-ev-daily-rollup.sh` (nightly, from the
+append job, current + previous month; `FULL=1` rebuilds everything and is required once on a
+new bucket).
+
+**3. Cold increments are spike-guarded.** `cold.equipment_values` and the daily rollup NULL
+an increment that is physically impossible: negative; > 10,000 and at least half the
+lifetime totalizer (legacy stored the totalizer in the increment column: POLYTYPE net
+2022-10..2023-09, ~1e12/month); > 10,000 and not backed by totalizer movement since the
+previous row (the 2024-07-22 replay, +74,367 every ~40 s with a frozen totalizer); or
+> 1,000 at over 5,000 units/min when the machine has ≥ 3 such rows in the same hour (a
+sustained burst; a lone fast row is a reconnect catch-up and is kept). Measured on 10 CPACK
+months: 2022-05, 2025-03, 2025-09, 2026-05 are byte-identical; 2024-07-22 drops from 79 M to
+4.4 M gross (a normal day is ~3.8 M). The guard uses window functions partitioned by
+enterprise/year/month, so the year/month filter still prunes (~20 s per month scanned).
+2022-08 is a known gap: legacy itself has NULL gross/net/speed for the whole month.
+
+**4. Memory.** The container is capped at 2560 MB and DuckDB at 1024 MB / 2 threads per
+backend (`command:` in `compose.historian-gateway.yml`; `-c` settings override both config
+files). pg_duckdb's defaults (4 GB per backend, one thread per core) let a few wide cold
+scans ask for more than the whole shared app host.
+
 ## Deploy
 
-Set in `.env`: `HIST_GW_PASSWORD`, `DB_HOST/PORT/NAME/USER/DB_PASSWORD`,
-`HISTORIAN_BUCKET`, `HIST_AWS_KEY`, `HIST_AWS_SECRET`, `AWS_REGION`. Then:
+On the staging app host the gateway's variables live in `/opt/packiot/.env.historian-gateway`
+(`HIST_GW_PASSWORD`, `DB_HOST/PORT/NAME/USER/DB_PASSWORD`, `HISTORIAN_BUCKET`,
+`HIST_AWS_KEY`, `HIST_AWS_SECRET`, `AWS_REGION`), NOT the main `.env`, and the deploy
+workflow does not manage this container. Recreate it by hand:
 
 ```
-docker compose -f compose.historian-gateway.yml up -d
+cd /opt/packiot && docker compose -p packiot --env-file .env.historian-gateway -f compose.historian-gateway.yml up -d historian-gateway
 ```
 
 Register in Superset as database `historian_union`

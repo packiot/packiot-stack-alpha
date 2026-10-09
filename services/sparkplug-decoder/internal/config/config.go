@@ -117,6 +117,29 @@ type Config struct {
 	CalcMonotonicityGuard bool
 	CalcCounterRollover   bool
 
+	// CalcCounterSpikeMargin (WS1 — counter-anomaly gross guard). When > 0, a
+	// counter increment implying a derived rate above this multiple of the
+	// per-equipment IdealRate is a physically-impossible jump and is clamped to that
+	// ceiling before it reaches gross/net/scrap. Env CALC_COUNTER_SPIKE_MARGIN.
+	// Default 0 ⇒ guard INERT (per-client opt-in; seeds the WS3 OEE profile).
+	// This is the GLOBAL FALLBACK margin; WS3 (OeeProfileFromDB) lets a client
+	// override it per equipment from its OEE profile — see oeeprofile.Watcher.
+	CalcCounterSpikeMargin float64
+
+	// ── WS3 per-client OEE profile (ADR-0058) ─────────────────────────────
+	// OeeProfileFromDB turns the WS1 spike-guard margin into a per-client,
+	// CS-Admin-editable knob: a Watcher reloads a unit-topic→spike_margin map
+	// from client_descriptors.descriptor->oee_profile so a margin authored in
+	// the customize SPA takes effect without an edge redeploy — the same
+	// config-as-data seam CountersOnlyFromDB gives the rated-speed map. Default
+	// OFF → the map is empty and every topic keeps CalcCounterSpikeMargin
+	// (parity). Env OEE_PROFILE_FROM_DB. Fail-open on any DB error.
+	OeeProfileFromDB bool
+	// OeeProfileRefreshSeconds is the periodic-reload interval for the OEE-profile
+	// margin map once OeeProfileFromDB is on. Default 300s, matching the
+	// counters-only rates watcher. Env OEE_PROFILE_REFRESH_SECONDS.
+	OeeProfileRefreshSeconds int
+
 	// ── SparkPlug B Rebirth request (task #31 / ADR-0042) ──────────────────
 	// When a stateful consumer (this edge-transformer) restarts, it loses its
 	// per-publisher alias table AND the refactored Calc counter baseline. An
@@ -210,21 +233,21 @@ type Config struct {
 	CountersOnlyRefreshSeconds int
 
 	// ── Birth-bound routing (ADR-0046 step 1) ─────────────────────────────
-	// When ON, counter identity + role are taken from the (N/D)BIRTH declaration
-	// — properties["counter_role"] + device_key → id_equipment via
-	// packml_register — and cached as (edge_node, alias) → (id_equipment, role).
-	// On DDATA a bound alias routes DIRECTLY to Calc with NO metric-name string
-	// parsing; an unbound alias fails closed (rebirth + drop, ADR-0042). OFF
-	// (default) keeps the legacy string-parse path byte-identical — a no-op
-	// deploy. Mirrors the SHADOW_EMIT_*/CALC_CUTOVER_* reversible-flip discipline.
+	// When ON (ADR-0061 P2), every (N/D)BIRTH's counters are bound through their
+	// DECLARED device_key → (id_equipment, id_enterprise) via core.device_bindings,
+	// cached per (group_id, edge_node), and every outbox analytics envelope is
+	// STAMPED with metrics[].id_equipment/role + id_enterprise
+	// (cmd/edge-transformer/birthbind_wiring.go). Stamping changes no write:
+	// stream-engine verifies the ids against its current resolver until a tenant
+	// is switched. Unbound metrics carry no ids (never guessed). OFF (default)
+	// keeps the envelope byte-identical — a no-op deploy.
 	BirthBoundRouting bool
 	// BirthBoundDeviceMap is the operator-supplied device_key → id_equipment
 	// resolver used by the birth binder. It is the INTERIM edge seam (like
 	// COUNTERS_ONLY_IDEAL_RATES) until edge-transformer can resolve device_key
-	// against packml_register directly — the transformer has no DB pool today,
-	// and the current packml_register keys on packml_topic (slash-delimited),
-	// NOT the ADR-0046 device_key (hyphen-delimited), so no automatic mapping is
-	// invented here. Parsed from JSON env BIRTH_BOUND_DEVICE_MAP, e.g.
+	// itself — the transformer has no DB pool (by design); BIRTH_BOUND_RESOLVER=refdata
+	// asks read-api, which reads core.device_bindings (ADR-0061 step c). No automatic
+	// mapping is invented here. Parsed from JSON env BIRTH_BOUND_DEVICE_MAP, e.g.
 	//   {"CPACK-SC-LINHAS-L5":40004,"CPACK-SC-LINHAS-L5-BREYER":40010}
 	// A device_key absent from this map does NOT resolve → its counters fail
 	// closed (explicit config, never guessed).
@@ -235,7 +258,7 @@ type Config struct {
 	// existing transitional behaviour byte-identical — the operator-supplied
 	// BIRTH_BOUND_DEVICE_MAP above. "refdata" swaps in the HTTP resolver that
 	// asks refdata-api's /internal/resolve-device to resolve device_key →
-	// id_equipment against packml_register (the SSoT), so the map no longer has
+	// id_equipment against core.device_bindings (ADR-0061), so the map no longer has
 	// to be hand-maintained per tenant. The transformer keeps its pgx-free
 	// default — the DB lookup lives behind refdata's pool, reached over HTTP.
 	// Unknown values fall back to "map" (fail-safe, never a boot crash).
@@ -351,8 +374,9 @@ func Load() (*Config, error) {
 		MQTTStaleThresholdSeconds: getenvInt("MQTT_STALE_THRESHOLD_SECONDS", 60),
 
 		// ADR-0037 Silver ingest-side cleaning rules (each off by default)
-		CalcMonotonicityGuard: getenvBool("CALC_MONOTONICITY_GUARD", false),
-		CalcCounterRollover:   getenvBool("CALC_COUNTER_ROLLOVER", false),
+		CalcMonotonicityGuard:  getenvBool("CALC_MONOTONICITY_GUARD", false),
+		CalcCounterRollover:    getenvBool("CALC_COUNTER_ROLLOVER", false),
+		CalcCounterSpikeMargin: getenvFloat("CALC_COUNTER_SPIKE_MARGIN", 0),
 
 		// SparkPlug B Rebirth request (task #31 — off by default; prove then enable)
 		RequestRebirthEnabled:            getenvBool("ET_REQUEST_REBIRTH_ENABLED", false),
@@ -370,6 +394,8 @@ func Load() (*Config, error) {
 		CountersOnlyIdealRates:     getenvFloatMap("COUNTERS_ONLY_IDEAL_RATES"),
 		CountersOnlyFromDB:         getenvBool("COUNTERS_ONLY_FROM_DB", false),
 		CountersOnlyRefreshSeconds: getenvInt("COUNTERS_ONLY_REFRESH_SECONDS", 300),
+		OeeProfileFromDB:           getenvBool("OEE_PROFILE_FROM_DB", false),
+		OeeProfileRefreshSeconds:   getenvInt("OEE_PROFILE_REFRESH_SECONDS", 300),
 
 		// ADR-0046 step 1 birth-bound routing (default OFF — no behavior change)
 		BirthBoundRouting:   getenvBool("BIRTH_BOUND_ROUTING", false),
@@ -486,4 +512,16 @@ func getenvInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvFloat(name string, fallback float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }

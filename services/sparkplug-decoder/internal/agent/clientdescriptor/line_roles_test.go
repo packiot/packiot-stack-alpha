@@ -31,13 +31,14 @@ tee:
   ingest_url: https://localhost:8444/v1/counters
 equipment:
   - topic: BISTEST/SP/LINHAS/L01
+    device_key: dk_7fab45a094685d4f3d50401a2b7e06c2
     id_equipment: 40001
     tp_equipment: 3
     line_roles:
       - {role: consumed,  count_index: 168, confidence: confirmed}
       - {role: processed, count_index: 169, confidence: confirmed}
-  - {topic: BISTEST/SP/LINHAS/L01/S3, id_equipment: 40101, tp_equipment: 1, id_unit: 40101, count_index: {value: 164, confidence: confirmed}}
-  - {topic: BISTEST/SP/LINHAS/L01/S4, id_equipment: 40102, tp_equipment: 1, id_unit: 40102, count_index: {value: 165, confidence: confirmed}}
+  - {topic: BISTEST/SP/LINHAS/L01/S3, device_key: dk_940364b4065d86e35ec052447a094c60, id_equipment: 40101, tp_equipment: 1, id_unit: 40101, count_index: {value: 164, confidence: confirmed}}
+  - {topic: BISTEST/SP/LINHAS/L01/S4, device_key: dk_49e4bea0360ef2adc7aa0c5516b3a82e, id_equipment: 40102, tp_equipment: 1, id_unit: 40102, count_index: {value: 165, confidence: confirmed}}
 `
 
 // TestLineRoles_GenerateRoutableLeaves proves the whole chain the fix depends on:

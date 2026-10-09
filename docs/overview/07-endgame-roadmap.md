@@ -14,7 +14,7 @@
 
 ## The finish line (definition of done)
 
-1. ONE database (`packiot_shadow`, promoted), schema at
+1. ONE database (`packiot_analytics`, promoted), schema at
    `0016-endstate-schema-map` + `0012-naming-map` shape, pools
    complete, `ca_*` CAggs compressed, retention policies live.
 2. FOUR first-party services (ingest-worker, engine-worker,

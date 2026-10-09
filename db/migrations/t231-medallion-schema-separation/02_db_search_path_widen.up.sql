@@ -1,0 +1,22 @@
+-- t231 · Medallion schema separation — PHASE 2 (search_path)
+-- DB: packiot_analytics (STAGING). Applied 2026-09-09.
+--
+-- Widen the DATABASE-level default search_path so unqualified references resolve
+-- to their new medallion home first, falling back to public. This is the single
+-- lever that absorbs the vast majority of the migration's "name-bound breakage":
+-- the ~12 unqualified serving/report functions and all read-api/edge-api
+-- unqualified reads keep resolving with NO code edit once their pooled
+-- connections are recycled.
+--
+-- `gold` is listed even before it exists (PHASE 3 creates it) — PostgreSQL
+-- silently ignores non-existent schemas in search_path.
+--
+-- Ordering: new-schema homes BEFORE public so, once an object moves out of public,
+-- unqualified refs resolve to the real object (gold/silver/bronze) rather than a
+-- transitional public shim view. Shims are therefore only hit by explicitly
+-- `public.`-qualified writers (analytics-sync, bake.go) during expand/contract.
+--
+-- Pooled connections (pgbouncer, read-api, stream-engine) cache the old path —
+-- recycle them as a gate step at the phase where their resolution actually
+-- changes (gold contract / silver).
+ALTER DATABASE packiot_analytics SET search_path = "$user", gold, silver, bronze, public;

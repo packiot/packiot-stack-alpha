@@ -57,6 +57,11 @@ type EquipmentValues struct {
 	// behaves byte-for-byte as before. Set via SetIncrementClamp.
 	clamp *incrementClamp
 
+	// clampSeed looks up a stream's last stored totalizer once after a restart,
+	// so the clamp's counter-movement catch also covers the first sample after a
+	// worker restart (the in-memory totalizer is empty then). nil = no seeding.
+	clampSeed TotalizerSeeder
+
 	// bronzeRaw — ADR-0036 B1 medallion dual-write flag (BRONZE_RAW_APPEND).
 	// false (default) ⇒ BuildRawAppend / BuildEventMintRaw return nil and no
 	// _raw INSERT is ever queued, so the writer is byte-for-byte the old
@@ -99,12 +104,20 @@ func tenantFromTopic(name string) string {
 	return "unknown"
 }
 
+// TotalizerSeeder returns the last stored totalizer (net/gross/scrap _val by
+// kind) for an equipment before tsMs, in schema. ok=false when none is found or
+// the lookup failed; the clamp then fails open exactly as before.
+type TotalizerSeeder func(ctx context.Context, schema string, idEquipment int, kind sparkplug.MetricKind, tsMs int64) (abs float64, ok bool)
+
+// SetTotalizerSeeder installs the clamp's one-time database seed (see clampSeed).
+func (w *EquipmentValues) SetTotalizerSeeder(f TotalizerSeeder) { w.clampSeed = f }
+
 // SetIncrementClamp enables the production-increment sanity clamp
 // (INCREMENT_SANITY_CLAMP_ENABLED). k is the plausibility factor
 // (K·rate·Δt) and minDtSec floors Δt so a burst of sub-interval samples
 // can't produce a near-zero bound that false-positives a legitimate count.
 // Passing enabled=false leaves the clamp nil (no-op — flag-off parity).
-func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int, spikeFloor float64) {
+func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec int, spikeFloor, spikeFraction float64) {
 	if !enabled {
 		w.clamp = nil
 		return
@@ -116,17 +129,25 @@ func (w *EquipmentValues) SetIncrementClamp(enabled bool, k float64, minDtSec in
 		minDtSec = 60
 	}
 	if spikeFloor <= 0 {
-		// Default: 1000 parts. Spikes are the whole totalizer (5–6 digits);
-		// a benign reset that ticks up a few parts (value==absolute, small) is
-		// well under this, so it is never mistaken for a spike.
+		// Default: 1000 parts. Spikes are most of the totalizer (5–6 digits);
+		// a benign reset that ticks up a few parts is well under this, so it is
+		// never mistaken for a spike.
 		spikeFloor = 1000
 	}
+	if spikeFraction <= 0 || spikeFraction > 1 {
+		// Default: 0.5. A single sample's delta can never be half the all-time
+		// cumulative; observed staging phantoms were 0.858–0.9997 of it, so 0.5
+		// catches them all with margin while never touching a real delta
+		// (~0.00003 of the cumulative).
+		spikeFraction = 0.5
+	}
 	w.clamp = &incrementClamp{
-		k:          k,
-		minDt:      time.Duration(minDtSec) * time.Second,
-		spikeFloor: spikeFloor,
-		last:       make(map[clampKey]int64),
-		logger:     w.logger,
+		k:             k,
+		minDt:         time.Duration(minDtSec) * time.Second,
+		spikeFloor:    spikeFloor,
+		spikeFraction: spikeFraction,
+		last:          make(map[clampKey]int64),
+		logger:        w.logger,
 	}
 }
 
@@ -172,7 +193,7 @@ func (w *EquipmentValues) BuildShiftFill(ctx context.Context, m *sparkplug.Metri
 		return nil, nil
 	}
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
@@ -221,6 +242,34 @@ func shiftFold(withShift bool, idShift, idShiftHour *int, baseArgs int) (cols, v
 	return cols, vals, set, []any{idShift, idShiftHour}
 }
 
+// publicCounterTotals: the public route (main pool, prod single-flow; see routeForSource) names the *_total
+// columns only after t-counter-totals-float8-public added them there AND COUNTER_TOTALS_PUBLIC=true. Set once at
+// startup (SetPublicCounterTotals) before any message is handled; atomic so tests can toggle it safely.
+var publicCounterTotals atomic.Bool
+
+// SetPublicCounterTotals enables the exact float8 *_total dual-write on the public route (COUNTER_TOTALS_PUBLIC).
+func SetPublicCounterTotals(on bool) { publicCounterTotals.Store(on) }
+
+// writesTotals reports whether schema carries the exact float8 *_total counter columns
+// (t-counter-totals-float8: silver.equipment_values + bronze.equipment_values_raw; the public
+// route once t-counter-totals-float8-public is applied and COUNTER_TOTALS_PUBLIC is on). Naming
+// them where they don't exist would fail every insert.
+func writesTotals(schema string) bool { return schema != "public" || publicCounterTotals.Load() }
+
+// totalFold is the exact-totalizer companion to shiftFold: it appends col (the float8
+// *_total next to the float4 *_val) bound to the SAME counter, so the merged row carries the
+// totalizer exactly (float4 rounds above 2^24 = 16,777,216). The *_val column is still
+// written (dual-write) until every reader is on *_total. Returns empty for the public route.
+func totalFold(schema, col string, counter *float64, baseArgs int) (cols, vals, set string, args []any) {
+	if !writesTotals(schema) {
+		return "", "", "", nil
+	}
+	cols = ", " + col
+	vals = fmt.Sprintf(", $%d", baseArgs+1)
+	set = fmt.Sprintf(",\n\t\t\t%[1]s = COALESCE(EXCLUDED.%[1]s, equipment_values.%[1]s)", col)
+	return cols, vals, set, []any{counter}
+}
+
 // CanWrite returns true for kinds whose values land in equipment_values.
 // State/Mode/Counters share the same UPSERT key (ts_value, id_equipment).
 //
@@ -261,7 +310,7 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 	}
 
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}
@@ -340,6 +389,11 @@ func (w *EquipmentValues) Build(ctx context.Context, m *sparkplug.Metric, _ stri
 			var absolute float64
 			if m.Counter != nil {
 				absolute = float64(*m.Counter)
+			}
+			if w.clampSeed != nil && absolute > 0 && value > 0 && w.clamp.NeedsSeed(info.IDEquipment, kind) {
+				if abs, ok := w.clampSeed(ctx, schema, info.IDEquipment, kind, m.Timestamp); ok {
+					w.clamp.SeedAbs(info.IDEquipment, kind, abs)
+				}
 			}
 			value, clampEv = w.clamp.eval(info.IDEquipment, info.IDEnterprise, kind, m.Timestamp, rate, value, absolute)
 		}
@@ -470,7 +524,7 @@ func (w *EquipmentValues) BuildEventMint(ctx context.Context, m *sparkplug.Metri
 	if m.Classify() != sparkplug.KindStateCurrent {
 		return nil, nil
 	}
-	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil || info == nil {
 		return nil, err
 	}
@@ -510,24 +564,26 @@ func buildProcessed(
 	faults *string, checkNumber int64, schema string,
 	withShift bool, idShift, idShiftHour *int,
 ) *Query {
-	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12)
+	tCols, tVals, tSet, tArgs := totalFold(schema, "net_production_total", counter, 12)
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12+len(tArgs))
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality, faults, check_number%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s)
+			 tp_equipment, net_production_incr, net_production_val, speed, signal_quality, faults, check_number%s%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			net_production_incr = EXCLUDED.net_production_incr,
 			net_production_val  = COALESCE(EXCLUDED.net_production_val, equipment_values.net_production_val),
 			speed               = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality      = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults              = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number        = EXCLUDED.check_number%s
-	`, schema, sCols, sVals, sSet)
+			check_number        = EXCLUDED.check_number%s%s
+	`, schema, tCols, sCols, tVals, sVals, tSet, sSet)
 	args := []any{
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
 	}
+	args = append(args, tArgs...)
 	args = append(args, sArgs...)
 	return &Query{
 		SQL:  sql,
@@ -543,24 +599,26 @@ func buildConsumed(
 	faults *string, checkNumber int64, schema string,
 	withShift bool, idShift, idShiftHour *int,
 ) *Query {
-	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12)
+	tCols, tVals, tSet, tArgs := totalFold(schema, "gross_production_total", counter, 12)
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 12+len(tArgs))
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s)
+			 tp_equipment, gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number%s%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12%s%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			gross_production_incr = EXCLUDED.gross_production_incr,
 			gross_production_val  = COALESCE(EXCLUDED.gross_production_val, equipment_values.gross_production_val),
 			speed                 = COALESCE(EXCLUDED.speed, equipment_values.speed),
 			signal_quality        = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults                = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number          = EXCLUDED.check_number%s
-	`, schema, sCols, sVals, sSet)
+			check_number          = EXCLUDED.check_number%s%s
+	`, schema, tCols, sCols, tVals, sVals, tSet, sSet)
 	args := []any{
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		tpEquipment, value, counter, curspeed, info.SignalQuality, faults, checkNumber,
 	}
+	args = append(args, tArgs...)
 	args = append(args, sArgs...)
 	return &Query{
 		SQL:  sql,
@@ -576,23 +634,25 @@ func buildDefective(
 	faults *string, checkNumber int64, schema string,
 	withShift bool, idShift, idShiftHour *int,
 ) *Query {
-	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 11)
+	tCols, tVals, tSet, tArgs := totalFold(schema, "scrap_total", counter, 11)
+	sCols, sVals, sSet, sArgs := shiftFold(withShift, idShift, idShiftHour, 11+len(tArgs))
 	sql := fmt.Sprintf(`
 		INSERT INTO %s.equipment_values
 			(ts_value, id_enterprise, id_site, id_area, id_equipment,
-			 tp_equipment, scrap_incr, scrap_val, signal_quality, faults, check_number%s)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11%s)
+			 tp_equipment, scrap_incr, scrap_val, signal_quality, faults, check_number%s%s)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11%s%s)
 		ON CONFLICT (ts_value, id_equipment) DO UPDATE SET
 			scrap_incr     = EXCLUDED.scrap_incr,
 			scrap_val      = COALESCE(EXCLUDED.scrap_val, equipment_values.scrap_val),
 			signal_quality = COALESCE(EXCLUDED.signal_quality, equipment_values.signal_quality),
 			faults         = COALESCE(EXCLUDED.faults, equipment_values.faults),
-			check_number   = EXCLUDED.check_number%s
-	`, schema, sCols, sVals, sSet)
+			check_number   = EXCLUDED.check_number%s%s
+	`, schema, tCols, sCols, tVals, sVals, tSet, sSet)
 	args := []any{
 		ts, info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
 		tpEquipment, value, counter, info.SignalQuality, faults, checkNumber,
 	}
+	args = append(args, tArgs...)
 	args = append(args, sArgs...)
 	return &Query{
 		SQL:  sql,
@@ -686,7 +746,7 @@ func (w *EquipmentValues) BuildRawAppend(ctx context.Context, m *sparkplug.Metri
 	if !w.CanWrite(kind) {
 		return nil, nil
 	}
-	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, err
 	}
@@ -739,12 +799,15 @@ func buildRawAppend(
 	case sparkplug.KindProdProcessedCount:
 		cols += ", net_production_incr, net_production_val, speed, signal_quality, faults, check_number"
 		args = append(args, value, counter, curspeed, info.SignalQuality, faults, checkNumber)
+		cols, args = appendTotal(cols, args, schema, "net_production_total", counter)
 	case sparkplug.KindProdConsumedCount:
 		cols += ", gross_production_incr, gross_production_val, speed, signal_quality, faults, check_number"
 		args = append(args, value, counter, curspeed, info.SignalQuality, faults, checkNumber)
+		cols, args = appendTotal(cols, args, schema, "gross_production_total", counter)
 	case sparkplug.KindProdDefectiveCount:
 		cols += ", scrap_incr, scrap_val, signal_quality, faults, check_number"
 		args = append(args, value, counter, info.SignalQuality, faults, checkNumber)
+		cols, args = appendTotal(cols, args, schema, "scrap_total", counter)
 	case sparkplug.KindStateCurrent:
 		cols += ", state, signal_quality, faults, check_number"
 		args = append(args, int(value), info.SignalQuality, faults, checkNumber)
@@ -763,6 +826,14 @@ func buildRawAppend(
 	}
 }
 
+// appendTotal adds the exact float8 *_total column to a Bronze append (same rule as totalFold).
+func appendTotal(cols string, args []any, schema, col string, counter *float64) (string, []any) {
+	if !writesTotals(schema) {
+		return cols, args
+	}
+	return cols + ", " + col, append(args, counter)
+}
+
 // BuildEventMintRaw is the Bronze append companion to BuildEventMint (ADR-0036 B1).
 // When BRONZE_RAW_APPEND is on it appends the raw state event to the immutable
 // equipment_events_raw with NO ON CONFLICT and ORIGINAL precision. Mirrors
@@ -775,7 +846,7 @@ func (w *EquipmentValues) BuildEventMintRaw(ctx context.Context, m *sparkplug.Me
 	if m.Classify() != sparkplug.KindStateCurrent {
 		return nil, nil
 	}
-	info, err := w.resolver.Resolve(ctx, m.TopicForRegister())
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil || info == nil {
 		return nil, err
 	}

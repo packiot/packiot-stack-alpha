@@ -73,6 +73,9 @@ type Publisher struct {
 	// DECLARED identity; absent, birth falls back to the topic derivation. nil/empty
 	// ⇒ pure derivation (the pre-#18 behaviour), so this is fully additive.
 	deviceKeys map[string]string
+	// roles maps a full metric name → its DECLARED role (ADR-0061 D2), from the
+	// tag map. Absent ⇒ counters get counter.<role>, other metrics no role.
+	roles map[string]string
 
 	// birthAllMapped gates birth-completeness (CPACK line-count regression fix,
 	// 2026-08-13). When set AND the resolver implements AllResolver, BuildNBIRTH
@@ -101,10 +104,16 @@ func WithDefinitiveBirth(on bool) Option {
 }
 
 // WithDeviceKeys supplies the DECLARED device_key per full metric name (ADR-0046
-// task #18). Only consulted when definitive birth is on; a name absent from the map
-// falls back to the topic-derived key. nil/empty ⇒ pure derivation (additive).
+// task #18, ADR-0061). Only consulted when definitive birth is on; a name absent from
+// the map gets NO device_key (ADR-0061 P1 removed the topic-derived fallback).
 func WithDeviceKeys(m map[string]string) Option {
 	return func(p *Publisher) { p.deviceKeys = m }
+}
+
+// WithRoles supplies the DECLARED role per full metric name (ADR-0061 D2/D9).
+// Only consulted when definitive birth is on.
+func WithRoles(m map[string]string) Option {
+	return func(p *Publisher) { p.roles = m }
 }
 
 // WithBirthAllMapped turns on birth-completeness: every mapped metric is birthed
@@ -201,10 +210,10 @@ func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, e
 				m.IsNull = boolp(true)
 			}
 			// ADR-0046 step 2 definitive-birth props apply identically here: a
-			// counter metric's role/lineage/device_key derive from the NAME, so a
-			// null (unseen) counter still declares its identity.
+			// counter metric's role/lineage derive from the NAME and its device_key
+			// from the declared map, so a null (unseen) counter still declares its identity.
 			if p.definitive {
-				if ps, ok := birth.CounterMetricPropsWithDeviceKey(mm.Name, p.deviceKeys[mm.Name]); ok {
+				if ps, ok := birth.MetricProps(mm.Name, p.deviceKeys[mm.Name], p.roles[mm.Name]); ok {
 					m.Properties = ps
 				}
 			}
@@ -235,7 +244,7 @@ func (p *Publisher) BuildNBIRTH(snapshot []rawtag.RawTag) (*sparkplug.Payload, e
 		// non-counter metric (state/speed) gets none — ok=false leaves it clean.
 		// DDATA never resends these (BuildNDATA emits alias+value only).
 		if p.definitive {
-			if ps, ok := birth.CounterMetricPropsWithDeviceKey(name, p.deviceKeys[name]); ok {
+			if ps, ok := birth.MetricProps(name, p.deviceKeys[name], p.roles[name]); ok {
 				m.Properties = ps
 			}
 		}

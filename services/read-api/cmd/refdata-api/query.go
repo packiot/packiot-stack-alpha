@@ -58,7 +58,6 @@ var grains = map[string]struct {
 	maxWindow time.Duration
 }{
 	"1min":  {"agg_equipment_values_1min", 7 * 24 * time.Hour},
-	"10min": {"agg_equipment_values_10min", 30 * 24 * time.Hour},
 	"1hour": {"agg_equipment_values_1hour", 90 * 24 * time.Hour},
 }
 
@@ -182,6 +181,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		}
 		var sql string
 		var args []any
+		var windowFrom time.Time     // T2 coverage: the requested window start (dataset path)
 		datasetName := probe.Dataset // "" ⇒ legacy composer path (never cached)
 		if probe.Dataset != "" {
 			var dq datasetReq
@@ -195,6 +195,9 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			// (errRoleDatasetNeedsUser → 403 below). NEVER from the request body.
 			roleID, roleOK := userRoleFromContext(r.Context())
 			sql, args, err = compileDataset(dq, cid, callerRole{id: roleID, present: roleOK})
+			if dq.Window != nil {
+				windowFrom = dq.Window.From
+			}
 		} else {
 			var q queryReq
 			if err := json.Unmarshal(body, &q); err != nil {
@@ -202,6 +205,21 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 				return
 			}
 			sql, args, err = compile(q, cid)
+			// T2 honest windows: the composer reads ONE cagg whose lifetime is declared
+			// in ops.retention_policy. A window starting before that floor used to return
+			// a silently SHORT series; now it is an explicit 422 pointing at the archive.
+			if err == nil {
+				if g, ok := grains[q.Grain]; ok {
+					if keep, ok := covIdx.relationKeep(g.table); ok {
+						if floor := time.Now().Add(-keep); q.From.Before(floor) {
+							msg := fmt.Sprintf("window starts before %s: %s keeps %s; for older data use /v1/historian/production-series",
+								floor.UTC().Format(time.RFC3339), g.table, humanDuration(keep))
+							http.Error(w, `{"error":`+fmt.Sprintf("%q", msg)+`}`, http.StatusUnprocessableEntity)
+							return
+						}
+					}
+				}
+			}
 		}
 		if err != nil {
 			// task #70: a role dataset invoked without user context is
@@ -214,13 +232,22 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			http.Error(w, `{"error":`+fmt.Sprintf("%q", err.Error())+`}`, code)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		// 40s (was 20s): the heaviest named dataset, downtimes-events
+		// (serving.downtime_events_v2), is sub-second WARM (~300-540ms) but ~18-21s
+		// COLD — it decompresses ~2 months of silver.equipment_events columnar chunks
+		// per request (the fn pads the window by ±1 month before the tstzrange overlap
+		// filter). At 20s a cold load tripped context-deadline → load() error → the
+		// front4 Downtimes submenu 500'd ("query failed"). 40s clears the cold load so
+		// it completes and populates the cache (then served in <1s). The durable fix is
+		// to make downtime_events_v2 cheap cold (early id_enterprise filter + a tighter
+		// pad + chunk-exclusion-friendly predicates) — tracked as a DB follow-up.
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 		defer cancel()
 
 		// The DB read → JSON-array bytes. Shared verbatim by the cached and
 		// uncached paths so the served bytes are identical either way.
 		load := func(ctx context.Context) ([]byte, error) {
-			return runQueryJSON(ctx, pool, sql, args)
+			return runQueryJSON(ctx, pool, cid, sql, args)
 		}
 
 		var payload []byte
@@ -241,6 +268,11 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			return
 		}
 		served.Add(1)
+		if datasetName != "" {
+			if cov, ok := covIdx.dataset(datasetName); ok {
+				setCoverageHeaders(w.Header(), cov, windowFrom, time.Now())
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(payload)
 	})
@@ -267,7 +299,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		case http.MethodGet:
 			var cfg []byte
 			err := pool.QueryRow(r.Context(),
-				`SELECT config FROM user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
+				`SELECT config FROM identity.user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
 				cid, user, screen).Scan(&cfg)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -282,7 +314,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 				http.Error(w, `{"error":"config must be valid JSON <= 64KB"}`, http.StatusBadRequest)
 				return
 			}
-			_, err = pool.Exec(r.Context(), `INSERT INTO user_screen_config (id_enterprise, id_user, screen, config)
+			_, err = pool.Exec(r.Context(), `INSERT INTO identity.user_screen_config (id_enterprise, id_user, screen, config)
 				VALUES ($1,$2,$3,$4) ON CONFLICT (id_enterprise, id_user, screen)
 				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, cid, user, screen, string(body))
 			if err != nil {
@@ -368,7 +400,7 @@ WITH baseline AS (
 ),
 override AS (
     SELECT config
-    FROM user_screen_config
+    FROM identity.user_screen_config
     WHERE id_enterprise = $1 AND id_user = $3 AND screen = $2
 )
 SELECT
@@ -438,17 +470,54 @@ func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
 // the cached and uncached paths share ONE query+encode implementation, and so
 // the cache-aside loader can hand back ready-to-cache bytes. A DB/scan/marshal
 // error is returned (never cached); the caller maps it to a 500.
-func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []any) ([]byte, error) {
-	rows, err := pool.Query(ctx, sql, args...)
+func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]byte, error) {
+	out, err := runQueryRows(ctx, pool, cid, sql, args)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return json.Marshal(out)
+}
+
+// runQueryRows is runQueryJSON without the final marshal: the tenant-stamped read,
+// returned as one map per row keyed by column name (the historian split path merges
+// two such result sets before serializing).
+func runQueryRows(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]map[string]any, error) {
+	// task #264 — defense-in-depth tenant fence. read-api connects as a NOBYPASSRLS
+	// role (readapi_ro), and the analytics DB puts FORCE ROW LEVEL SECURITY on the
+	// tenant tables (core.equipments / production_orders / production_targets,
+	// gold.equipment_oee_hourly / _shift / production_orders_runtime), keyed on the
+	// session GUC `app.tenant_id` (public.current_tenant()). The app-layer
+	// `WHERE id_enterprise = $1` fence stays the PRIMARY isolator; stamping the GUC to
+	// the SAME server-derived tenant makes Postgres RLS a CO-ENFORCER — so if a future
+	// dataset ever ships without the $1 fence, RLS scopes it to this tenant instead of
+	// leaking every tenant's rows (under the old `postgres`/BYPASSRLS connection RLS
+	// never bit, so an unfenced dataset would have leaked all tenants).
+	//
+	// set_config(..., is_local => true) is TRANSACTION-LOCAL, so it is safe under the
+	// pgbouncer transaction pooling this pool runs behind (the setting is discarded when
+	// the server connection is returned to the pool) — a plain SET would leak the tenant
+	// onto the next borrower. We therefore run the stamp + the read inside ONE explicit
+	// transaction. cid is a SERVER-DERIVED int (from the resolved credential, never the
+	// request body), so the literal interpolation carries no injection risk and sidesteps
+	// the simple-protocol parameter path this pool uses.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT set_config('app.tenant_id', '%d', true)", cid)); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
 	cols := rows.FieldDescriptions()
 	out := make([]map[string]any, 0, 256)
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		m := make(map[string]any, len(cols))
@@ -458,9 +527,14 @@ func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []an
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
-	return json.Marshal(out)
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func keysOf[V any](m map[string]V) []string {
@@ -483,13 +557,20 @@ func keysOf[V any](m map[string]V) []string {
 // unreachable tenant), so they are invisible to any real key. Multi-statement
 // Exec is fine on the simple protocol this pool uses.
 func ensureSchema(pool *pgxpool.Pool) {
+	// SCHEMA-QUALIFIED to auth (task #241 app-split: the `app` junk-drawer was split by
+	// concern, and user_screen_config — per-user identity/UI state — lands in `auth`).
+	// CREATE TABLE IF NOT EXISTS checks ONLY the creation namespace (first schema on the
+	// search_path), NOT the whole path — so an UNQUALIFIED create here would re-spawn an
+	// empty shadow in `gold` (the medallion first-schema) even though the real table
+	// lives in `auth`. CREATE SCHEMA IF NOT EXISTS identity first so a fresh dest self-provisions it.
 	_, _ = pool.Exec(context.Background(), `
-		CREATE TABLE IF NOT EXISTS user_screen_config (
+		CREATE SCHEMA IF NOT EXISTS identity;
+		CREATE TABLE IF NOT EXISTS identity.user_screen_config (
 			id_enterprise int NOT NULL DEFAULT 0,
 			id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
 			updated_at timestamptz NOT NULL DEFAULT now());
-		ALTER TABLE user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
-		ALTER TABLE user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
+		ALTER TABLE identity.user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
+		ALTER TABLE identity.user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
 		CREATE UNIQUE INDEX IF NOT EXISTS user_screen_config_tenant_key
-			ON user_screen_config (id_enterprise, id_user, screen);`)
+			ON identity.user_screen_config (id_enterprise, id_user, screen);`)
 }

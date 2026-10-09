@@ -15,10 +15,24 @@ groups:
           summary: "{{ $labels.job }} not scrapeable for 5m (crashed or wedged)"
 
       - alert: EngineJobErrorStreak
-        expr: sum by (job) (increase(oeecloud_worker_job_ticks_total{outcome="error"}[15m])) > 2
+        # exported_job: the engine's own "job" label collides with the scrape label and is
+        # renamed by Prometheus; grouping by job named the scrape target, not the failing job.
+        expr: sum by (exported_job) (increase(oeecloud_worker_job_ticks_total{outcome="error"}[15m])) > 2
         labels: {severity: page}
         annotations:
-          summary: "engine job {{ $labels.job }} failed >2 ticks in 15m — check oeecloud-worker logs"
+          summary: "engine job {{ $labels.exported_job }} failed >2 ticks in 15m — check oeecloud-worker logs"
+
+      # Per-job liveness for the frequent loops (every ≤ 5 min). EngineStalled only catches ALL
+      # jobs stopping; a single loop can stop alone (2026-10-02: replaces the DB check
+      # O1_po_last_compute_min, whose signal — PO last_update — is quiet for hours by design).
+      - alert: StreamEngineJobStalled
+        expr: |
+          sum by (exported_job) (increase(oeecloud_worker_job_ticks_total{outcome="ok",
+            exported_job=~"po-runtime-refresh|runtime-rollup|runtime-rollup-hour-backfill|events-deriver|cpac-events-deriver|events-close-stale|uns-current-metrics|boxes-bridge"}[15m])) < 1
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "engine job {{ $labels.exported_job }} had no successful tick in 15m"
 
       - alert: EngineStalled
         expr: sum(increase(oeecloud_worker_job_ticks_total[15m])) < 1
@@ -26,6 +40,7 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "NO engine job ticked in 15m — scheduler wedged (jobs.Loop) or worker half-dead"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest"
 
       - alert: IngestSilent
         expr: sum(increase(oeecloud_worker_amqp_deliveries_total[10m])) < 1
@@ -33,6 +48,7 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "no AMQP deliveries in 10m — upstream chain dark (plc-sim → mosquitto → edge-transformer → rabbitmq)"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest"
 
       - alert: WritePathDry
         expr: sum(increase(oeecloud_worker_batch_writes_total[15m])) < 1
@@ -40,6 +56,23 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "deliveries arriving but nothing written in 15m — resolver/DB path broken; see 13-database-reach board"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest"
+
+      - alert: ClientIngestStopped
+        # A client that WAS producing has gone dark: zero ok-writes in the last
+        # 15m but >100 in the prior 6h (so it's a real stop, not an idle-by-design
+        # tenant like a paused sandbox). Per-tenant → the runbook opens the
+        # ingest-debug board pre-scoped to that client. Inhibited by the global
+        # IngestSilent/WritePathDry (same incident) — see alertmanager.yml.
+        expr: |
+          (sum by (tenant) (increase(oeecloud_worker_batch_writes_total{result="ok"}[15m])) < 1)
+          and
+          (sum by (tenant) (increase(oeecloud_worker_batch_writes_total{result="ok"}[6h] offset 15m)) > 100)
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "client {{ $labels.tenant }} stopped ingesting — 0 writes in 15m (was active in the prior 6h)"
+          runbook_url: "https://grafana.staging.packiot.app/d/aud-debug-ingest?var-tenant={{ $labels.tenant }}"
 
   - name: packiot-flow-and-parity
     rules:
@@ -63,26 +96,6 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Worker batch statements erroring"
-      - alert: BakeSurfacePersisting
-        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
-        expr: bake_surface_mismatches > 0
-        for: 24h
-        labels: {severity: warning}
-        annotations:
-          summary: "Bake surface {{ $labels.surface }} (enterprise {{ $labels.enterprise }}) mismatched for 24h — past every documented expiry class"
-      - alert: IdentityBrokenPersisting
-        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
-        expr: bake_identity_mismatch > 0
-        for: 12h
-        labels: {severity: critical}
-        annotations:
-          summary: "F2/F3 identity fingerprint {{ $labels.surface }} diverged for 12h — same-engine flows MUST be equal"
-      - alert: MirrorDLQNotEmpty
-        expr: mirror_worker_dlq_depth > 0
-        for: 30m
-        labels: {severity: warning}
-        annotations:
-          summary: "Mirror DLQ has rows for 30m — replay failures need eyes"
       - alert: MQTTDisconnected
         expr: edge_transformer_mqtt_connected == 0
         for: 5m
@@ -122,6 +135,57 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "edge-transformer dropped MQTT events — decode failures or backpressure (board 10/11)"
+      # Per-tenant routing on the `oee` exchange binds a queue only for
+      # allowlisted tenants (sparkplug.data.<tenant> exact keys). Before this
+      # alert, a message for a NON-allowlisted tenant matched no binding and was
+      # dropped silently as UNROUTABLE — no queue, no metric, no trace. The `oee`
+      # exchange now has an alternate-exchange (oee-unroutable, set via the
+      # oee-ae policy in definitions.template.json) that catches those messages
+      # into oee-unroutable-q instead of dropping them. Any depth here means a
+      # producer is emitting an unrecognised routing key (new tenant not yet
+      # provisioned, or a routing-key typo/drift) — messages are RETAINED for
+      # inspection/replay, not lost. Requires the rabbitmq-detailed scrape job.
+      - alert: OeeUnroutableMessages
+        expr: rabbitmq_detailed_queue_messages{queue="oee-unroutable-q"} > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "oee-unroutable-q holds {{ $value }} msgs — a tenant's SparkPlug data is hitting no `oee` binding (unprovisioned tenant or routing-key drift); caught by the alternate-exchange, not dropped"
+      # Application-level twin of OeeUnroutableMessages above. That one catches
+      # a delivery hitting no BROKER binding; THIS one catches a delivery that
+      # DID reach the worker but whose packml_topic has no active
+      # packml_register row — the worker acks-and-skips it (retry can't conjure
+      # the row), so the drop is otherwise invisible: only a 1/32 sampled log,
+      # and the tenant's equipment_values stay silently EMPTY while every
+      # pipeline shows green. A topic that keeps arriving but never routes =
+      # a missing/inactive register row (onboarding gap, an apply-register that
+      # never ran, or an `active=false` flag). Bounded to one series/tenant.
+      - alert: PackmlUnroutableTopic
+        expr: sum by (tenant) (rate(packml_unresolved_topic_total[10m])) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is publishing a SparkPlug topic with no active packml_register row for 15m — its equipment_values are silently empty. Check onboarding / apply-register and the packml_register.active flag; the offending topic is in the stream-engine `topic not registered, skipping` log (sampled 1/32)."
+      # ADR-0061 D7 verification run: the decoder's birth-bound identity (declared
+      # dk_ key → core.device_bindings) disagrees with packml_register for a counter.
+      # Count-only (nothing is written through the birth-bound side), but a tenant
+      # can only switch after 0 mismatches for 7 days — every firing resets that clock.
+      # The disagreeing metric + both ids are in the stream-engine
+      # `birthverify: birth-bound identity disagrees` log. RETIRE-WHEN: ADR-0061 P5.
+      - alert: BirthBindVerifyMismatch
+        expr: sum by (tenant, result) (increase(oeecloud_worker_birthbind_verify_total{result=~"mismatch_.*"}[15m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }}: {{ $value }} counter metrics' birth-bound identity disagrees with packml_register ({{ $labels.result }}, 15m) — fix the binding or the register row before the switch; the 7-day zero-mismatch clock restarts."
+      # ADR-0061 P2c: a SWITCHED tenant's counter arrived without a usable birth stamp
+      # (unstamped, or a stamped id that is inactive / of another tenant) and was
+      # QUARANTINED — its equipment_values row was NOT written. Roll back by removing
+      # the enterprise from BIRTHBOUND_SWITCHED_ENTERPRISES, or fix the box's birth.
+      - alert: BirthBoundQuarantine
+        expr: sum by (tenant) (increase(oeecloud_worker_birthbound_resolve_total{result="quarantined"}[10m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is switched to birth-bound ids and {{ $value }} counter metrics were quarantined in 10m (not written). Check the edge box's NBIRTH (dk_ keys, EMIT_DEFINITIVE_BIRTH) or roll back via BIRTHBOUND_SWITCHED_ENTERPRISES."
       # Some seq gaps are normal on reconnect; a stream of them means
       # the PLC/broker is losing messages (SparkPlug seq is per-session).
       - alert: SparkplugSeqGapStream
@@ -131,18 +195,6 @@ groups:
           summary: "SparkPlug sequence gaps streaming ({{ $value }} in 30m) — message loss upstream of the transformer"
       # Mirror replay falling behind prod: staging stops being a
       # faithful test bed silently.
-      - alert: MirrorCursorLag
-        expr: mirror_worker_cursor_lag_seconds > 900
-        for: 15m
-        labels: {severity: warning}
-        annotations:
-          summary: "mirror-worker replay cursor >15min behind prod user_logs (board 07)"
-      - alert: MirrorOeeDivergence
-        expr: mirror_worker_comparator_oee_divergence_pct > 5
-        for: 30m
-        labels: {severity: warning}
-        annotations:
-          summary: "mirror comparator: staging OEE diverges >5% from prod for 30m (board 07)"
       # shadow-mirror retires at flip (R1); until then its failures are
       # control-plane parity holes in the bake evidence.
       - alert: ShadowMirrorFailures
@@ -151,17 +203,95 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "shadow-mirror replay failures — operator-action parity hole on the shadow flows (board 12)"
+      # legacy-replicator is the AUTHORITATIVE CPACK operator-action source
+      # (F1 retired). A zero-row UPDATE = a "silent skip": a legacy action that
+      # resolved to nothing in staging — a replay gap (bugs 247/248 class:
+      # topology drift / id-map miss / unresolved equipment). The loop fail-opens
+      # past these so they never wedge it, which is exactly why they need an
+      # alert to be legible. `for: 30m` rides out incidental single noops.
+      - alert: ReplicatorReplayGaps
+        expr: sum by (table) (increase(shadow_mirror_update_noop_total{job="legacy-replicator"}[30m])) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "legacy-replicator: zero-row UPDATEs on {{ $labels.table }} for 30m — CPACK operator-action replay gap (topology drift / unresolved id-map; see 2026-08-23 twin-drop finding)"
 
   # Host + DB rules (need the 2026-07-07 exporters; extend as the
   # CAgg-invalidation/queue-depth backlog items land).
   - name: packiot-host-and-db
     rules:
+      # Both boxes: instance="node-exporter:9100" = app EC2, instance="db-box" = DB
+      # EC2 (pushed via the Alloy relay; before 2026-09-23 the DB disk was unmonitored
+      # and reached 79%). Warning at 80% used gives days of runway; critical at 85%.
       - alert: HostDiskFilling
         expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.15
         for: 15m
         labels: {severity: critical}
         annotations:
-          summary: "app EC2 root filesystem <15% free — the 2026-06-22 incident class; prune + snapshot check"
+          summary: "{{ $labels.instance }} root filesystem <15% free — the 2026-06-22 incident class; prune + snapshot check"
+      - alert: HostDiskHigh
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.20
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }} root filesystem >80% used — plan a resize or check ops.retention_policy (db-box)"
+      - alert: DbBoxMetricsMissing
+        expr: absent(node_filesystem_avail_bytes{instance="db-box"})
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "No host metrics from the DB box — alloy-db agent or the 3102 relay is down, so DB disk is unmonitored again"
+      # Nightly logical backups (backup-db.sh, 02:00 UTC). A green systemd unit is not
+      # proof: on 2026-09-28 it had been dumping only the frozen legacy DB for weeks.
+      # Alert on AGE (timer died / every run failing) and on SIZE (dumping the wrong
+      # or an emptied DB). absent() covers "the metric never existed".
+      # DB box (packiot-db-backup, 02:00): packiot, packiot_analytics, superset.
+      # App box (packiot-historian-backup, 04:30): packiot_historian (hist-gateway
+      # catalog) and historian_parquet (cold-store mirror; absent until the app
+      # role's backup grant is applied — that absence IS the "no copy" signal).
+      - alert: BackupStale
+        expr: time() - packiot_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "No successful {{ $labels.db }} backup for {{ $value | humanizeDuration }} — journalctl -u packiot-db-backup (DB box) / -u packiot-historian-backup (app box)"
+      - alert: BackupMetricsMissing
+        expr: |
+          absent(packiot_backup_last_success_timestamp_seconds{db="packiot_analytics"})
+          or absent(packiot_backup_last_success_timestamp_seconds{db="superset"})
+          or absent(packiot_backup_last_success_timestamp_seconds{db="packiot_historian"})
+          or absent(packiot_backup_last_success_timestamp_seconds{db="historian_parquet"})
+        for: 30h
+        labels: {severity: warning}
+        annotations:
+          summary: "No backup metrics for {{ $labels.db }} — its backup job is not running/writing /var/lib/packiot-backup/metrics, or the textfile collector (alloy-db / node-exporter) is off"
+      - alert: BackupMirrorIncomplete
+        expr: packiot_backup_mirror_missing_objects > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} historian Parquet objects are missing from the backup mirror — journalctl -u packiot-historian-backup on the app box"
+      - alert: BackupShrank
+        expr: packiot_backup_size_bytes < 0.5 * max_over_time(packiot_backup_size_bytes[8d])
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.db }} backup is under half its 8-day max — wrong DB, dropped data, or a truncated dump"
+      # Retention catalog (ops.retention_policy, migration t-retention-catalog):
+      # live Timescale policies must equal the catalog, and the catalog-driven purge
+      # must not be erroring. Drift = someone changed a policy outside the catalog.
+      - alert: RetentionPolicyDrift
+        expr: pg_retention_drift_rows > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "ops.retention_drift has {{ $value }} rows — live retention differs from the catalog; SELECT * FROM ops.retention_drift"
+      - alert: RetentionPurgeErrors
+        expr: pg_retention_purge_errors_24h > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "catalog purge (job 1033) logged {{ $value }} errors in 24h — SELECT * FROM ops.retention_run WHERE error IS NOT NULL"
       - alert: PostgresDown
         expr: pg_up == 0
         for: 2m
@@ -169,13 +299,80 @@ groups:
         annotations:
           summary: "postgres-exporter cannot reach the DB — everything downstream is about to page"
       - alert: PostgresConnectionsHigh
-        # DB max_connections=50, so the old >150 threshold could NEVER fire.
-        # >40 = 80% of the pool — a real "approaching exhaustion" warning.
-        expr: sum(pg_stat_database_numbackends) > 40
+        # DB max_connections=200 (raised 50→200 on 2026-09-22, see db_init.sh).
+        # >160 = 80% of the pool — a real "approaching exhaustion" warning.
+        expr: sum(pg_stat_database_numbackends) > 160
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $value }} DB backends (>80% of max_connections=50) — connection leak or pgbouncer bypass growing"
+          summary: "{{ $value }} DB backends (>80% of max_connections=200) — connection leak or pgbouncer bypass growing"
+      # Analytics freshness — metrics already flow from postgres-exporter
+      # (queries.yaml pg_timescaledb_cagg / pg_timescaledb_jobs); these were
+      # unalerted. A stale cagg or failing TS job = OEE rollups falling behind.
+      # Staleness RELATIVE to each cagg's own schedule: > 2× its refresh interval, floor
+      # 15m. A flat 900s fired every cycle on the 30-min hourly caggs (agg_1hour,
+      # categorical_1hour) — structural noise, surfaced 2026-09-24 once the exporter
+      # loaded current queries (#1406). Same query row ⇒ identical labels ⇒ exact match.
+      # ── Standing data invariants (t-data-invariants). Each check is a hardproofed
+      # audit query (freshness, completeness, cross-grain consistency, accuracy vs raw /
+      # legacy oracle, provenance, stranded flags, tenant isolation). SELECT * FROM
+      # ops.data_invariant_latest WHERE NOT ok — detail names the equipment. ──
+      # REMOVED 2026-10-01 (proven dead — zero live series, no emitter): BakeSurfacePersisting,
+      # IdentityBrokenPersisting, TenantNotFlipReady (bake_* metrics are emitted by nothing in the
+      # repo) and MirrorDLQNotEmpty, MirrorCursorLag, MirrorOeeDivergence (mirror-worker-go is
+      # retired and its scrape job is commented out in prometheus.yml). A rule that can never
+      # fire reads as coverage it does not give; data correctness is now covered by the
+      # DataInvariant* rules. Restore the mirror ones together with the scrape job.
+      - alert: DataInvariantCritical
+        expr: pg_data_invariant_ok{severity="critical"} == 0
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "data invariant {{ $labels.check_id }} failing for enterprise {{ $labels.ent }} (observed {{ with printf `pg_data_invariant_observed{check_id=\"%s\",ent=\"%s\"}` $labels.check_id $labels.ent | query }}{{ . | first | value }}{{ end }}) — SELECT * FROM ops.data_invariant_latest WHERE NOT ok"
+      - alert: DataInvariantWarn
+        expr: pg_data_invariant_ok{severity="warn"} == 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "data invariant {{ $labels.check_id }} failing for enterprise {{ $labels.ent }} — SELECT * FROM ops.data_invariant_latest WHERE NOT ok"
+      - alert: DataInvariantsStale
+        expr: pg_data_invariant_run_age_seconds{datname="packiot_analytics"} > 5400 or absent(pg_data_invariant_run_age_seconds{datname="packiot_analytics"})
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "the data-invariant job has not completed for >90 min (Timescale job ops.job_data_invariants) — the invariants are blind"
+      # Early warning before the 600 s statement_timeout kills the whole battery (which would
+      # also trip DataInvariantsStale). avg over 3 h = ~6 runs, so one slow run under a
+      # recompute does not page. Action: move the slowest checks
+      # (topk(5, pg_data_invariant_check_seconds)) into a second, less frequent job.
+      - alert: DataInvariantsSlow
+        expr: avg_over_time(pg_data_invariant_observed{datname="packiot_analytics",check_id="Z_invariants_run"}[3h]) > 400
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "data-invariant battery averages {{ $value | humanize }} s per run (budget 600 s) — split the slowest checks into a second job: topk(5, pg_data_invariant_check_seconds)"
+      - alert: AnalyticsCaggRefreshLag
+        expr: max by (datname,cagg) (pg_timescaledb_cagg_seconds_since_last_success{datname="packiot_analytics"} > clamp_min(2 * pg_timescaledb_cagg_schedule_seconds{datname="packiot_analytics"}, 900))
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "cagg {{ $labels.cagg }} stale >15m — OEE rollup plane falling behind"
+      # `and total_runs > 0`: the exporter maps "no status" to 0, so a job that has NEVER
+      # run (policy_telemetry — timescaledb.telemetry_level=off) read as "failing"
+      # (false positive surfaced 2026-09-24 when the exporter finally loaded current
+      # queries, #1406). Live-checked: excludes only that job; all 28 jobs that run stay covered.
+      - alert: AnalyticsTimescaleJobFailing
+        expr: pg_timescaledb_jobs_last_run_success{datname="packiot_analytics"} == 0 and pg_timescaledb_jobs_total_runs{datname="packiot_analytics"} > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "TimescaleDB job {{ $labels.proc_name }} ({{ $labels.job_id }}) last run failed"
+      - alert: HistorianGatewayDown
+        expr: probe_success{instance="hist-gateway:5432"} == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "historian-gateway (ev_all hot+cold union) unreachable >5m — Superset/tools cold queries fail"
 
   # ADR-0022 V3 — the per-tenant flip-readiness VERDICT. Layered ON TOP
   # of the bake gauges (bake_surface_mismatches / bake_surface_compared);
@@ -214,14 +411,6 @@ groups:
       # "ready to flip" is the explicit event of this alert RESOLVING for
       # that enterprise. Not a failure — an informational gate. The
       # flip-critical failure alert stays BakeSurfacePersisting (24h).
-      - alert: TenantNotFlipReady
-        # RETIRE-WHEN: ADR-0032 F2/shadow-mirror decommission
-        expr: bake_tenant_converged == 0
-        for: 10m
-        labels: {severity: info}
-        annotations:
-          summary: "Tenant enterprise {{ $labels.enterprise }} NOT converged — not flip-ready (a bake surface mismatches or has no compared rows). Ready-to-flip = this alert resolved for the tenant."
-
   # Task #32 Phase-3 — the PO-staleness-gate bake watch. The gate rejects a
   # PO write ONLY on STALE_HEAD / RANGE_CONFLICT / BEYOND_HORIZON, and a
   # rejection surfaces as an HTTP 409 on /api/production-orders/*. During the

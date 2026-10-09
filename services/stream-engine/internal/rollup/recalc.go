@@ -61,8 +61,11 @@ import (
 const recalcSQL = `
 	WITH eligible AS (
 	    SELECT e.id_production_order
-	      FROM %[1]s.production_orders e
-	     WHERE e.ts_start >= now() - $1::interval
+	      FROM %[2]s.production_orders e
+	     -- A PO that STARTED before the window but ENDED inside it (a long run, or a
+	     -- NULL ts_start the replicator never filled) is still a live header: prod's
+	     -- ts_start-only test left it with whatever sum it had while running (2026-09-29).
+	     WHERE (e.ts_start >= now() - $1::interval OR e.ts_end >= now() - $1::interval)
 	       AND e.recalc_needed AND e.status > 1
 	       AND NOT (e.id_enterprise = ANY($2))
 	), sums AS (
@@ -75,60 +78,71 @@ const recalcSQL = `
 	           sum(ca.running_time)      AS run,
 	           sum(ca.stopped_time)      AS stop,
 	           sum(ca.planned_downtime)  AS planned
-	      FROM %[1]s.production_orders_runtime ca
+	      FROM %[4]s.production_orders_runtime ca
 	      JOIN eligible USING (id_production_order)
 	     WHERE ca.runtime_timerange && tstzrange(now() - $1::interval, now())
 	     GROUP BY ca.id_production_order
 	)
-	UPDATE %[1]s.production_orders e SET
+	UPDATE %[2]s.production_orders e SET
 	       gross_production = COALESCE(s.gross, 0),
 	       net_production   = COALESCE(s.net, 0),
-	       oee_quality      = GREATEST(LEAST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 1), 0),
+	       -- #226 item 1b CONTRACT: writer repointed to canonical oee_q/oee_a/oee_p.
+	       -- The legacy oee_quality/availability/performance cols (+ the old->new
+	       -- dual-write trigger, gated on UPDATE OF those cols) are dropped in
+	       -- migration 02; setting only the new cols makes that trigger inert
+	       -- (never fires on a new-col-only UPDATE) — no clobber during rollout.
+	       oee_q            = GREATEST(COALESCE(s.net / NULLIF(s.gross, 0), 0), 0),
 	       speed            = COALESCE(s.speed, 0),
 	       available_time   = COALESCE(s.avail, 0),
 	       running_time     = COALESCE(s.run, 0),
 	       stopped_time     = COALESCE(s.stop, 0),
 	       planned_downtime = COALESCE(s.planned, 0),
 	       -- ADR-0037 output-invariant clamp (#576 extended): PO OEE factors to [0,1].
-	       oee = GREATEST(LEAST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
+	       oee = GREATEST(COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	             NULLIF(COALESCE(e.ideal_production_speed,
 	                 (SELECT q.production_speed FROM %[2]s.equipments q
-	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 1), 0),
-	       oee_availability = GREATEST(LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1), 0),
-	       oee_performance  = GREATEST(LEAST(COALESCE(
+	                   WHERE q.id_equipment = e.id_equipment)), 0), 0), 0), 0),
+	       oee_a = GREATEST(LEAST(COALESCE(s.run / NULLIF(s.avail, 0), 0), 1), 0),
+	       oee_p  = GREATEST(COALESCE(
 	             COALESCE(s.net / NULLIF(((s.total - s.planned) / 60.0) *
 	                 NULLIF(COALESCE(e.ideal_production_speed,
 	                     (SELECT q.production_speed FROM %[2]s.equipments q
 	                       WHERE q.id_equipment = e.id_equipment)), 0), 0), 0)
 	             / NULLIF(COALESCE(s.run / NULLIF(s.avail, 0), 0) *
-	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 1), 0),
+	                      COALESCE(s.net / NULLIF(s.gross, 0), 0), 0), 0), 0),
 	       recalc_needed = false,
 	       last_update   = now()
 	  FROM eligible el
 	  LEFT JOIN sums s USING (id_production_order)
 	 WHERE e.id_production_order = el.id_production_order`
 
-// The self-re-enqueue (verbatim): running POs recalc every pass;
-// finished ones keep refreshing for 48h (late operator edits).
+// The self-re-enqueue: running POs recalc every pass; finished (or paused) ones
+// keep refreshing for 48h after they ENDED (late operator edits, late data).
+//
+// DIVERGENCE from prod (2026-09-29): prod keyed the 48 h tail on ts_START, so a PO
+// that ran longer than 48 h was never re-summed after it closed — its header kept
+// the last running-pass sum, missing the tail. Keyed on the end instead (falling
+// back to the start when there is no end), matching compute.go's runtime tail
+// (upper(range) > now()-48h).
 const reflagRunningSQL = `
-	UPDATE %[1]s.production_orders SET recalc_needed = true
+	UPDATE %[2]s.production_orders SET recalc_needed = true
 	 WHERE status = 2 AND recalc_needed = false`
 
 const reflagRecentSQL = `
-	UPDATE %[1]s.production_orders SET recalc_needed = true
-	 WHERE status = 3 AND ts_start >= now() - interval '48 hours'
+	UPDATE %[2]s.production_orders SET recalc_needed = true
+	 WHERE status IN (3, 4) AND COALESCE(ts_end, ts_start) >= now() - interval '48 hours'
 	   AND recalc_needed = false`
 
 // RunRecalc executes one pass for one destination.
 func RunRecalc(ctx context.Context, d flows.Dest, window string, exclEnterprises []int) (int64, error) {
-	tag, err := d.Pool.Exec(ctx, fmt.Sprintf(recalcSQL, d.EvSchema, d.RefSchema), window, exclEnterprises)
+	tag, err := d.Pool.Exec(ctx, fmtRD(recalcSQL, d), window, exclEnterprises)
 	if err != nil {
 		return 0, fmt.Errorf("recalc: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(reflagRunningSQL, d.EvSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(reflagRunningSQL, d)); err != nil {
 		return tag.RowsAffected(), fmt.Errorf("reflag running: %w", err)
 	}
-	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(reflagRecentSQL, d.EvSchema)); err != nil {
+	if _, err := d.Pool.Exec(ctx, fmtRD(reflagRecentSQL, d)); err != nil {
 		return tag.RowsAffected(), fmt.Errorf("reflag recent: %w", err)
 	}
 	return tag.RowsAffected(), nil

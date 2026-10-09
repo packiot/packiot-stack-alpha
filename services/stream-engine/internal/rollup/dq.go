@@ -43,6 +43,14 @@ const (
 	// DQRuleIdealSpeedNullProducing — ideal_speed IS NULL or 0 while net > 0 (P3-4).
 	// The OEE denominator collapses → oee silently 0 (or divide-by-zero-guarded loss).
 	DQRuleIdealSpeedNullProducing DQRule = "IDEAL_SPEED_NULL_WHILE_PRODUCING"
+	// DQRuleIdealSpeedTooLow — net production EXCEEDS the ideal_speed baseline
+	// (net > ideal_production), i.e. raw Performance > 1. The served oee_p is CLAMPED
+	// to [0,1] before this scan sees it, so OEE_GT_1 can NEVER fire for this case — the
+	// misconfig is otherwise INVISIBLE. Cause is almost always a too-low (mis-set)
+	// ideal_speed on the equipment. observed_value = net/ideal_production (the overshoot
+	// ratio, e.g. 2.85). warn: the served number isn't out-of-range (it's clamped), but
+	// the underlying config is wrong and the clamp is masking real production.
+	DQRuleIdealSpeedTooLow DQRule = "IDEAL_SPEED_TOO_LOW"
 	// DQRuleInvariantClampedIncrement — the ingest-time production-increment
 	// SANITY CLAMP (ADR-0037 Silver invariant) rejected a physically-impossible
 	// increment (> K · rated_speed · Δt) before it reached equipment_values /
@@ -87,6 +95,12 @@ type GrainMetrics struct {
 	Gross float64
 	Net   float64
 
+	// IdealProduction is the summed ideal-speed production capacity for the bucket
+	// (net > IdealProduction ⇒ raw Performance > 1 ⇒ the IDEAL_SPEED_TOO_LOW rule).
+	// Present at every grain (summed column); 0 when ideal_speed is unset (that case
+	// is the IDEAL_SPEED_NULL rule instead, not this one).
+	IdealProduction float64
+
 	// IdealSpeed is nullable in the DB (nil ⇒ SQL NULL). In the shift/hour runtime
 	// tables it defaults to 0, so the "0 while producing" branch is the common one;
 	// nil is handled for robustness.
@@ -119,6 +133,11 @@ type DQEvent struct {
 	Severity      string
 }
 
+// oeeFactorAbsurd — above this an OEE factor is corrupt, not a mis-set ideal speed
+// (the worst real ideal-speed error seen is ~2-3x; the outlier that motivated
+// OEE_GT_1 was 8.2e18).
+const oeeFactorAbsurd = 10.0
+
 // DetectGrain applies every data-quality rule to one computed grain row and
 // returns the events that fired (empty for a clean row). PURE — the single
 // source of truth for the predicates, exercised directly by the unit tests.
@@ -134,11 +153,13 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 		})
 	}
 
-	// OEE_GT_1 — any of the four factors above 1.0 (100%). Report the WORST so the
-	// observed_value carries the magnitude of the outlier (the 8.2e18 case). NULL
+	// OEE_GT_1 — an IMPOSSIBLE factor. Since 2026-09-29 the data is uncapped: P > 1
+	// (ideal speed set too low → IDEAL_SPEED_TOO_LOW) and hourly Q > 1 (units in
+	// transit) are legitimate stored values, so this rule fires only on
+	// availability > 1 (running beyond available time) or an absurd magnitude on
+	// any factor (the 8.2e18 case it was written for). Report the WORST. NULL
 	// factors are "no reading" (line-metered machines nulled by RunUnmetered): they
-	// are SKIPPED, never treated as 0, and a row whose factors are ALL NULL simply
-	// does not fire this rule.
+	// are SKIPPED, never treated as 0.
 	worst := 0.0
 	haveFactor := false
 	for _, f := range []sql.NullFloat64{m.OEE, m.OeeA, m.OeeP, m.OeeQ} {
@@ -147,13 +168,16 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 			haveFactor = true
 		}
 	}
-	if haveFactor && worst > 1.0 {
+	if haveFactor && (worst > oeeFactorAbsurd || (m.OeeA.Valid && m.OeeA.Float64 > 1.0)) {
 		v := worst
 		emit(DQRuleOEEGt1, dqSevError, &v)
 	}
 
-	// NET_GT_GROSS — quality > 1 is physically impossible. observed = the overshoot.
-	if m.Net > m.Gross {
+	// NET_GT_GROSS — output above input. At the HOUR grain that is units in transit
+	// between the infeed and outfeed sensors (stored as-is since 2026-09-29), so it is
+	// not flagged there; from the shift grain up it means a meter disagrees (e.g. an
+	// undercounting infeed). observed = the overshoot.
+	if m.Net > m.Gross && m.Grain != "hour" {
 		v := m.Net - m.Gross
 		emit(DQRuleNetGtGross, dqSevError, &v)
 	}
@@ -189,6 +213,16 @@ func DetectGrain(m GrainMetrics) []DQEvent {
 		emit(DQRuleIdealSpeedNullProducing, dqSevWarn, obs)
 	}
 
+	// IDEAL_SPEED_TOO_LOW — net production EXCEEDS the ideal-speed baseline
+	// (net > ideal_production ⇒ raw Performance > 1). oee_p is stored uncapped since
+	// 2026-09-29, and this rule is THE signal that ideal_speed is mis-set (too low). Gated to the metering grains
+	// (shift/hour, IdealSpeedTracked) so the same misconfig doesn't re-fire at every
+	// rolled-up grain. observed = net/ideal_production (the overshoot ratio).
+	if m.IdealSpeedTracked && m.IdealProduction > 0 && m.Net > m.IdealProduction {
+		v := m.Net / m.IdealProduction
+		emit(DQRuleIdealSpeedTooLow, dqSevWarn, &v)
+	}
+
 	return out
 }
 
@@ -206,7 +240,10 @@ type dqGrainScan struct {
 
 var dqGrainMatrix = []dqGrainScan{
 	{"shift", "equipment_oee_shift", "30 days", true},
-	{"hour", "equipment_oee_hourly", "7 days", true},
+	// 10 days = the hour BACKFILL horizon (backfill.go): a backfill may rewrite any hour row
+	// up to 10 days old, and a 7-day window left the 7–10-day band never re-clamped
+	// (measured 2026-09-24: 202 repaired line hours with net > gross served unclamped).
+	{"hour", "equipment_oee_hourly", "10 days", true},
 	{"day", "equipment_oee_daily", "30 days", false},
 	{"week", "equipment_oee_weekly", "180 days", false},
 	{"month", "equipment_oee_monthly", "365 days", false},
@@ -217,19 +254,39 @@ var dqGrainMatrix = []dqGrainScan{
 const dqScanLimit = 20000
 
 // dqGrainScanSQL reads recently-computed grain rows, joining equipments for the
-// tenant id. %[1]s = EvSchema (flow tables), %[2]s = the grain table, %[3]s =
+// tenant id. %[1]s = GoldSchema (the *_oee_* grain facts live in gold), %[2]s = the grain table, %[3]s =
 // RefSchema (equipments), %[4]s = the ideal_speed projection (r.ideal_speed for
 // shift/hour, NULL::float8 for day/week/month which lack the column), %[5]d =
 // LIMIT. $1 = window interval.
+//
+// `num_nulls(<counters>) = 0` — same contract as the NULLABLE OEE factors above: a NULL
+// counter means "no reading" (skip), NEVER 0. The counters scan into plain float64, so
+// before this guard ONE NULL-counter row in a grain's window aborted the WHOLE scan
+// ("cannot scan NULL into *float64") and failed every runtime-rollup tick (2026-09-24:
+// T1's backfilled LEGACY monthly rows — legacy left counters uncomputed — entered the
+// 365-day month window; the rollups themselves were unaffected, only the DQ side-read).
+// Rows that scanned before are unchanged (they had no NULL counters).
+//
+// `r.ts_value <= now()` is LOAD-BEARING, not cosmetic: Provision (provision.go)
+// pre-materializes a 30-DAY horizon of EMPTY future buckets (net=0, computed_at
+// NULL) so the rollup can UPDATE them in place as data arrives. Those future
+// skeletons carry the HIGHEST ts_value, so `ORDER BY ts_value DESC LIMIT N` would
+// fill the entire budget with them (200k+ on staging) and never reach a single
+// real past row — silently blinding every DQ rule. A future bucket can never hold
+// a real violation, so excluding it is both correct and the only thing that keeps
+// the most-recent-first scan pointed at actual computed data.
 const dqGrainScanSQL = `
 	SELECT e.id_enterprise, r.id_equipment, r.ts_value::timestamptz,
 	       r.oee, r.oee_a, r.oee_p, r.oee_q,
-	       r.gross, r.net, %[4]s,
+	       r.gross, r.net, r.ideal_production, %[4]s,
 	       r.available_time, r.running_time, r.stopped_time,
 	       r.planned_downtime, r.downtime, r.changeover_time, r.idle_time
 	  FROM %[1]s.%[2]s r
 	  JOIN %[3]s.equipments e USING (id_equipment)
 	 WHERE r.ts_value >= now() - $1::interval
+	   AND r.ts_value <= now()
+	   AND num_nulls(r.gross, r.net, r.ideal_production, r.available_time, r.running_time,
+	                 r.stopped_time, r.planned_downtime, r.downtime, r.changeover_time, r.idle_time) = 0
 	 ORDER BY r.ts_value DESC
 	 LIMIT %[5]d`
 
@@ -274,7 +331,7 @@ func runDQScanGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int64, er
 		idealExpr = "r.ideal_speed"
 	}
 	rows, err := d.Pool.Query(ctx,
-		fmt.Sprintf(dqGrainScanSQL, d.EvSchema, g.Table, d.RefSchema, idealExpr, dqScanLimit), g.Window)
+		fmt.Sprintf(dqGrainScanSQL, d.GoldSchema, g.Table, d.RefSchema, idealExpr, dqScanLimit), g.Window)
 	if err != nil {
 		return 0, fmt.Errorf("query: %w", err)
 	}
@@ -288,7 +345,7 @@ func runDQScanGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int64, er
 		if err := rows.Scan(
 			&m.IDEnterprise, &m.IDEquipment, &m.BucketTS,
 			&m.OEE, &m.OeeA, &m.OeeP, &m.OeeQ,
-			&m.Gross, &m.Net, &m.IdealSpeed,
+			&m.Gross, &m.Net, &m.IdealProduction, &m.IdealSpeed,
 			&m.AvailableTime, &m.RunningTime, &m.StoppedTime,
 			&m.PlannedDowntime, &m.Downtime, &m.ChangeoverTime, &m.IdleTime,
 		); err != nil {

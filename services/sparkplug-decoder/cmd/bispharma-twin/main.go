@@ -1,0 +1,639 @@
+// bispharma-twin — a DURABLE, CODIFIED staging TWIN producer for Bispharma
+// (enterprise 5, SparkPlug group BISPHARMASTAGING) so the tenant gets a
+// continuous, realistic OEE data feed on staging INDEPENDENT of the offline
+// factory box. This is GAP-1 "proper fix (a)" from
+// docs/clients/bispharma-production-readiness-punchlist.md: a codified
+// twin/replay service analogous to CPACK's twin-injector
+// (cmd/inject-counter-fixture), parameterized for Bispharma's counters-only,
+// member-count-index topology.
+//
+// ── What it models (CPACK twin-injector parity) ──────────────────────────────
+// CPACK's twin (cmd/inject-counter-fixture) publishes a synthetic SparkPlug B
+// NBIRTH + NDATA straight to the internal Mosquitto broker under group CPACK;
+// the shared sparkplug-decoder (subscribed to spBv1.0/#) decodes it exactly as
+// it decodes a real edge tee, and stream-engine writes silver.equipment_values.
+// This twin does the SAME, for group BISPHARMASTAGING: it publishes directly to
+// Mosquitto (the same internal path CPACK's twin uses) rather than through the
+// rawtag HTTP front-door (:8449), so it is decoded by the identical proven path
+// and does not depend on the front-door being reachable from inside the VPC
+// (the app box cannot hairpin its own public ingest SG). It carries a DISTINCT
+// edge_node_id (bispharmastaging-twin) that stamps every row's provenance in the
+// decoder logs (publisher "BISPHARMASTAGING/bispharmastaging-twin"), keeping
+// twin rows distinguishable from a real feed.
+//
+// Unlike inject-counter-fixture (one-shot, single hardcoded CPACK metric), this
+// is a LONG-RUNNING service: it births the full line member topology once, then
+// advances monotonically-increasing absolute totalizers every interval, and
+// re-births on an inbound Rebirth NCMD (decoder self-heal after a restart). It
+// is COUNTERS-ONLY — it emits ProdConsumedCount (gross) / ProdProcessedCount
+// (net) / ProdDefectiveCount (scrap) member leaves and NO MachSpeed/StateCurrent
+// (Bispharma has no state/speed signal; counters_only_oee=true). To stay faithful
+// on the counters-only path it SIMULATES STOPS by freezing a line's totalizers for
+// a span of ticks (TWIN_STOP_PROB / TWIN_STOP_MIN_SEC / TWIN_STOP_MAX_SEC): the
+// live OEE path derives downtimes from COUNT-ACTIVITY SILENCE, not from a state
+// leaf (internal/events/cpac_deriver.go — state is 100% NULL on the edge path), so
+// a frozen counter gap is exactly what mints an equipment_event and carves real
+// running_time. Without stops the twin advanced every tick forever → 0 downtime
+// events and unrealistically pinned availability. Set TWIN_STOP_PROB=0 to restore
+// the old always-running behaviour.
+//
+// ── Parameterization (config-as-data) ────────────────────────────────────────
+// The set of member count-index leaves is derived at boot from the SAME agent
+// tenant config the shared sparkplug-agent loads (docs/clients/tenants/
+// bispharma.yaml → TWIN_TENANT_CONFIG): every raw_tag_map entry of the form
+//
+//	/SP/LINHAS/<LINE>/<MEMBER>/Admin/Prod{Consumed,Processed,Defective}Count/<idx>/Unit
+//
+// for the configured line becomes a synthetic totalizer. Using the raw_tag_map
+// (the generated allowlist, itself derived from the count_index map in
+// docs/clients/tenant-profiles/bispharmastaging.yaml) GUARANTEES the emitted
+// metric names are exactly the ones the pipeline resolves to the member
+// equipment ids that land in silver (e.g. S1INFEED .../168/Unit → equip
+// 2000225) — never an unmapped drop.
+//
+// ── DOUBLE-SOURCE GUARD (READ THIS) ──────────────────────────────────────────
+// When the real Bispharma factory box comes back online it publishes the SAME
+// group (BISPHARMASTAGING) → the SAME equipment ids. Running this twin AT THE
+// SAME TIME as the real feed DOUBLE-COUNTS every totalizer (two writers per
+// equipment, the classic two-writer bug). The guard is a single .env flag:
+//   - BISPHARMA_TWIN_ENABLED (default false). When false the process IDLES
+//     (blocks) — it does not publish. When true it feeds.
+// The service is ALWAYS part of the stack (no compose profile — the
+// oeecloud-fanout pattern) so a normal `docker compose up -d --remove-orphans`
+// deploy keeps it running (durable across deploys) instead of reaping a
+// profile-disabled orphan; enabling/disabling is a pure .env flip.
+// It MUST be disabled (BISPHARMA_TWIN_ENABLED=false) the moment a real
+// BISPHARMASTAGING feed is wired. Its distinct edge_node_id makes twin rows
+// identifiable but does NOT prevent the double-count — disabling is the guard.
+//
+// STAGING ONLY. Never point this at a production broker.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"math/rand"
+	"os"
+	"os/signal"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	paho "github.com/eclipse/paho.mqtt.golang"
+
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/agentcfg"
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/sparkplug"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// One signal-scoped context for the whole process — used by the idle path
+	// (disabled) and the publish loop (enabled) alike.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// ── Master enablement gate (default OFF) — the SOLE double-source guard ───
+	// This service is ALWAYS part of the staging stack (no compose profile — the
+	// oeecloud-fanout pattern), so a normal `docker compose up -d --remove-orphans`
+	// deploy keeps it running instead of reaping a profile-disabled orphan. When
+	// disabled it IDLES (blocks until SIGTERM) rather than exiting, so
+	// restart:unless-stopped never crash-loops it. Enabling is a pure .env flip
+	// (BISPHARMA_TWIN_ENABLED=true). DISABLE it the moment a real BISPHARMASTAGING
+	// feed is wired, or every totalizer double-counts.
+	if !getenvBool("BISPHARMA_TWIN_ENABLED", false) {
+		logger.Info("bispharma-twin DISABLED (BISPHARMA_TWIN_ENABLED != true) — idling (double-source guard). " +
+			"Enable is a pure .env flip on staging; disable when a real BISPHARMASTAGING feed is active.")
+		<-ctx.Done()
+		return
+	}
+
+	cfg := loadConfig()
+	logger.Info("bispharma-twin starting",
+		"broker", cfg.broker,
+		"group", cfg.group,
+		"edge_node", cfg.edgeNode,
+		"line", cfg.line,
+		"tenant_config", cfg.tenantConfig,
+		"interval_sec", int(cfg.interval.Seconds()),
+		"rate_per_min", cfg.ratePerMin,
+		"scrap_rate", cfg.scrapRate,
+	)
+
+	metrics, err := buildMembers(cfg)
+	if err != nil {
+		logger.Error("build member metrics", "err", err)
+		os.Exit(1)
+	}
+	if len(metrics) == 0 {
+		logger.Error("no member count-index leaves found for line — check TWIN_LINE / TWIN_TENANT_CONFIG",
+			"line", cfg.line, "tenant_config", cfg.tenantConfig)
+		os.Exit(1)
+	}
+	lineSet := map[string]bool{}
+	for _, m := range metrics {
+		lineSet[m.line] = true
+	}
+	logger.Info("member count-index leaves resolved",
+		"line", cfg.line, "lines", len(lineSet), "metrics", len(metrics), "first", metrics[0].name)
+
+	tw := &twin{cfg: cfg, logger: logger, metrics: metrics}
+	if err := tw.run(ctx); err != nil {
+		logger.Error("twin exited", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("bispharma-twin stopped")
+}
+
+// ── config ───────────────────────────────────────────────────────────────────
+
+type config struct {
+	broker       string
+	group        string
+	edgeNode     string
+	line         string
+	tenantConfig string
+	interval     time.Duration
+	ratePerMin   float64 // line throughput in units/min (drives the totalizer slope)
+	scrapRate    float64 // fraction of gross that becomes scrap (0..1)
+	// stop simulation — a real line is not perpetually running; it stops
+	// (breakdowns, changeovers, starvation). stopProb is the per-line, per-tick
+	// probability of ENTERING a stop; a stop then lasts a uniform-random span in
+	// [stopMinTicks, stopMaxTicks]. stopProb=0 disables (pre-existing always-run
+	// behaviour). See advance() for WHY freezing counters (not emitting a state)
+	// is the faithful mechanism.
+	stopProb     float64
+	stopMinTicks int
+	stopMaxTicks int
+	clientID     string
+	// stateFile — path (on a named volume) where the absolute totalizers are
+	// persisted every interval and reloaded on boot, so a container restart
+	// resumes monotonically instead of resetting to 0 (real PLC totalizers are
+	// non-volatile). Empty ⇒ persistence disabled (pre-existing behaviour).
+	stateFile string
+}
+
+func loadConfig() config {
+	return config{
+		broker:       getenv("TWIN_BROKER", "tcp://mosquitto:1883"),
+		group:        getenv("TWIN_GROUP", "BISPHARMASTAGING"),
+		edgeNode:     getenv("TWIN_EDGE_NODE", "bispharmastaging-twin"),
+		line:         getenv("TWIN_LINE", "L01"),
+		tenantConfig: getenv("TWIN_TENANT_CONFIG", "/etc/packiot/tenants/bispharma.yaml"),
+		interval:     time.Duration(getenvInt("TWIN_INTERVAL_SEC", 15)) * time.Second,
+		ratePerMin:   getenvFloat("TWIN_RATE_PER_MIN", 600),
+		scrapRate:    getenvFloat("TWIN_SCRAP_RATE", 0.03),
+		stopProb:     getenvFloat("TWIN_STOP_PROB", 0.03),
+		stopMinTicks: ticksFor(getenvInt("TWIN_STOP_MIN_SEC", 120), getenvInt("TWIN_INTERVAL_SEC", 15)),
+		stopMaxTicks: ticksFor(getenvInt("TWIN_STOP_MAX_SEC", 600), getenvInt("TWIN_INTERVAL_SEC", 15)),
+		clientID:     getenv("TWIN_CLIENT_ID", "bispharma-twin"),
+		stateFile:    getenv("TWIN_STATE_FILE", ""),
+	}
+}
+
+// ticksFor converts a duration in seconds to a whole number of ticks at the given
+// interval, clamped to at least 1 (a stop must span ≥1 tick to freeze anything,
+// and must exceed the decoder's stop threshold to mint a downtime event — the
+// default 120–600s spans several 15s ticks, comfortably past typical thresholds).
+func ticksFor(sec, intervalSec int) int {
+	if intervalSec <= 0 {
+		intervalSec = 15
+	}
+	n := sec / intervalSec
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// ── member metric model ──────────────────────────────────────────────────────
+
+// counterKind is which of the three PackML count leaves a metric carries.
+type counterKind int
+
+const (
+	kindGross counterKind = iota // ProdConsumedCount  → gross_production
+	kindNet                      // ProdProcessedCount → net_production (good)
+	kindScrap                    // ProdDefectiveCount → scrap
+)
+
+// member is one synthetic monotonic totalizer bound to a full SparkPlug metric
+// name + its alias. Members on the same line share the line throughput; each
+// carries its own absolute totalizer so gross ≥ net and scrap = gross − net
+// hold on every emission (never trips the physics-invariant clamps).
+type member struct {
+	name  string // full SparkPlug metric name (packml_topic + suffix)
+	alias uint64
+	memb  string // member segment (S1INFEED, S6OUTPUT, ...)
+	line  string // line the member belongs to (L01, L03, ...) — multi-line keying
+	kind  counterKind
+	val   float64 // current absolute totalizer value
+}
+
+// buildMembers parses the agent tenant config and returns one member per
+// member-level count-index leaf for the configured line, alias-numbered
+// deterministically (sorted by name) so NBIRTH/NDATA agree across restarts.
+func buildMembers(cfg config) ([]*member, error) {
+	ac, err := agentcfg.Load(cfg.tenantConfig)
+	if err != nil {
+		return nil, fmt.Errorf("load tenant config %s: %w", cfg.tenantConfig, err)
+	}
+	prefix := ac.Sparkplug.PackMLTopic // e.g. "BISPHARMASTAGING"
+
+	// TWIN_LINE=ALL (case-insensitive) mocks EVERY line present in the tenant
+	// tag-map; otherwise a comma-separated allow-list of specific lines (e.g.
+	// "L01" or "L01,L03"). Multi-line lets one twin instance produce all of a
+	// tenant's lines — a faithful mock of the real box, which feeds them all.
+	all := strings.EqualFold(strings.TrimSpace(cfg.line), "ALL")
+	want := map[string]bool{}
+	if !all {
+		for _, l := range strings.Split(cfg.line, ",") {
+			if l = strings.TrimSpace(l); l != "" {
+				want[l] = true
+			}
+		}
+	}
+
+	var out []*member
+	for _, e := range ac.RawTagMap {
+		s := e.MetricSuffix
+		line := lineOf(s)
+		if line == "" {
+			continue // no /LINHAS/<line>/ segment
+		}
+		if !all && !want[line] {
+			continue // not a targeted line
+		}
+		kind, ok := classifyCountLeaf(s)
+		if !ok {
+			continue // MachSpeed / StateCurrent / Parameter → skip (counters-only)
+		}
+		memb := memberSegment(s, line)
+		if memb == "" {
+			continue // line-direct (no member segment) — twin emits member leaves
+		}
+		out = append(out, &member{
+			name: prefix + s,
+			memb: memb,
+			line: line,
+			kind: kind,
+		})
+	}
+	// Deterministic alias assignment: sort by name, alias = 1..N.
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	for i, m := range out {
+		m.alias = uint64(i + 1)
+	}
+	return out, nil
+}
+
+// lineOf extracts the line segment (e.g. "L01") from a metric suffix like
+// "/SP/LINHAS/L01/S1INFEED/Admin/...". Returns "" when there is no /LINHAS/ segment.
+func lineOf(suffix string) string {
+	const marker = "/LINHAS/"
+	i := strings.Index(suffix, marker)
+	if i < 0 {
+		return ""
+	}
+	seg, _, _ := strings.Cut(suffix[i+len(marker):], "/")
+	return seg
+}
+
+// classifyCountLeaf maps a raw_tag_map suffix to a counter kind. Only the three
+// Admin count leaves qualify; everything else (MachSpeed, StateCurrent,
+// Parameter…) is not a counter and is skipped (counters-only).
+func classifyCountLeaf(suffix string) (counterKind, bool) {
+	switch {
+	case strings.Contains(suffix, "/Admin/ProdConsumedCount/"):
+		return kindGross, true
+	case strings.Contains(suffix, "/Admin/ProdProcessedCount/"):
+		return kindNet, true
+	case strings.Contains(suffix, "/Admin/ProdDefectiveCount/"):
+		return kindScrap, true
+	}
+	return 0, false
+}
+
+// memberSegment extracts the member name (segment after the line) from a suffix
+// like /SP/LINHAS/L01/S1INFEED/Admin/... → "S1INFEED". Returns "" for a
+// line-direct leaf (/SP/LINHAS/L01/Admin/...), which the twin does not emit.
+func memberSegment(suffix, line string) string {
+	marker := "/LINHAS/" + line + "/"
+	i := strings.Index(suffix, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := suffix[i+len(marker):] // "S1INFEED/Admin/ProdConsumedCount/168/Unit"
+	seg, _, ok := strings.Cut(rest, "/")
+	if !ok || seg == "Admin" || seg == "Status" {
+		return "" // line-direct
+	}
+	return seg
+}
+
+// ── twin runtime ─────────────────────────────────────────────────────────────
+
+type twin struct {
+	cfg     config
+	logger  *slog.Logger
+	metrics []*member
+
+	mu     sync.Mutex
+	seq    uint64
+	client paho.Client
+
+	// lineStop tracks, per line, how many more ticks that line stays STOPPED
+	// (counters frozen). 0/absent ⇒ running. Guarded by mu (mutated only in
+	// advance(), which holds the lock). Lazily allocated in advance().
+	lineStop map[string]int
+}
+
+// loadState seeds the member totalizers from the persisted state file (if any)
+// BEFORE the first NBIRTH is published, so a restarted twin resumes from its last
+// absolute values instead of 0. Best-effort: a missing/corrupt file just means a
+// cold start from zero. Called once, before Connect, so no lock is needed.
+func (t *twin) loadState() {
+	if t.cfg.stateFile == "" {
+		return
+	}
+	b, err := os.ReadFile(t.cfg.stateFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			t.logger.Warn("read twin state file — cold start from zero", "file", t.cfg.stateFile, "err", err)
+		} else {
+			t.logger.Info("no twin state file yet — cold start from zero", "file", t.cfg.stateFile)
+		}
+		return
+	}
+	var saved map[string]float64
+	if err := json.Unmarshal(b, &saved); err != nil {
+		t.logger.Warn("parse twin state file — cold start from zero", "file", t.cfg.stateFile, "err", err)
+		return
+	}
+	restored := 0
+	for _, m := range t.metrics {
+		if v, ok := saved[m.name]; ok {
+			m.val = v
+			restored++
+		}
+	}
+	t.logger.Info("restored totalizers from state file",
+		"file", t.cfg.stateFile, "restored", restored, "members", len(t.metrics))
+}
+
+// saveState atomically persists the current absolute totalizers to the state
+// file (snapshot under the lock, write outside it via temp+rename). Best-effort:
+// a write failure is logged and the loop continues (the next tick retries).
+func (t *twin) saveState() {
+	if t.cfg.stateFile == "" {
+		return
+	}
+	t.mu.Lock()
+	snap := make(map[string]float64, len(t.metrics))
+	for _, m := range t.metrics {
+		snap[m.name] = m.val
+	}
+	t.mu.Unlock()
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.logger.Warn("marshal twin state", "err", err)
+		return
+	}
+	tmp := t.cfg.stateFile + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		t.logger.Warn("write twin state (tmp)", "file", tmp, "err", err)
+		return
+	}
+	if err := os.Rename(tmp, t.cfg.stateFile); err != nil {
+		t.logger.Warn("rename twin state into place", "file", t.cfg.stateFile, "err", err)
+	}
+}
+
+func (t *twin) run(ctx context.Context) error {
+	// Resume from persisted totalizers (if configured) before the first NBIRTH.
+	t.loadState()
+
+	opts := paho.NewClientOptions().
+		AddBroker(t.cfg.broker).
+		SetClientID(t.cfg.clientID + "-" + strconv.Itoa(os.Getpid())).
+		SetCleanSession(true).
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectTimeout(10 * time.Second).
+		SetOnConnectHandler(func(_ paho.Client) {
+			// (Re)establish the alias table on every (re)connect, then subscribe
+			// to Rebirth NCMDs so the decoder can self-heal its alias baseline.
+			t.publishBirth()
+			t.subscribeRebirth()
+			t.logger.Info("connected + NBIRTH published", "broker", t.cfg.broker, "metrics", len(t.metrics))
+		})
+
+	t.client = paho.NewClient(opts)
+	tok := t.client.Connect()
+	if !tok.WaitTimeout(15 * time.Second) {
+		return fmt.Errorf("connect timeout to %s", t.cfg.broker)
+	}
+	if err := tok.Error(); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+
+	tick := time.NewTicker(t.cfg.interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			t.client.Disconnect(1000)
+			return nil
+		case <-tick.C:
+			t.advance()
+			t.publishData()
+			// Persist AFTER publishing so the on-disk totalizers never lead the
+			// values a downstream consumer has actually seen (a restart then
+			// replays from a value ≤ what silver already holds — monotonic, no blip).
+			t.saveState()
+		}
+	}
+}
+
+// advance grows every member's absolute totalizer for one interval. Gross climbs
+// at the line rate (± jitter); scrap accrues a fraction of the gross increment;
+// net = gross − scrap. All three are kept internally consistent per member so
+// the emitted totalizers are monotonic and never violate net ≤ gross.
+func (t *twin) advance() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	incr := t.cfg.ratePerMin * t.cfg.interval.Minutes()
+	if t.lineStop == nil {
+		t.lineStop = map[string]int{}
+	}
+	// Per-line STOP simulation. WHY freeze counters instead of emitting a stopped
+	// StateCurrent: the live OEE path derives stops from COUNT-ACTIVITY SILENCE, not
+	// from StateCurrent (internal/events/cpac_deriver.go — state is 100% NULL on the
+	// edge path; running_time is inferred from the gaps between counter advances).
+	// So the faithful way to make the twin produce downtime events + realistic
+	// availability is to hold a line's totalizers flat for a span of ticks: the
+	// decoder sees the gap, mints an equipment_event, and running_time excludes the
+	// frozen window. A line that advances every tick forever (the old behaviour)
+	// mints 0 downtime events and pins availability unrealistically high. Stops are
+	// per-LINE (a line stops as a unit), matching how a real line halts.
+	lineStopped := map[string]bool{}
+	for _, m := range t.metrics {
+		if _, seen := lineStopped[m.line]; seen {
+			continue
+		}
+		if t.lineStop[m.line] > 0 {
+			t.lineStop[m.line]-- // still stopped this tick
+			lineStopped[m.line] = true
+		} else if t.cfg.stopProb > 0 && rand.Float64() < t.cfg.stopProb {
+			// Enter a new stop lasting [stopMinTicks, stopMaxTicks] ticks; freeze
+			// THIS tick too (the stop begins now). rand.Intn needs span ≥ 1.
+			span := t.cfg.stopMinTicks
+			if d := t.cfg.stopMaxTicks - t.cfg.stopMinTicks; d > 0 {
+				span += rand.Intn(d + 1)
+			}
+			t.lineStop[m.line] = span - 1 // this tick consumes the first
+			lineStopped[m.line] = true
+			t.logger.Info("twin line entering stop", "line", m.line, "ticks", span)
+		} else {
+			lineStopped[m.line] = false
+		}
+	}
+	// One shared stochastic increment per RUNNING line (not per member) so the whole
+	// line flows as a unit. Line-metered OEE binds a line's gross to its INFEED machine
+	// (equipments.gross_machine) and its net to its OUTFEED machine (lead_machine) —
+	// DIFFERENT machines. Independent per-member increments let outfeed net exceed
+	// infeed gross → net>gross clamps at the line. Sharing one increment per line
+	// keeps infeed gross ≥ outfeed net (net = gross − scrap) as a real line does.
+	// A STOPPED line gets increment 0 → its totalizers stay flat (the gap the
+	// deriver reads as a downtime).
+	byLine := map[string]float64{}
+	for _, m := range t.metrics {
+		if _, ok := byLine[m.line]; !ok {
+			if lineStopped[m.line] {
+				byLine[m.line] = 0
+			} else {
+				byLine[m.line] = math.Round(incr * (0.85 + 0.30*rand.Float64()))
+			}
+		}
+	}
+	for _, m := range t.metrics {
+		g := byLine[m.line]
+		// FRACTIONAL scrap — do NOT round per tick. At low rates (e.g. 50/min → g≈12)
+		// round(g·0.03)=round(0.36)=0 would freeze the scrap totalizer forever, so
+		// net≡gross and Q pins at 1.0. m.val is a float accumulator emitted as int64,
+		// so a fractional 0.36/tick correctly rolls the emitted scrap counter over
+		// several ticks. net = gross − scrap still holds (net+scrap = gross per member).
+		scrap := g * t.cfg.scrapRate
+		switch m.kind {
+		case kindGross:
+			m.val += g
+		case kindScrap:
+			m.val += scrap
+		case kindNet:
+			m.val += g - scrap
+		}
+	}
+}
+
+func (t *twin) simMetrics(birth bool) []sparkplug.SimMetric {
+	out := make([]sparkplug.SimMetric, 0, len(t.metrics))
+	for _, m := range t.metrics {
+		sm := sparkplug.SimMetric{Alias: m.alias, IsLong: true, Long: int64(m.val)}
+		if birth {
+			sm.Name = m.name // NBIRTH carries name↔alias; NDATA is alias-only
+		}
+		out = append(out, sm)
+	}
+	return out
+}
+
+func (t *twin) publishBirth() {
+	t.mu.Lock()
+	body, err := sparkplug.EncodeSim(t.simMetrics(true), &t.seq, true)
+	t.mu.Unlock()
+	if err != nil {
+		t.logger.Error("encode NBIRTH", "err", err)
+		return
+	}
+	topic := fmt.Sprintf("spBv1.0/%s/NBIRTH/%s", t.cfg.group, t.cfg.edgeNode)
+	// Retained per SparkPlug spec so a decoder connecting later still sees the
+	// alias table without waiting for a rebirth.
+	t.publish(topic, body, true)
+}
+
+func (t *twin) publishData() {
+	t.mu.Lock()
+	body, err := sparkplug.EncodeSim(t.simMetrics(false), &t.seq, false)
+	t.mu.Unlock()
+	if err != nil {
+		t.logger.Error("encode NDATA", "err", err)
+		return
+	}
+	topic := fmt.Sprintf("spBv1.0/%s/NDATA/%s", t.cfg.group, t.cfg.edgeNode)
+	t.publish(topic, body, false)
+}
+
+func (t *twin) publish(topic string, body []byte, retained bool) {
+	tok := t.client.Publish(topic, 0, retained, body)
+	if !tok.WaitTimeout(5 * time.Second) {
+		t.logger.Warn("publish timeout", "topic", topic)
+		return
+	}
+	if err := tok.Error(); err != nil {
+		t.logger.Warn("publish error", "topic", topic, "err", err)
+	}
+}
+
+// subscribeRebirth wires the decoder's self-heal path: on a "Node Control/
+// Rebirth" NCMD (the decoder asks for it after a restart / on an unknown alias),
+// re-publish the full NBIRTH so the alias table is re-established.
+func (t *twin) subscribeRebirth() {
+	topic := fmt.Sprintf("spBv1.0/%s/NCMD/%s", t.cfg.group, t.cfg.edgeNode)
+	t.client.Subscribe(topic, 0, func(_ paho.Client, _ paho.Message) {
+		t.logger.Info("rebirth NCMD received — re-publishing NBIRTH", "topic", topic)
+		t.publishBirth()
+	})
+}
+
+// ── env helpers ──────────────────────────────────────────────────────────────
+
+func getenv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+func getenvBool(k string, def bool) bool {
+	switch strings.TrimSpace(strings.ToLower(os.Getenv(k))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
+}
+
+func getenvInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getenvFloat(k string, def float64) float64 {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			return n
+		}
+	}
+	return def
+}

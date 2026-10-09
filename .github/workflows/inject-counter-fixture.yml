@@ -2,7 +2,7 @@ name: Inject counter fixture (staging)
 
 # One-shot workflow: build cmd/inject-counter-fixture, run it against
 # staging mosquitto (inside the compose network), then scrape /metrics
-# from edge-transformer to verify calc_evaluations_total incremented.
+# from sparkplug-decoder to verify calc_evaluations_total incremented.
 #
 # End-to-end validation for ADR-0010 Phase 3 shadow-mode wiring.
 
@@ -30,7 +30,7 @@ jobs:
       - name: Snapshot /metrics BEFORE inject
         run: |
           echo "=== calc_ metrics BEFORE inject ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(calc_|# .*calc_)' \
             | head -40 || echo "(no calc_ metrics present)"
@@ -40,37 +40,37 @@ jobs:
         # that mounts the module workspace. Static binary, ARM64 (matches host).
         run: |
           docker run --rm \
-            -v "$PWD/services/edge-transformer:/src" \
+            -v "$PWD/services/sparkplug-decoder:/src" \
             -w /src \
             -e CGO_ENABLED=0 \
             -e GOOS=linux \
             golang:1.25-alpine \
             go build -trimpath -o /src/inject-counter-fixture ./cmd/inject-counter-fixture
-          ls -la services/edge-transformer/inject-counter-fixture
+          ls -la services/sparkplug-decoder/inject-counter-fixture
 
       - name: Run inject against mosquitto on compose network
         run: |
           docker run --rm \
             --network stack_packiot-net \
-            -v "$PWD/services/edge-transformer/inject-counter-fixture:/app/inject" \
+            -v "$PWD/services/sparkplug-decoder/inject-counter-fixture:/app/inject" \
             alpine:3.20 \
             /app/inject --broker tcp://mosquitto:1883 --value ${{ inputs.value }}
 
-      - name: Wait for edge-transformer to process
+      - name: Wait for sparkplug-decoder to process
         run: sleep 3
 
       - name: Snapshot /metrics AFTER inject
         run: |
           echo "=== calc_ metrics AFTER inject ==="
-          docker run --rm --network container:edge-transformer curlimages/curl:latest \
+          docker run --rm --network container:sparkplug-decoder curlimages/curl:latest \
             -s http://localhost:9102/metrics 2>/dev/null \
             | grep -E '^(calc_|# .*calc_)' \
             | head -40 || echo "(no calc_ metrics)"
 
           echo ""
-          echo "=== last 40 log lines from edge-transformer ==="
-          docker logs --tail 40 edge-transformer 2>&1 | grep -iE 'calc_|sparkplug|shadow|error|warn' | tail -40
+          echo "=== last 40 log lines from sparkplug-decoder ==="
+          docker logs --tail 40 sparkplug-decoder 2>&1 | grep -iE 'calc_|sparkplug|shadow|error|warn' | tail -40
 
       - name: Cleanup inject binary
         if: always()
-        run: rm -f services/edge-transformer/inject-counter-fixture
+        run: rm -f services/sparkplug-decoder/inject-counter-fixture

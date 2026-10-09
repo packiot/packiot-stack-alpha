@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/clientdescriptor"
+	"gopkg.in/yaml.v3"
 )
 
 const testKey = "onboard-test-key"
@@ -118,6 +119,136 @@ func TestGenerate_BISPHARMA(t *testing.T) {
 	}
 }
 
+// postJSON drives a JSON request through the handler at the given path.
+func postJSON(t *testing.T, s *Server, path, bearer string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestSimulate_ScrapExpr is the ADR-0058 simulate-endpoint proof: POST a
+// descriptor (as a JSON object, the shape a JS client sends) + sample tags, and
+// the endpoint runs the tenant's expr rules and returns the produced tags — the
+// engine the CS-Admin simulate-before-deploy preview calls.
+func TestSimulate_ScrapExpr(t *testing.T) {
+	s := newTestServer(t)
+	// Convert the YAML example to a JSON descriptor object (what csadmin holds).
+	var descObj map[string]any
+	if err := yaml.Unmarshal(readFixture(t, "examples/derived.descriptor.yaml"), &descObj); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	descJSON, err := json.Marshal(descObj)
+	if err != nil {
+		t.Fatalf("marshal descriptor: %v", err)
+	}
+	reqBody, err := json.Marshal(map[string]any{
+		"descriptor": json.RawMessage(descJSON),
+		"samples": []map[string]any{
+			{"metric": "/L5/SCRAP/Status/DW0", "value": 100, "ts_millis": 1000},
+			{"metric": "/L5/SCRAP/Status/DW4", "value": 88, "ts_millis": 1000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := postJSON(t, s, "/v1/onboard/simulate", testKey, reqBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var resp SimulateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, rec.Body.String())
+	}
+	// The scrap = gross-net expr must have run and emitted 12.
+	var got any
+	for _, e := range resp.Emitted {
+		if e.Metric == "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit" {
+			got = e.Value
+		}
+	}
+	if got == nil {
+		t.Fatalf("no scrap tag emitted; emitted=%+v", resp.Emitted)
+	}
+	if got != float64(12) {
+		t.Fatalf("scrap = gross-net: got %v, want 12", got)
+	}
+	// The active-rules summary must include the expr rule (preview shows it before
+	// any samples are fed).
+	sawExpr := false
+	for _, r := range resp.DerivedRules {
+		if r.Kind == "expr" && r.Expr == "gross - net" {
+			sawExpr = true
+		}
+	}
+	if !sawExpr {
+		t.Errorf("derived_rules did not report the expr rule: %+v", resp.DerivedRules)
+	}
+	// Serializes as [] not null when empty (stable client shape).
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"emitted"`)) {
+		t.Error("response missing emitted field")
+	}
+}
+
+// TestSimulate_Auth: the simulate endpoint enforces the same bearer as generate.
+func TestSimulate_Auth(t *testing.T) {
+	s := newTestServer(t)
+	rec := postJSON(t, s, "/v1/onboard/simulate", "wrong-key", []byte(`{"descriptor":{},"samples":[]}`))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+// TestGenerate_ReaderFlowAndCustomizations is the ADR-0058 P2.1 proof (gap G-B):
+// the HTTP path now RETURNS the reader flow it used to drop, and an authored
+// `customizations` node is rendered onto it — so an API consumer can actually ship
+// the customization. Uses the plc-bearing example + an appended customization.
+func TestGenerate_ReaderFlowAndCustomizations(t *testing.T) {
+	s := newTestServer(t)
+	base := readFixture(t, "examples/bispharma.descriptor.yaml") // has a plc block → a reader flow
+	cust := "\ncustomizations:\n  - {id: \"cust-merge-1\", type: \"function\", name: \"merge two plc\", func: \"return msg;\", wires: [[]]}\n"
+	rec := post(t, s, testKey, append(append([]byte{}, base...), []byte(cust)...))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	resp := decodeResp(t, rec)
+	// Previously both were dropped by the HTTP wrapper; a plc descriptor must now
+	// carry them.
+	if strings.TrimSpace(resp.Artifacts.ReaderFlow) == "" {
+		t.Fatal("reader_flow is empty — the HTTP path still drops the flow (P2.1 not wired)")
+	}
+	if strings.TrimSpace(resp.Artifacts.ClientYAML) == "" {
+		t.Error("client_yaml is empty — the HTTP path still drops the reader client.yaml")
+	}
+	// The authored customization must be rendered INTO the shipped flow (proves the
+	// customization actually reaches an API consumer, not just that a flow exists).
+	if !strings.Contains(resp.Artifacts.ReaderFlow, "cust-merge-1") {
+		t.Fatalf("reader_flow does not contain the authored customization node cust-merge-1")
+	}
+}
+
+// TestGenerate_AuthoringErrorIs400 proves a render-time AUTHORING mistake (a
+// typo'd reader spot) answers 400 with the reason — not 500 "generation failed",
+// which edge-api surfaced to the CS engineer as a 503 upstream error.
+func TestGenerate_AuthoringErrorIs400(t *testing.T) {
+	s := newTestServer(t)
+	base := readFixture(t, "examples/bispharma.descriptor.yaml")
+	cust := "\ncustomizations:\n  - {id: sub, type: \"link in\", z: t, links: [bispharma_spot_tagz], wires: [[]]}\n"
+	rec := post(t, s, testKey, append(append([]byte{}, base...), []byte(cust)...))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown reader spot") {
+		t.Errorf("body should name the bad spot: %s", rec.Body.String())
+	}
+}
+
 // TestGenerate_EquivalenceWithCLI proves the single-path refactor didn't drift:
 // the endpoint's four artifacts are byte-identical to what Descriptor.Generate
 // produces directly (the exact call the onboard-gen CLI makes).
@@ -202,7 +333,7 @@ func TestGenerate_JSONBody(t *testing.T) {
 		"canonical": {"prefix": "TESTCO/SP"},
 		"mapping": {"count_index_default_mode": "equipment_id"},
 		"equipment": [
-			{"topic": "TESTCO/SP/LINHAS/L1/M1", "id_equipment": 501, "tp_equipment": 1, "id_unit": 501}
+			{"topic": "TESTCO/SP/LINHAS/L1/M1", "device_key": "dk_000000000000000000000000000001f5", "id_equipment": 501, "tp_equipment": 1, "id_unit": 501}
 		]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/onboard/generate", bytes.NewReader(jsonDescriptor))

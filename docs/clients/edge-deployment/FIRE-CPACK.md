@@ -11,7 +11,7 @@ Node-RED — nothing legacy is touched.
   Node-RED ──reads──▶ PLCs                                mosquitto :8883 (mTLS)
      │  tee: POST http://localhost:9104/v1/tags               │  (CN=cpack verified)
      ▼                                                        ▼
-  sparkplug-agent ── builds SparkPlug B, buffers (outbox) ──▶ │──▶ edge-transformer ──▶ F3
+  sparkplug-agent ── builds SparkPlug B, buffers (outbox) ──▶ │──▶ sparkplug-decoder ──▶ F3
      └──────────── real SparkPlug B over mTLS ───────────────▶│    (already subscribed)
 ```
 
@@ -25,6 +25,10 @@ a disk outbox so a WAN blip doesn't lose data.
 Linux (amd64/arm64), Docker + Compose v2, reaches the CPACK PLCs + the internet.
 
 ### 2. [factory] Register it as the `cpack` runner  ← makes the Action land here
+> ⚠️ **SUPERSEDED (ADR-0049).** New edge boxes enroll via **SSM** instead of a
+> GitHub runner — see README §5.5 (`ssm-register.sh` + `ssm-register.service`).
+> CS-Admin then deploys via RunCommand (`POST /api/edge-ssm/deploy`). The runner
+> path below is kept as break-glass only.
 ```bash
 git clone https://github.com/packiot/packiot-stack-alpha.git
 cd packiot-stack-alpha/docs/clients/edge-deployment

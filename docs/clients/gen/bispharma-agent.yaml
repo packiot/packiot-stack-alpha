@@ -11,418 +11,557 @@ sparkplug:
 raw_tag_map:
     - metric_suffix: /LINHAS/L01/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01
+      device_key: dk_26d8d3ce85e1e7ff068412f2ba2277a3
+      role: counter.net
     - metric_suffix: /LINHAS/L01/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01
+      device_key: dk_26d8d3ce85e1e7ff068412f2ba2277a3
+      role: counter.gross
     - metric_suffix: /LINHAS/L01/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01
+      device_key: dk_26d8d3ce85e1e7ff068412f2ba2277a3
+      role: counter.scrap
     - metric_suffix: /LINHAS/L01/Admin/ProdConsumedCount/168/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01
+      device_key: dk_26d8d3ce85e1e7ff068412f2ba2277a3
+      role: counter.gross
     - metric_suffix: /LINHAS/L01/Admin/ProdProcessedCount/169/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01
+      device_key: dk_26d8d3ce85e1e7ff068412f2ba2277a3
+      role: counter.net
     - metric_suffix: /LINHAS/L01/S3/Admin/ProdProcessedCount/164/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01-S3
+      device_key: dk_41cb2b7b10a29af2e8898f38c56d078c
+      role: counter.net
     - metric_suffix: /LINHAS/L01/S4/Admin/ProdProcessedCount/165/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01-S4
+      device_key: dk_76bb46f59eb90acb27c7f8fb914afef9
+      role: counter.net
     - metric_suffix: /LINHAS/L01/S5/Admin/ProdProcessedCount/166/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01-S5
+      device_key: dk_4587eacba03e9cf679703809aa9b87fd
+      role: counter.net
     - metric_suffix: /LINHAS/L01/S6_OUTPUT/Admin/ProdProcessedCount/167/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L01-S6_OUTPUT
+      device_key: dk_43c3ddcefcd45e817057377edcdd19f9
+      role: counter.net
     - metric_suffix: /LINHAS/L03/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03
+      device_key: dk_6150e528f0062925ec009871aea0dc64
+      role: counter.net
     - metric_suffix: /LINHAS/L03/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03
+      device_key: dk_6150e528f0062925ec009871aea0dc64
+      role: counter.gross
     - metric_suffix: /LINHAS/L03/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03
+      device_key: dk_6150e528f0062925ec009871aea0dc64
+      role: counter.scrap
     - metric_suffix: /LINHAS/L03/Admin/ProdConsumedCount/311/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03
+      device_key: dk_6150e528f0062925ec009871aea0dc64
+      role: counter.gross
     - metric_suffix: /LINHAS/L03/Admin/ProdProcessedCount/312/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03
+      device_key: dk_6150e528f0062925ec009871aea0dc64
+      role: counter.net
     - metric_suffix: /LINHAS/L03/S3/Admin/ProdProcessedCount/307/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03-S3
+      device_key: dk_5d040cde8a257489e447201a5a389ae4
+      role: counter.net
     - metric_suffix: /LINHAS/L03/S4/Admin/ProdProcessedCount/308/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03-S4
+      device_key: dk_6e5a175291614f8fd483a4a9ad96afc2
+      role: counter.net
     - metric_suffix: /LINHAS/L03/S5/Admin/ProdProcessedCount/309/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03-S5
+      device_key: dk_5b4f4bb0f91b4cdae5c715c650c50f69
+      role: counter.net
     - metric_suffix: /LINHAS/L03/S6_OUTPUT/Admin/ProdProcessedCount/310/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L03-S6_OUTPUT
+      device_key: dk_7dcf4aa12c1d58fa7e3694a88ecf9ff3
+      role: counter.net
     - metric_suffix: /LINHAS/L04/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04
+      device_key: dk_4117edecdae3ea0e0880baf673d98076
+      role: counter.net
     - metric_suffix: /LINHAS/L04/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04
+      device_key: dk_4117edecdae3ea0e0880baf673d98076
+      role: counter.gross
     - metric_suffix: /LINHAS/L04/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04
+      device_key: dk_4117edecdae3ea0e0880baf673d98076
+      role: counter.scrap
     - metric_suffix: /LINHAS/L04/Admin/ProdConsumedCount/318/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04
+      device_key: dk_4117edecdae3ea0e0880baf673d98076
+      role: counter.gross
     - metric_suffix: /LINHAS/L04/Admin/ProdProcessedCount/319/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04
+      device_key: dk_4117edecdae3ea0e0880baf673d98076
+      role: counter.net
     - metric_suffix: /LINHAS/L04/S3/Admin/ProdProcessedCount/314/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04-S3
+      device_key: dk_9bfc7b8b19cefd082ef81c14335fa69b
+      role: counter.net
     - metric_suffix: /LINHAS/L04/S4/Admin/ProdProcessedCount/315/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04-S4
+      device_key: dk_7f60788ea5871f4fabc3bc2cced9b0e1
+      role: counter.net
     - metric_suffix: /LINHAS/L04/S5/Admin/ProdProcessedCount/316/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04-S5
+      device_key: dk_07568b30b9f4a05952b9226788af0078
+      role: counter.net
     - metric_suffix: /LINHAS/L04/S6_OUTPUT/Admin/ProdProcessedCount/317/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L04-S6_OUTPUT
+      device_key: dk_2edb19fb0fac698ab4d8efbe0c4d1af8
+      role: counter.net
     - metric_suffix: /LINHAS/L05/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05
+      device_key: dk_a83df21408197c422f8d92a86d1bbed0
+      role: counter.net
     - metric_suffix: /LINHAS/L05/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05
+      device_key: dk_a83df21408197c422f8d92a86d1bbed0
+      role: counter.gross
     - metric_suffix: /LINHAS/L05/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05
+      device_key: dk_a83df21408197c422f8d92a86d1bbed0
+      role: counter.scrap
     - metric_suffix: /LINHAS/L05/Admin/ProdConsumedCount/628/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05
+      device_key: dk_a83df21408197c422f8d92a86d1bbed0
+      role: counter.gross
     - metric_suffix: /LINHAS/L05/Admin/ProdProcessedCount/629/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05
+      device_key: dk_a83df21408197c422f8d92a86d1bbed0
+      role: counter.net
     - metric_suffix: /LINHAS/L05/S3/Admin/ProdProcessedCount/624/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05-S3
+      device_key: dk_8821ef4d1993059485c3d1706cab4ddc
+      role: counter.net
     - metric_suffix: /LINHAS/L05/S4/Admin/ProdProcessedCount/625/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05-S4
+      device_key: dk_d3c725b78c5a61841974ed5fa46221d3
+      role: counter.net
     - metric_suffix: /LINHAS/L05/S5/Admin/ProdProcessedCount/626/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05-S5
+      device_key: dk_12b8c3dbb03015d9bc30c95b1a50a7b3
+      role: counter.net
     - metric_suffix: /LINHAS/L05/S6_OUTPUT/Admin/ProdProcessedCount/627/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L05-S6_OUTPUT
+      device_key: dk_af123b63110ac40d25cb16f353b309e1
+      role: counter.net
     - metric_suffix: /LINHAS/L06/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06
+      device_key: dk_49ff9417d053e45f8c2b816d1d025e2f
+      role: counter.net
     - metric_suffix: /LINHAS/L06/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06
+      device_key: dk_49ff9417d053e45f8c2b816d1d025e2f
+      role: counter.gross
     - metric_suffix: /LINHAS/L06/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06
+      device_key: dk_49ff9417d053e45f8c2b816d1d025e2f
+      role: counter.scrap
     - metric_suffix: /LINHAS/L06/Admin/ProdConsumedCount/261/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06
+      device_key: dk_49ff9417d053e45f8c2b816d1d025e2f
+      role: counter.gross
     - metric_suffix: /LINHAS/L06/Admin/ProdProcessedCount/262/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06
+      device_key: dk_49ff9417d053e45f8c2b816d1d025e2f
+      role: counter.net
     - metric_suffix: /LINHAS/L06/S3/Admin/ProdProcessedCount/257/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06-S3
+      device_key: dk_c9133944c1a81e653456fc651320420d
+      role: counter.net
     - metric_suffix: /LINHAS/L06/S4/Admin/ProdProcessedCount/258/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06-S4
+      device_key: dk_86b0cbdbe7f697c61e075f237652f514
+      role: counter.net
     - metric_suffix: /LINHAS/L06/S5/Admin/ProdProcessedCount/259/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06-S5
+      device_key: dk_6662000ea887f21f9cf3a73a8059f8a7
+      role: counter.net
     - metric_suffix: /LINHAS/L06/S6_OUTPUT/Admin/ProdProcessedCount/260/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L06-S6_OUTPUT
+      device_key: dk_a2a27fc266f69dad27e5031782cd6dd6
+      role: counter.net
     - metric_suffix: /LINHAS/L07/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07
+      device_key: dk_5d47b5b7c77f49076f7afe492549334d
+      role: counter.net
     - metric_suffix: /LINHAS/L07/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07
+      device_key: dk_5d47b5b7c77f49076f7afe492549334d
+      role: counter.gross
     - metric_suffix: /LINHAS/L07/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07
+      device_key: dk_5d47b5b7c77f49076f7afe492549334d
+      role: counter.scrap
     - metric_suffix: /LINHAS/L07/Admin/ProdConsumedCount/324/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07
+      device_key: dk_5d47b5b7c77f49076f7afe492549334d
+      role: counter.gross
     - metric_suffix: /LINHAS/L07/Admin/ProdProcessedCount/325/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07
+      device_key: dk_5d47b5b7c77f49076f7afe492549334d
+      role: counter.net
     - metric_suffix: /LINHAS/L07/S3/Admin/ProdProcessedCount/320/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07-S3
+      device_key: dk_3a56f9eef8e155e24327eb953788b2f7
+      role: counter.net
     - metric_suffix: /LINHAS/L07/S4/Admin/ProdProcessedCount/321/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07-S4
+      device_key: dk_60b441028b31a7c69ffd5911fc156f1d
+      role: counter.net
     - metric_suffix: /LINHAS/L07/S5/Admin/ProdProcessedCount/322/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07-S5
+      device_key: dk_43200afa5c3ab1690a34e053301220e6
+      role: counter.net
     - metric_suffix: /LINHAS/L07/S6_OUTPUT/Admin/ProdProcessedCount/323/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L07-S6_OUTPUT
+      device_key: dk_cab7618efd8af3a8c30397c2d742c5dd
+      role: counter.net
     - metric_suffix: /LINHAS/L09/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09
+      device_key: dk_87d6e4c9c5c463d5f5c38ce37ea6e6f5
+      role: counter.net
     - metric_suffix: /LINHAS/L09/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09
+      device_key: dk_87d6e4c9c5c463d5f5c38ce37ea6e6f5
+      role: counter.gross
     - metric_suffix: /LINHAS/L09/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09
+      device_key: dk_87d6e4c9c5c463d5f5c38ce37ea6e6f5
+      role: counter.scrap
     - metric_suffix: /LINHAS/L09/Admin/ProdConsumedCount/128/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09
+      device_key: dk_87d6e4c9c5c463d5f5c38ce37ea6e6f5
+      role: counter.gross
     - metric_suffix: /LINHAS/L09/Admin/ProdProcessedCount/129/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09
+      device_key: dk_87d6e4c9c5c463d5f5c38ce37ea6e6f5
+      role: counter.net
     - metric_suffix: /LINHAS/L09/S3/Admin/ProdProcessedCount/124/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09-S3
+      device_key: dk_f90171a98ebff9564500c80b9580a24f
+      role: counter.net
     - metric_suffix: /LINHAS/L09/S4/Admin/ProdProcessedCount/125/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09-S4
+      device_key: dk_5c07422b29f3c15ce9571b2b88bfcd61
+      role: counter.net
     - metric_suffix: /LINHAS/L09/S5/Admin/ProdProcessedCount/126/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09-S5
+      device_key: dk_3fcab6c3934f2dfaaec1bd575a8d1f4f
+      role: counter.net
     - metric_suffix: /LINHAS/L09/S6_OUTPUT/Admin/ProdProcessedCount/127/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L09-S6_OUTPUT
+      device_key: dk_aa2e88d63b78154560c7be6a193d110c
+      role: counter.net
     - metric_suffix: /LINHAS/L11/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11
+      device_key: dk_cb6fbeff8e6fb7869866414607072589
+      role: counter.net
     - metric_suffix: /LINHAS/L11/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11
+      device_key: dk_cb6fbeff8e6fb7869866414607072589
+      role: counter.gross
     - metric_suffix: /LINHAS/L11/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11
+      device_key: dk_cb6fbeff8e6fb7869866414607072589
+      role: counter.scrap
     - metric_suffix: /LINHAS/L11/Admin/ProdConsumedCount/174/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11
+      device_key: dk_cb6fbeff8e6fb7869866414607072589
+      role: counter.gross
     - metric_suffix: /LINHAS/L11/Admin/ProdProcessedCount/175/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11
+      device_key: dk_cb6fbeff8e6fb7869866414607072589
+      role: counter.net
     - metric_suffix: /LINHAS/L11/S3/Admin/ProdProcessedCount/170/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11-S3
+      device_key: dk_4bb92993959fd615482a2f8250f3a53e
+      role: counter.net
     - metric_suffix: /LINHAS/L11/S4/Admin/ProdProcessedCount/171/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11-S4
+      device_key: dk_ab4d33bb05ecd8325664b9d69d236b7b
+      role: counter.net
     - metric_suffix: /LINHAS/L11/S5/Admin/ProdProcessedCount/172/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11-S5
+      device_key: dk_b3ff7d8d0ca1d63f13eabf44b96757a4
+      role: counter.net
     - metric_suffix: /LINHAS/L11/S6_OUTPUT/Admin/ProdProcessedCount/173/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L11-S6_OUTPUT
+      device_key: dk_d9667f9ab79d9822daaa1595e149b54a
+      role: counter.net
     - metric_suffix: /LINHAS/L12/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12
+      device_key: dk_674da33d8ef42ed51d16aca2c1126d87
+      role: counter.net
     - metric_suffix: /LINHAS/L12/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12
+      device_key: dk_674da33d8ef42ed51d16aca2c1126d87
+      role: counter.gross
     - metric_suffix: /LINHAS/L12/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12
+      device_key: dk_674da33d8ef42ed51d16aca2c1126d87
+      role: counter.scrap
     - metric_suffix: /LINHAS/L12/Admin/ProdConsumedCount/180/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12
+      device_key: dk_674da33d8ef42ed51d16aca2c1126d87
+      role: counter.gross
     - metric_suffix: /LINHAS/L12/Admin/ProdProcessedCount/181/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12
+      device_key: dk_674da33d8ef42ed51d16aca2c1126d87
+      role: counter.net
     - metric_suffix: /LINHAS/L12/S3/Admin/ProdProcessedCount/176/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12-S3
+      device_key: dk_614096f9a30b5083606d58119f4fdf42
+      role: counter.net
     - metric_suffix: /LINHAS/L12/S4/Admin/ProdProcessedCount/177/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12-S4
+      device_key: dk_dd7909726c332aa7b8addce2e023370c
+      role: counter.net
     - metric_suffix: /LINHAS/L12/S5/Admin/ProdProcessedCount/178/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12-S5
+      device_key: dk_369ded7f42f0210ee31c1d6b6b23935f
+      role: counter.net
     - metric_suffix: /LINHAS/L12/S6_OUTPUT/Admin/ProdProcessedCount/179/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L12-S6_OUTPUT
+      device_key: dk_11b8a1ee6282740e997697e85f18b102
+      role: counter.net
     - metric_suffix: /LINHAS/L13/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13
+      device_key: dk_c6886614e88b02ddc2f4d82053728b20
+      role: counter.net
     - metric_suffix: /LINHAS/L13/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13
+      device_key: dk_c6886614e88b02ddc2f4d82053728b20
+      role: counter.gross
     - metric_suffix: /LINHAS/L13/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13
+      device_key: dk_c6886614e88b02ddc2f4d82053728b20
+      role: counter.scrap
     - metric_suffix: /LINHAS/L13/Admin/ProdConsumedCount/305/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13
+      device_key: dk_c6886614e88b02ddc2f4d82053728b20
+      role: counter.gross
     - metric_suffix: /LINHAS/L13/Admin/ProdProcessedCount/306/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13
+      device_key: dk_c6886614e88b02ddc2f4d82053728b20
+      role: counter.net
     - metric_suffix: /LINHAS/L13/S3/Admin/ProdProcessedCount/301/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13-S3
+      device_key: dk_1ca2f72ac5068ca736e54355ca178a6a
+      role: counter.net
     - metric_suffix: /LINHAS/L13/S4/Admin/ProdProcessedCount/302/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13-S4
+      device_key: dk_1322853baaca8f26ed7e91760a4f1ba9
+      role: counter.net
     - metric_suffix: /LINHAS/L13/S5/Admin/ProdProcessedCount/303/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13-S5
+      device_key: dk_2b54ea1d9dcfd9109562c3403db167f7
+      role: counter.net
     - metric_suffix: /LINHAS/L13/S6_OUTPUT/Admin/ProdProcessedCount/304/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L13-S6_OUTPUT
+      device_key: dk_549f4ed99d64d1712b70e763a54e33c1
+      role: counter.net
     - metric_suffix: /LINHAS/L14/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14
+      device_key: dk_af5d2728387992e2d7b1cdc2026c102c
+      role: counter.net
     - metric_suffix: /LINHAS/L14/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14
+      device_key: dk_af5d2728387992e2d7b1cdc2026c102c
+      role: counter.gross
     - metric_suffix: /LINHAS/L14/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14
+      device_key: dk_af5d2728387992e2d7b1cdc2026c102c
+      role: counter.scrap
     - metric_suffix: /LINHAS/L14/Admin/ProdConsumedCount/336/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14
+      device_key: dk_af5d2728387992e2d7b1cdc2026c102c
+      role: counter.gross
     - metric_suffix: /LINHAS/L14/Admin/ProdProcessedCount/337/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14
+      device_key: dk_af5d2728387992e2d7b1cdc2026c102c
+      role: counter.net
     - metric_suffix: /LINHAS/L14/S3/Admin/ProdProcessedCount/332/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14-S3
+      device_key: dk_a419c0ec19f216448dd1595e75b45412
+      role: counter.net
     - metric_suffix: /LINHAS/L14/S4/Admin/ProdProcessedCount/333/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14-S4
+      device_key: dk_84499b405052783d9100c095fe14a9a8
+      role: counter.net
     - metric_suffix: /LINHAS/L14/S5/Admin/ProdProcessedCount/334/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14-S5
+      device_key: dk_fe47761ae38bcb30dccaed5be408b793
+      role: counter.net
     - metric_suffix: /LINHAS/L14/S6_OUTPUT/Admin/ProdProcessedCount/335/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L14-S6_OUTPUT
+      device_key: dk_d856ec69c8c31c9bbf85f5e4fa248613
+      role: counter.net
     - metric_suffix: /LINHAS/L16/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16
+      device_key: dk_bbba021a2121cda97e7ef2e12bc57e26
+      role: counter.net
     - metric_suffix: /LINHAS/L16/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16
+      device_key: dk_bbba021a2121cda97e7ef2e12bc57e26
+      role: counter.gross
     - metric_suffix: /LINHAS/L16/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16
+      device_key: dk_bbba021a2121cda97e7ef2e12bc57e26
+      role: counter.scrap
     - metric_suffix: /LINHAS/L16/Admin/ProdConsumedCount/186/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16
+      device_key: dk_bbba021a2121cda97e7ef2e12bc57e26
+      role: counter.gross
     - metric_suffix: /LINHAS/L16/Admin/ProdProcessedCount/187/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16
+      device_key: dk_bbba021a2121cda97e7ef2e12bc57e26
+      role: counter.net
     - metric_suffix: /LINHAS/L16/S3/Admin/ProdProcessedCount/182/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16-S3
+      device_key: dk_79802a7f5d2cb6878e64e010639e5b3e
+      role: counter.net
     - metric_suffix: /LINHAS/L16/S4/Admin/ProdProcessedCount/183/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16-S4
+      device_key: dk_6fd5c59579835c1210bcf7a6f2bf4ae5
+      role: counter.net
     - metric_suffix: /LINHAS/L16/S5/Admin/ProdProcessedCount/184/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16-S5
+      device_key: dk_0ec57e4116a47d1954b056bd21376644
+      role: counter.net
     - metric_suffix: /LINHAS/L16/S6_OUTPUT/Admin/ProdProcessedCount/185/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L16-S6_OUTPUT
+      device_key: dk_f110b8058ba3cacba15dafe27c584307
+      role: counter.net
     - metric_suffix: /LINHAS/L18/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18
+      device_key: dk_bc9a9d988ee0599e757a74008fadf785
+      role: counter.net
     - metric_suffix: /LINHAS/L18/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18
+      device_key: dk_bc9a9d988ee0599e757a74008fadf785
+      role: counter.gross
     - metric_suffix: /LINHAS/L18/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18
+      device_key: dk_bc9a9d988ee0599e757a74008fadf785
+      role: counter.scrap
     - metric_suffix: /LINHAS/L18/PRENSA/Admin/ProdProcessedCount/543/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18-PRENSA
+      device_key: dk_55d3732c150011511aed0907130e8011
+      role: counter.net
     - metric_suffix: /LINHAS/L18/TORNO/Admin/ProdProcessedCount/544/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18-TORNO
+      device_key: dk_3ab79b842b580fd3a2866f1d8cf5ca8a
+      role: counter.net
     - metric_suffix: /LINHAS/L18/ACUMULADOR/Admin/ProdProcessedCount/546/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18-ACUMULADOR
+      device_key: dk_845f89836ecbffde4cb2475db5b48a9f
+      role: counter.net
     - metric_suffix: /LINHAS/L18/IMPRESSAO/Admin/ProdProcessedCount/548/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18-IMPRESSAO
+      device_key: dk_04a3a91256e8ec882f2e67d39ccafbc8
+      role: counter.net
     - metric_suffix: /LINHAS/L18/TAMPADEIRA/Admin/ProdProcessedCount/549/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L18-TAMPADEIRA
+      device_key: dk_e0753db947f97a13ced4c86808c7e4cb
+      role: counter.net
     - metric_suffix: /LINHAS/L19/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19
+      device_key: dk_f0956f0be9283eebe8c74984d4a5a979
+      role: counter.net
     - metric_suffix: /LINHAS/L19/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19
+      device_key: dk_f0956f0be9283eebe8c74984d4a5a979
+      role: counter.gross
     - metric_suffix: /LINHAS/L19/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19
+      device_key: dk_f0956f0be9283eebe8c74984d4a5a979
+      role: counter.scrap
     - metric_suffix: /LINHAS/L19/Admin/ProdConsumedCount/647/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19
+      device_key: dk_f0956f0be9283eebe8c74984d4a5a979
+      role: counter.gross
     - metric_suffix: /LINHAS/L19/Admin/ProdProcessedCount/648/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19
+      device_key: dk_f0956f0be9283eebe8c74984d4a5a979
+      role: counter.net
     - metric_suffix: /LINHAS/L19/S3/Admin/ProdProcessedCount/643/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19-S3
+      device_key: dk_f53d5354ba15f3db11f2aea61c81fdd9
+      role: counter.net
     - metric_suffix: /LINHAS/L19/S4/Admin/ProdProcessedCount/644/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19-S4
+      device_key: dk_5f2f369f63bccc50e4893f5f968530ca
+      role: counter.net
     - metric_suffix: /LINHAS/L19/S5/Admin/ProdProcessedCount/645/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19-S5
+      device_key: dk_0583af8d9e92aca7ca2eaa7e2fc5a99a
+      role: counter.net
     - metric_suffix: /LINHAS/L19/S6_OUTPUT/Admin/ProdProcessedCount/646/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L19-S6_OUTPUT
+      device_key: dk_449f9b255d82017513cfe5a889d3b63f
+      role: counter.net
     - metric_suffix: /LINHAS/L20/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20
+      device_key: dk_1e30bfb0a68c6151bdbc5e487bba4f9d
+      role: counter.net
     - metric_suffix: /LINHAS/L20/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20
+      device_key: dk_1e30bfb0a68c6151bdbc5e487bba4f9d
+      role: counter.gross
     - metric_suffix: /LINHAS/L20/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20
+      device_key: dk_1e30bfb0a68c6151bdbc5e487bba4f9d
+      role: counter.scrap
     - metric_suffix: /LINHAS/L20/Admin/ProdConsumedCount/653/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20
+      device_key: dk_1e30bfb0a68c6151bdbc5e487bba4f9d
+      role: counter.gross
     - metric_suffix: /LINHAS/L20/Admin/ProdProcessedCount/654/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20
+      device_key: dk_1e30bfb0a68c6151bdbc5e487bba4f9d
+      role: counter.net
     - metric_suffix: /LINHAS/L20/S3/Admin/ProdProcessedCount/649/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20-S3
+      device_key: dk_cdc86a6a6403004568d094412078b55e
+      role: counter.net
     - metric_suffix: /LINHAS/L20/S4/Admin/ProdProcessedCount/650/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20-S4
+      device_key: dk_3f2b3e9ac602ac6635fad73e76b49eca
+      role: counter.net
     - metric_suffix: /LINHAS/L20/S5/Admin/ProdProcessedCount/651/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20-S5
+      device_key: dk_2864b9e1bd564f2fa08c63fbe740c1da
+      role: counter.net
     - metric_suffix: /LINHAS/L20/S6_OUTPUT/Admin/ProdProcessedCount/652/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L20-S6_OUTPUT
+      device_key: dk_02bb1a831b0d53bcb853c4e260a3a62b
+      role: counter.net
     - metric_suffix: /LINHAS/L90/Admin/ProdProcessedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L90
+      device_key: dk_ed840fd1c606f93dd18bd014982ba802
+      role: counter.net
     - metric_suffix: /LINHAS/L90/Admin/ProdConsumedCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L90
+      device_key: dk_ed840fd1c606f93dd18bd014982ba802
+      role: counter.gross
     - metric_suffix: /LINHAS/L90/Admin/ProdDefectiveCount
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L90
+      device_key: dk_ed840fd1c606f93dd18bd014982ba802
+      role: counter.scrap
     - metric_suffix: /LINHAS/L90/S1_INFEED/Admin/ProdProcessedCount/684/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L90-S1_INFEED
+      device_key: dk_74e8083ee7991081d116b8d7702c8a45
+      role: counter.net
     - metric_suffix: /LINHAS/L90/S2_OUTPUT/Admin/ProdProcessedCount/685/Unit
       type: double
-      device_key: BISPHARMA-SP-LINHAS-L90-S2_OUTPUT
+      device_key: dk_2b60bcc2a61e32334b2ae7595d1dd247
+      role: counter.net

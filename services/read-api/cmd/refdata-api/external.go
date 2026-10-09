@@ -589,36 +589,50 @@ type backingFn struct {
 // Family B → edge-api, not here — it holds an outbound secret, ADR-0031 §3b).
 var externalShims = []externalShim{
 	{
-		consumer:       "neopac",
-		path:           "/ext/neopac/sap-report",
-		ownerEnv:       "EXTERNAL_NEOPAC_CUSTOMER_ID",
-		run:            runNeopacSapReport,
-		backingViews:   []string{"v_13_site_deb_sap_report"},
-		guardRelations: []string{"equipments"},
+		consumer: "neopac",
+		path:     "/ext/neopac/sap-report",
+		ownerEnv: "EXTERNAL_NEOPAC_CUSTOMER_ID",
+		run:      runNeopacSapReport,
+		// t244 enterprise-06/13 parameterization: the frozen ent-13 view
+		// v_13_site_deb_sap_report is replaced by the generic
+		// serving.sap_site_report(p_id_enterprise, p_id_equipment) — the tenant is
+		// now an explicit $1 param, strengthening the fence. arity 2.
+		backingFunctions: []backingFn{{name: "serving.sap_site_report", argc: 2}},
+		guardRelations:   []string{"equipments"},
 	},
 	{
-		consumer:     "neopac",
-		path:         "/ext/neopac/sap-report-sync",
-		ownerEnv:     "EXTERNAL_NEOPAC_CUSTOMER_ID",
-		run:          runNeopacSapReportSync,
-		backingViews: []string{"v_sap_report_data_sync_customer_13"},
+		consumer: "neopac",
+		path:     "/ext/neopac/sap-report-sync",
+		ownerEnv: "EXTERNAL_NEOPAC_CUSTOMER_ID",
+		run:      runNeopacSapReportSync,
+		// t244: the frozen customer-13 view v_sap_report_data_sync_customer_13 (which
+		// had NO id_enterprise column) is replaced by serving.sap_report_data_sync(
+		// p_id_enterprise) — the tenant fence moves from membrane-only to an explicit
+		// $1 = injected cid (membrane stays as defense-in-depth). arity 1.
+		backingFunctions: []backingFn{{name: "serving.sap_report_data_sync", argc: 1}},
 	},
 	// ── Montebello (Family A, ent 6) — see external_montebello_incoplast.go ──
 	{
-		consumer:     "montebello",
-		path:         "/ext/montebello/data-sync",
-		ownerEnv:     "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
-		run:          runMontebelloDataSync,
-		backingViews: []string{"v_piot_production_data_sync_cust6"},
+		consumer: "montebello",
+		path:     "/ext/montebello/data-sync",
+		ownerEnv: "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:      runMontebelloDataSync,
+		// t244: the frozen ent-6 view v_piot_production_data_sync_cust6 is replaced
+		// by serving.production_data_sync(p_id_enterprise) — the injected cid is now
+		// an explicit $1 param. arity 1.
+		backingFunctions: []backingFn{{name: "serving.production_data_sync", argc: 1}},
 		// header x-api-key auth (default) — reproduces data-sync.controller.js
 	},
 	{
-		consumer:         "montebello",
-		path:             "/ext/montebello/events",
-		ownerEnv:         "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
-		run:              runMontebelloEvents,
-		auth:             queryAPIKeyAuth("api_key is required!", "Not authorized!"),
-		backingFunctions: []backingFn{{name: "get_downtime_sync_enterprsie_06", argc: 0}},
+		consumer: "montebello",
+		path:     "/ext/montebello/events",
+		ownerEnv: "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:      runMontebelloEvents,
+		auth:     queryAPIKeyAuth("api_key is required!", "Not authorized!"),
+		// t244: get_downtime_sync_enterprsie_06() (argc 0, ent-6 hardcoded) is
+		// replaced by serving.downtime_sync(p_id_enterprise) — the tenant is now an
+		// explicit $1 param. arity 0 → 1.
+		backingFunctions: []backingFn{{name: "serving.downtime_sync", argc: 1}},
 	},
 	// ── Incoplast (Family A, api_key) — see external_montebello_incoplast.go ──
 	{
@@ -643,12 +657,15 @@ var externalShims = []externalShim{
 	// auth ladders (400/422, and get-shift-validation's distinct 500-for-all).
 	// The wildcard path is why the framework got muxPattern + exemptMatch (auth.go).
 	{
-		consumer:         "montebello",
-		path:             "/integration/job_data_integration/:id_enterprise",
-		ownerEnv:         "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
-		run:              runJobDataIntegration,
-		auth:             integrationEnterpriseAuth("id is required!"),
-		backingFunctions: []backingFn{{name: "get_data_sync_enterprsie_06b", argc: 1}},
+		consumer: "montebello",
+		path:     "/integration/job_data_integration/:id_enterprise",
+		ownerEnv: "EXTERNAL_MONTEBELLO_CUSTOMER_ID",
+		run:      runJobDataIntegration,
+		auth:     integrationEnterpriseAuth("id is required!"),
+		// t244: get_data_sync_enterprsie_06b(numdays) (argc 1, ent-6 hardcoded) is
+		// replaced by serving.data_sync(p_id_enterprise, p_numdays) — the tenant is
+		// now the explicit first $1 param. arity 1 → 2.
+		backingFunctions: []backingFn{{name: "serving.data_sync", argc: 2}},
 	},
 	{
 		consumer:       "montebello",
@@ -674,7 +691,9 @@ var externalShims = []externalShim{
 //   - resolve lineCode → id_equipment on `equipments`, tenant-fenced by $1
 //     (the `id_enterprise = 13` literal is now the injected customer_id);
 //   - 404 "Line code not found" when no equipment matches;
-//   - read the frozen v_13_site_deb_sap_report by that equipment;
+//   - read the generic serving.sap_site_report(cid, id_equipment) (t244 — replaces
+//     the frozen ent-13 view v_13_site_deb_sap_report; the tenant is now the
+//     explicit $1 param, id_equipment $2);
 //   - return the frozen `{data}` envelope.
 func runNeopacSapReport(ctx context.Context, deps shimDeps, cid int, r *http.Request) (any, *shimError) {
 	lineCode := r.URL.Query().Get("lineCode")
@@ -687,8 +706,10 @@ func runNeopacSapReport(ctx context.Context, deps shimDeps, cid int, r *http.Req
 		return nil, &shimError{status: http.StatusNotFound, body: "Line code not found"}
 	}
 	idEquipment := eq.rows[0][0]
+	// t244: $1 = injected cid (tenant fence, strengthened vs the frozen view which
+	// had no id_enterprise); $2 = the resolved id_equipment.
 	data := deps.query(ctx,
-		`SELECT * FROM v_13_site_deb_sap_report WHERE id_equipment = $1`, idEquipment)
+		`SELECT * FROM serving.sap_site_report($1, $2)`, cid, idEquipment)
 	return envData{Data: data}, nil
 }
 
@@ -699,16 +720,22 @@ func runNeopacSapReport(ctx context.Context, deps shimDeps, cid int, r *http.Req
 //   - the frozen `{page,limit,results,data}` envelope (page/limit as ints,
 //     results = row count).
 //
-// The frozen view v_sap_report_data_sync_customer_13 has no id_enterprise column
-// (it is pre-scoped to customer 13), so there is no $1 in this SQL — the tenant
-// fence is the owner-binding assertion in the membrane. See the file header.
-func runNeopacSapReportSync(ctx context.Context, deps shimDeps, _ int, r *http.Request) (any, *shimError) {
+// t244: the frozen view v_sap_report_data_sync_customer_13 (which had no
+// id_enterprise column — the tenant fence was membrane-only) is replaced by
+// serving.sap_report_data_sync(p_id_enterprise). The injected cid is now passed
+// as the function's $1 argument, STRENGTHENING the fence from membrane-only to an
+// explicit SQL param (the owner binding stays as defense-in-depth). The optional
+// German filters and LIMIT/OFFSET shift up one position (start at $2).
+func runNeopacSapReportSync(ctx context.Context, deps shimDeps, cid int, r *http.Request) (any, *shimError) {
 	q := r.URL.Query()
 	page := parseIntDefault(q.Get("page"), 1)
 	limit := parseIntDefault(q.Get("limit"), 1000)
 
+	// $1 = injected cid (the new explicit tenant param); every subsequent bind
+	// (filters, LIMIT/OFFSET) numbers off len(params), so seeding cid first shifts
+	// them all up by one automatically.
+	params := []any{cid}
 	var conds []string
-	var params []any
 	add := func(col string, val any) {
 		params = append(params, val)
 		conds = append(conds, fmt.Sprintf("%s = $%d", col, len(params)))
@@ -729,7 +756,7 @@ func runNeopacSapReportSync(ctx context.Context, deps shimDeps, _ int, r *http.R
 		add("shicht_nummer", v)
 	}
 
-	sql := "SELECT * FROM v_sap_report_data_sync_customer_13"
+	sql := "SELECT * FROM serving.sap_report_data_sync($1)"
 	if len(conds) > 0 {
 		sql += " WHERE " + strings.Join(conds, " AND ")
 	}

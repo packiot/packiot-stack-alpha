@@ -37,7 +37,7 @@ variable "runner_version" {
 variable "runner_repos" {
   description = "Comma-separated org repos to register a REPO-level runner for (Free plan can't use org-level runners on private repos). Add a repo here when it gains CI/deploy workflows."
   type        = string
-  default     = "edge-api" # csadmin has no workflows yet; add it here when it does
+  default     = "edge-api,back4-api" # csadmin has no workflows yet; add it here when it does
 }
 
 variable "runner_root_volume_gb" {

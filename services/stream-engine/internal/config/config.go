@@ -97,17 +97,6 @@ type Config struct {
 	// swap on main pool) untouched.
 	PGAnalyticsDBName string
 
-	// ShadowGoPortEnabled — ADR-0045 G3. Selects the MAIN-POOL background-job
-	// flow (see flows.StandardFiltered). DEFAULT TRUE = the F2 comparator
-	// layout (staging: jobs run against the `shadow_go_port` schema alongside
-	// F1). Set FALSE on a single-flow deployment (new-prod), where the three
-	// flows have collapsed to one living in `public` on the main pool: the
-	// `shadow_go_port` schema does not exist there, so leaving it enabled makes
-	// every background rollup tick error 42P01 (and nothing writes to `public`).
-	// When false the jobs target `public` instead. Default-true keeps staging
-	// byte-identical.
-	ShadowGoPortEnabled bool
-
 	// Pool sizing. The original 5 assumed the ingest consumer runs one query
 	// at a time — but the background rollup/refresh jobs (LoopRefresh, bake,
 	// grains, uns) share the SAME pools and run concurrently. On the shadow
@@ -138,13 +127,7 @@ type Config struct {
 	// has effect when ShiftResolverEnabled is also true.
 	ShiftFillFolded bool
 
-	// Speed33ReportEnabled — ADR-0012 Wave 2 port #1: the Go-scheduled
-	// writer for customer_reports.speed (customer 33). Legacy
-	// c33_speed_per_job_insert_into_report keeps the old table on prod;
-	// on staging this is the sole writer (legacy never scheduled here).
-	Speed33ReportEnabled   bool
-	Speed33IntervalMinutes int
-	Speed33CustomerID      int
+	// #263: Speed33* removed (ent-33 dead → customer_reports.speed dead-keyed, dropped).
 	Shift06ReportEnabled   bool
 	Shift06IntervalMinutes int
 	Shift06CustomerID      int
@@ -188,6 +171,14 @@ type Config struct {
 	CPACEventDerivationEnabled bool
 	CPACEventIntervalMin       int
 	CPACEventEnterprises       string // csv int list of status_type=0 enterprises (CPACK=3); empty ⇒ inert
+	// CPACEventLiveEnterprises — ADR-0010 §10.4 promotion. csv int list of
+	// counters-only enterprises for which the deriver mints into the LIVE
+	// equipment_events (a SECOND instance, separate from the shadow one above).
+	// ONLY for enterprises with NO other event writer (e.g. Bispharma ent5,
+	// counters-only, no MachSpeed/StateCurrent) — never a speed-based client like
+	// CPACK, which the mirror fan-out already writes (that would double-write, the
+	// #456 class). Empty ⇒ inert; the live instance is not scheduled at all.
+	CPACEventLiveEnterprises string
 	// CPACStopThresholdDefaultSec — fallback stop horizon when
 	// equipments.stop_threshold_time (Parameter 30751) IS NULL/0 (it is NULL for
 	// all CPACK equipment on staging). This is THE tuning knob the comparator
@@ -209,13 +200,19 @@ type Config struct {
 	EventsCloseStaleEnterprises  string // csv status_type=0 enterprise ids (CPACK=3); empty ⇒ inert
 	EventsCloseStaleThresholdSec int    // trailing-close grace when stop_threshold_time IS NULL/0
 	EventsCloseStaleHorizonHours int    // only reconcile opens with ts_event >= now()-horizon
+	// Long-open pass: open rows OLDER than the horizon but within this many days are
+	// closed at their successor's ts_event (a stop outliving the horizon was never
+	// closed — CPACK orphans of 4–52 days). 0 ⇒ default 60.
+	EventsCloseStaleLongHorizonDays int
 
-	// Sync06ReportEnabled — ADR-0014 P4: enterprise-6 production data
-	// sync (verbatim-embedded state machine).
+	// Sync06ReportEnabled — ADR-0014 P4 / t244: enterprise production
+	// data sync (embedded state machine). Reads serving.data_sync and
+	// writes the multi-tenant pool customer_reports.production_data_sync;
+	// Sync06EnterpriseID is now a real serving.data_sync(id, 21) argument
+	// (the SYNC06_TARGET knob was retired with the pool cutover).
 	Sync06ReportEnabled   bool
 	Sync06IntervalMinutes int
 	Sync06EnterpriseID    int
-	Sync06Target          string // empty = legacy table name (verbatim body)
 
 	// Boxes13ReportEnabled — ADR-0014 P4: the Neopac beep-chain
 	// aggregator (analogs Label_Neopac → equipment_boxes_cust_13).
@@ -234,10 +231,15 @@ type Config struct {
 	UnsCurrentMetricsIntervalMinutes int
 
 	// PO-runtime refresh dispatcher (P3b: compute → recalc, ordered).
-	PORecalcEnabled               bool
-	PORecalcIntervalMinutes       int
-	PORecalcWindow                string // prod: '1 month'
-	PORecalcExcludedEnterprises   string // prod: 6 (owned by its sync chain)
+	PORecalcEnabled             bool
+	PORecalcIntervalMinutes     int
+	PORecalcWindow              string // prod: '1 month'
+	PORecalcExcludedEnterprises string // prod: 6 (owned by its sync chain)
+	// PORecomputeSweepHours — every CLOSED runtime row inside PORecalcWindow is
+	// re-flagged for one recompute per this period (spread evenly over the ticks),
+	// so a closed PO picks up late data, a code fix or a data repair instead of
+	// keeping whatever the pipeline computed in its last 48 h. 0 disables.
+	PORecomputeSweepHours         int
 	RuntimeProvisionEnabled       bool
 	RuntimeProvisionIntervalHours int // provision cadence; 30-day horizon makes hourly wasteful (default 6)
 	RuntimeRollupEnabled          bool
@@ -274,23 +276,20 @@ type Config struct {
 	// now solved: the shadow cagg scheduler self-heal made the widened join fast
 	// (53s → 0.7s), and the advisory lock is now non-blocking (pg_try_...), so
 	// the main-pool 120s timeout can't bite. On by default with the live rollup.
-	RollupBackfillEnabled bool
-	// RefSync mirrors master/reference tables (equipments, packml_register,
-	// production_targets, products, clients, …) main→packiot_analytics so F3 rollups
-	// read the same reference plane as F2 (the F2/F3 identity requirement). Runs
-	// only when the shadow DB is configured.
-	RefSyncEnabled                bool
-	RefSyncIntervalMinutes        int
+	RollupBackfillEnabled         bool
 	RollupBackfillLimit           int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
 	RollupShiftLimit              int // shift rows recomputed per live rollup tick (bounds the tx so it can't roll back wholesale under load)
-	BakeComparatorEnabled         bool
-	// BakeEnterpriseIDs — CSV of enterprises the surface-parity bake runs
-	// per tenant. The FIRST id is the frozen "gate" tenant (CPACK) whose
-	// queries run verbatim; the rest are positively scoped. Default "3"
-	// keeps behaviour byte-identical until Incoplast (4) is added: "3,4".
-	BakeEnterpriseIDs             string
-	LegacyIngestEnabled           bool   // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
+	// SentinelEnterpriseIDs — CSV of enterprises the --identity-sentinel F3
+	// int-overflow deploy gate checks (env BAKE_ENTERPRISE_IDS, kept for compat).
+	// The bake COMPARATOR was retired in #252; the per-plane overflow gate survives.
+	SentinelEnterpriseIDs string
+	LegacyIngestEnabled   bool // false at 10.9 cutover: plc-sim triple-emit replaces the nodered legacy leg
+	BirthBindVerify       bool // ADR-0061 D7 verification run (internal/birthverify): count-only, writes nothing
+	// BirthBoundSwitchedEnterprises (ADR-0061 P2c): csv enterprise ids whose counters resolve by the decoder's
+	// birth-bound id_equipment (unstamped counters quarantined). Empty ⇒ every tenant on packml_register.
+	// Add a tenant only after 7 days of 0 mismatch_* and 0 unbound (D7); remove it to roll back.
+	BirthBoundSwitchedEnterprises string
 	RollupMachineLevelEnterprises string // prod: 6 (client-6 machines join the shift grain)
 
 	// TenantAllowlist — declarative environment scoping for tenant discovery.
@@ -352,6 +351,22 @@ type Config struct {
 	// construction (identity holds). Default OFF → legacy top-down oee. Flip
 	// AFTER the availability floor, since it makes oee_a load-bearing.
 	OeeCanonicalAPQEnabled bool
+	// AvailabilityExclusionsEnabled (2026-10-01): subtract out-of-service windows
+	// and PLC no-data time from available_time (rollup/availability_exclusions.go).
+	// Default ON: inert without windows or status-20 events.
+	AvailabilityExclusionsEnabled bool
+	// StrandedFlagSweepEnabled (2026-10-01): hourly job clearing recalc_needed
+	// flags no consumer can ever drain (rollup/stranded.go), with a WARN per table.
+	StrandedFlagSweepEnabled bool
+	// POAvailabilityEnabled (FU#8): write available_time + planned_downtime onto
+	// production_orders_runtime (the compute.go Phase-B2 pass) so the recalc's
+	// PO-grain oee_a = running/available and oee_p time-factor stop collapsing to
+	// 0. These columns are written by NOBODY today (the legacy engine had the
+	// assignments commented out; the Go port reproduced it), so PO-grain OEE
+	// Availability/Performance read 0 platform-wide. Default OFF → the pass is not
+	// run → available_time stays NULL → byte-identical (golden-fixture parity).
+	// Equipment/line-grain OEE is unaffected (it computes available_time already).
+	POAvailabilityEnabled bool
 
 	// ── Increment sanity clamp (ADR-0037 Silver invariant) ───────────────
 	// When enabled, the equipment_values writer rejects any production
@@ -374,6 +389,9 @@ type Config struct {
 	// speed (the counters-only line-lead path) and on the first sample after a
 	// worker restart. Defaults to 1000 parts.
 	IncrementSanityClampSpikeFloor float64
+	// IncrementSanityClampSpikeFraction is the share of the absolute totalizer
+	// above which a single increment is treated as a phantom (default 0.5).
+	IncrementSanityClampSpikeFraction float64
 
 	// ── Provisional ideal-speed inference (counters-only, no nameplate) ──
 	// Sibling of the counters-only OEE mode (#591): #591 gives a
@@ -409,6 +427,10 @@ type Config struct {
 	// holds). Enable only where the *_raw hypertables exist in the target
 	// schema/DB (currently packiot_analytics.public) — a separate gated step.
 	BronzeRawAppend bool
+	// CounterTotalsPublic (COUNTER_TOTALS_PUBLIC): the public route also dual-writes the exact float8
+	// *_total counter columns. Default OFF → byte-identical. Enable only after
+	// db/migrations/t-counter-totals-float8-public is applied to that DB (the columns must exist).
+	CounterTotalsPublic bool
 }
 
 func Load() (*Config, error) {
@@ -433,14 +455,10 @@ func Load() (*Config, error) {
 		HealthPort:                       getenvInt("HEALTH_PORT", 9101),
 		LogLevel:                         getenv("LOG_LEVEL", "info"),
 		PGAnalyticsDBName:                getenv("POSTGRES_ANALYTICS_DB_NAME", ""),
-		ShadowGoPortEnabled:              getenv("SHADOW_GO_PORT_ENABLED", "true") == "true",
 		PGMaxConns:                       getenvInt("POSTGRES_MAX_CONNS", 5),
 		PGAnalyticsMaxConns:              getenvInt("POSTGRES_ANALYTICS_MAX_CONNS", 15),
 		ShiftResolverEnabled:             getenv("SHIFT_RESOLVER_ENABLED", "false") == "true",
 		ShiftFillFolded:                  getenv("SHIFT_FILL_FOLDED", "false") == "true",
-		Speed33ReportEnabled:             getenv("SPEED33_REPORT_ENABLED", "false") == "true",
-		Speed33IntervalMinutes:           getenvInt("SPEED33_INTERVAL_MINUTES", 10),
-		Speed33CustomerID:                getenvInt("SPEED33_CUSTOMER_ID", 33),
 		Shift06ReportEnabled:             getenv("SHIFT06_REPORT_ENABLED", "false") == "true",
 		Shift06IntervalMinutes:           getenvInt("SHIFT06_INTERVAL_MINUTES", 15),
 		Shift06CustomerID:                getenvInt("SHIFT06_CUSTOMER_ID", 6),
@@ -456,6 +474,7 @@ func Load() (*Config, error) {
 		CPACEventDerivationEnabled:       getenv("CPAC_EVENT_DERIVATION_ENABLED", "false") == "true",
 		CPACEventIntervalMin:             getenvInt("CPAC_EVENT_DERIVATION_INTERVAL_MINUTES", 1),
 		CPACEventEnterprises:             getenv("CPAC_EVENT_ENTERPRISES", ""),
+		CPACEventLiveEnterprises:         getenv("CPAC_EVENT_LIVE_ENTERPRISES", ""),
 		CPACStopThresholdDefaultSec:      getenvInt("CPAC_STOP_THRESHOLD_DEFAULT_SEC", 300),
 		CPACEventTargetTable:             getenv("CPAC_EVENT_TARGET_TABLE", "equipment_events_cpac_shadow"),
 		EventsCloseStaleEnabled:          getenv("EVENTS_CLOSE_STALE_ENABLED", "false") == "true",
@@ -463,6 +482,7 @@ func Load() (*Config, error) {
 		EventsCloseStaleEnterprises:      getenv("EVENTS_CLOSE_STALE_ENTERPRISES", ""),
 		EventsCloseStaleThresholdSec:     getenvInt("EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC", 300),
 		EventsCloseStaleHorizonHours:     getenvInt("EVENTS_CLOSE_STALE_HORIZON_HOURS", 72),
+		EventsCloseStaleLongHorizonDays:  getenvInt("EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS", 60),
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
@@ -474,6 +494,7 @@ func Load() (*Config, error) {
 		PORecalcIntervalMinutes:          getenvInt("PO_RECALC_INTERVAL_MINUTES", 1),
 		PORecalcWindow:                   getenv("PO_RECALC_WINDOW", "1 month"),
 		PORecalcExcludedEnterprises:      getenv("PO_RECALC_EXCLUDED_ENTERPRISES", "6"),
+		PORecomputeSweepHours:            getenvInt("PO_RECOMPUTE_SWEEP_HOURS", 24),
 		RuntimeProvisionEnabled:          getenv("RUNTIME_PROVISION_ENABLED", "false") == "true",
 		RuntimeProvisionIntervalHours:    getenvInt("RUNTIME_PROVISION_INTERVAL_HOURS", 6),
 		RuntimeRollupEnabled:             getenv("RUNTIME_ROLLUP_ENABLED", "false") == "true",
@@ -481,20 +502,18 @@ func Load() (*Config, error) {
 		SilverClampEnabled:               getenv("SILVER_CLAMP_ENABLED", "true") == "true",
 		ChangeoverAvailabilityEnabled:    getenv("CHANGEOVER_AVAILABILITY_ENABLED", "false") == "true",
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
-		RefSyncEnabled:                   getenv("REFSYNC_ENABLED", "true") == "true",
-		RefSyncIntervalMinutes:           getenvInt("REFSYNC_INTERVAL_MINUTES", 5),
 		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
 		RollupShiftLimit:                 getenvInt("ROLLUP_SHIFT_LIMIT", 300),
+		SentinelEnterpriseIDs:            getenv("BAKE_ENTERPRISE_IDS", "3"),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
-		BakeComparatorEnabled:            getenv("BAKE_COMPARATOR_ENABLED", "false") == "true",
-		BakeEnterpriseIDs:                getenv("BAKE_ENTERPRISE_IDS", "3"),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",
+		BirthBindVerify:                  getenv("BIRTHBIND_VERIFY", "true") == "true",
+		BirthBoundSwitchedEnterprises:    getenv("BIRTHBOUND_SWITCHED_ENTERPRISES", ""),
 		RollupMachineLevelEnterprises:    getenv("ROLLUP_MACHINE_LEVEL_ENTERPRISES", "6"),
 		TenantAllowlist:                  csvLower(getenv("WORKER_TENANT_ALLOWLIST", "")),
 		Sync06ReportEnabled:              getenv("SYNC06_REPORT_ENABLED", "false") == "true",
 		Sync06IntervalMinutes:            getenvInt("SYNC06_INTERVAL_MINUTES", 15),
 		Sync06EnterpriseID:               getenvInt("SYNC06_ENTERPRISE_ID", 6),
-		Sync06Target:                     getenv("SYNC06_TARGET", ""),
 		Boxes13IntervalMinutes:           getenvInt("BOXES13_INTERVAL_MINUTES", 5),
 		// Counters-only Availability fallback (default OFF — no behavior change)
 		CountersOnlyAvailEnabled:        getenv("COUNTERS_ONLY_AVAILABILITY_ENABLED", "false") == "true",
@@ -503,13 +522,20 @@ func Load() (*Config, error) {
 		CountersOnlyLineLeadEnabled:     getenv("COUNTERS_ONLY_LINE_LEAD_ENABLED", "false") == "true",
 		CountersOnlyLineLeadEnterprises: getenv("COUNTERS_ONLY_LINE_LEAD_ENTERPRISES", ""),
 		// ADR-0049 OEE correctness (default OFF — no behavior change)
-		OeeAvailFloorEnabled:   getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
-		OeeCanonicalAPQEnabled: getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
+		OeeAvailFloorEnabled:          getenv("OEE_AVAIL_FLOOR_ENABLED", "false") == "true",
+		OeeCanonicalAPQEnabled:        getenv("OEE_CANONICAL_APQ_ENABLED", "false") == "true",
+		AvailabilityExclusionsEnabled: getenv("AVAILABILITY_EXCLUSIONS_ENABLED", "true") == "true",
+		StrandedFlagSweepEnabled:      getenv("STRANDED_FLAG_SWEEP_ENABLED", "true") == "true",
+		POAvailabilityEnabled:         getenv("PO_AVAILABILITY_ENABLED", "false") == "true",
 		// Increment sanity clamp (default OFF — no behavior change)
 		IncrementSanityClampEnabled:    getenv("INCREMENT_SANITY_CLAMP_ENABLED", "false") == "true",
 		IncrementSanityClampK:          getenvFloat("INCREMENT_SANITY_CLAMP_K", 4.0),
 		IncrementSanityClampMinDtSec:   getenvInt("INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS", 60),
 		IncrementSanityClampSpikeFloor: getenvFloat("INCREMENT_SANITY_CLAMP_SPIKE_FLOOR", 1000),
+		// Fraction of the absolute totalizer above which one increment is a
+		// phantom (delta-from-stale-baseline). 0.5 catches every observed spike
+		// (ratios 0.858–0.9997) while never touching a real delta (~3e-5).
+		IncrementSanityClampSpikeFraction: getenvFloat("INCREMENT_SANITY_CLAMP_SPIKE_FRACTION", 0.5),
 		// Provisional ideal-speed inference (default OFF — no behavior change)
 		ProvisionalSpeedEnabled:     getenv("PROVISIONAL_SPEED_INFERENCE_ENABLED", "false") == "true",
 		ProvisionalSpeedEquipments:  getenv("PROVISIONAL_SPEED_EQUIPMENTS", ""),
@@ -519,6 +545,8 @@ func Load() (*Config, error) {
 		ProvisionalSpeedFloor:       getenvFloat("PROVISIONAL_SPEED_FLOOR", 1.0),
 		// Bronze raw append (ADR-0036 B1) — default OFF → byte-identical no-op.
 		BronzeRawAppend: getenv("BRONZE_RAW_APPEND", "false") == "true",
+		// float8 *_total on the public route (prod forward-port) — default OFF.
+		CounterTotalsPublic: getenv("COUNTER_TOTALS_PUBLIC", "false") == "true",
 	}, nil
 }
 

@@ -97,7 +97,7 @@ CREATE TABLE equipments (
     production_speed int,   -- CSAdmin rated/ideal speed; bi.equipment_speed surfaces it
     active        boolean NOT NULL DEFAULT true
 );
-CREATE TABLE equipment_runtime_shift (
+CREATE TABLE equipment_oee_shift (
     id_equipment int NOT NULL,
     id_shift     int NOT NULL,
     cd_shift     text,
@@ -106,7 +106,7 @@ CREATE TABLE equipment_runtime_shift (
     oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
     gross numeric, net numeric, running_time numeric
 );
-CREATE TABLE equipment_runtime_1hour (
+CREATE TABLE equipment_oee_hourly (
     id_equipment int NOT NULL,
     ts_value     timestamptz NOT NULL,
     oee numeric, oee_a numeric, oee_p numeric, oee_q numeric,
@@ -140,6 +140,7 @@ CREATE TABLE equipment_values (
     id_shift int, id_team int, id_production_order int,
     id_order text, state int, mode int,
     net_production_val real, gross_production_val real, scrap_val real,
+    net_production_total double precision, gross_production_total double precision, scrap_total double precision,
     net_production_incr real, gross_production_incr real, scrap_incr real
 );
 CREATE TABLE production_orders (
@@ -173,6 +174,11 @@ def _drop_roles(cur):
             cur.execute(f"DROP ROLE {role}")
 
 
+# t-counter-totals: the latest equipment_values row carries an exact float8 gross total above 2^24
+# (float4 would round it to 297,922,496); net/scrap totals stay NULL so the view must fall back to *_val.
+EXACT_GROSS_TOTAL = 297_922_487
+
+
 def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int):
     for eq in equip_ids:
         cur.execute(
@@ -181,12 +187,12 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
             (ent, eq, f"EQ-{eq}", ent, eq),
         )
         cur.execute(
-            "INSERT INTO equipment_runtime_shift (id_equipment,id_shift,cd_shift,ts_value,ts_end,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
+            "INSERT INTO equipment_oee_shift (id_equipment,id_shift,cd_shift,ts_value,ts_end,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
             " VALUES (%s,1,'T1',now()-interval '8h',now(),0.8,0.9,0.95,0.93,110,100,7.2)",
             (eq,),
         )
         cur.execute(
-            "INSERT INTO equipment_runtime_1hour (id_equipment,ts_value,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
+            "INSERT INTO equipment_oee_hourly (id_equipment,ts_value,oee,oee_a,oee_p,oee_q,gross,net,running_time)"
             " VALUES (%s,date_trunc('hour',now()),0.8,0.9,0.95,0.93,22,20,0.9)",
             (eq,),
         )
@@ -198,10 +204,10 @@ def _seed_tenant(cur, ent: int, equip_ids: list[int], base_po: int, base_dt: int
         # equipment_values: two rows per equipment (recent so live_status's 6h window
         # keeps the latest one) — feeds equipment_speed / live_status / production_by_team.
         cur.execute(
-            "INSERT INTO equipment_values (id_equipment,ts_value,id_enterprise,speed,ideal_production_speed,id_shift,id_team,id_production_order,id_order,state,mode,net_production_val,gross_production_val,scrap_val,net_production_incr,gross_production_incr,scrap_incr)"
-            " VALUES (%s,now()-interval '30min',%s,300,360,1,1,%s,'ORD-1',2,1,500,540,40,20,22,2),"
-            "        (%s,now()-interval '5min', %s,320,360,1,1,%s,'ORD-1',2,1,520,560,42,20,20,2)",
-            (eq, ent, base_po, eq, ent, base_po),
+            "INSERT INTO equipment_values (id_equipment,ts_value,id_enterprise,speed,ideal_production_speed,id_shift,id_team,id_production_order,id_order,state,mode,net_production_val,gross_production_val,scrap_val,net_production_incr,gross_production_incr,scrap_incr,gross_production_total)"
+            " VALUES (%s,now()-interval '30min',%s,300,360,1,1,%s,'ORD-1',2,1,500,540,40,20,22,2,NULL),"
+            "        (%s,now()-interval '5min', %s,320,360,1,1,%s,'ORD-1',2,1,520,560,42,20,20,2,%s)",
+            (eq, ent, base_po, eq, ent, base_po, EXACT_GROSS_TOTAL),
         )
         # production_targets: one target row per equipment (native id_enterprise).
         cur.execute(
@@ -272,7 +278,7 @@ def applied_db(superuser_dsn):
         # Clean slate (in case an external DSN carries prior state).
         cur.execute("DROP SCHEMA IF EXISTS bi CASCADE;")
         _drop_roles(cur)
-        for tbl in ("equipments", "equipment_runtime_shift", "equipment_runtime_1hour",
+        for tbl in ("equipments", "equipment_oee_shift", "equipment_oee_hourly",
                     "production_orders_runtime", "equipment_events",
                     "equipment_values", "production_orders", "production_targets"):
             cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE;")

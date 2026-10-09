@@ -137,7 +137,7 @@ variable "db_user" {
 # EC2 in the reserved 10.20.10.0/24 private subnet; W6.2 right-sizes it onto a
 # MEMORY-family instance (not t4g). This is the greenfield single-flow F3-native
 # DB (ADR-0032): ONE database whose `public` schema *is* the F3 schema — no
-# packiot_shadow, no F1/F2 legs, no comparator schemas.
+# packiot_analytics, no F1/F2 legs, no comparator schemas.
 #
 # NOTE: config/plan-only. Standing this up + rewiring the compose DATABASE_URL
 # from the local container to this instance is the W1 compose-parity follow-up.
@@ -246,6 +246,70 @@ variable "runner_labels" {
   description = "Labels applied when the runner self-registers — must match deploy-production.yml's runs-on"
   type        = list(string)
   default     = ["self-hosted", "production", "linux", "arm64"]
+}
+
+# ── Dedicated org-level CI runner (ci_runner.tf) ──────────────────────────────
+# Separate box from the prod app/db EC2s. Gives the org unlimited free Actions
+# minutes (GitHub Free's 2,000-min pool halts CI org-wide when exhausted).
+# See docs/ci-selfhosted-runner-runbook.md.
+
+variable "github_org" {
+  description = "GitHub org the CI runner registers against at ORG scope (--url https://github.com/<org>)"
+  type        = string
+  default     = "packiot"
+}
+
+variable "ci_runner_instance_type" {
+  description = <<-EOT
+    CI runner instance type. t3.medium (2 vCPU / 4 GB) MINIMUM — a 2 GB box OOMs
+    on the front4 Vite build. x86_64 (t3, NOT t4g) so the AL2023 x86_64 AMI +
+    the x64 actions-runner tarball match. Bump to t3.large (8 GB) if builds get
+    heavier. Spot is a cost lever (see runbook) — safe here because an
+    interruption only kills the in-flight job, which GitHub re-queues.
+  EOT
+  type        = string
+  default     = "t3.medium" # 2 vCPU / 4 GB — ~$30/mo on-demand, ~$9/mo spot
+}
+
+variable "ci_runner_volume_size_gb" {
+  description = "CI runner gp3 root volume — holds the OS, Docker layer cache, npm cache, and the runner work dir"
+  type        = number
+  default     = 40 # gp3 → ~$3.20/mo. Docker layers + node_modules churn need headroom.
+}
+
+variable "ci_runner_subnet_cidr" {
+  description = "Dedicated public subnet for the CI runner — isolated from the prod app (10.20.0.0/24) and DB (10.20.10.0/24) subnets"
+  type        = string
+  default     = "10.20.20.0/24"
+}
+
+variable "ci_runner_version" {
+  description = "Pinned actions-runner release (github.com/actions/runner/releases). Bump deliberately; a stale runner still works but nags."
+  type        = string
+  default     = "2.334.0"
+}
+
+variable "ci_runner_labels" {
+  description = <<-EOT
+    Labels the runner self-registers with. Workflows opt in via
+    `runs-on: [self-hosted, linux, packiot-ci]`. Keep `packiot-ci` as the
+    discriminator so only workflows that explicitly want THIS runner land on it.
+  EOT
+  type        = list(string)
+  default     = ["self-hosted", "linux", "x64", "packiot-ci"]
+}
+
+variable "ci_runner_ephemeral" {
+  description = <<-EOT
+    If true, the runner registers with --ephemeral (one job then it deregisters,
+    for a clean environment per job) — but a NEW registration is needed for the
+    next job, so ephemeral requires an auto-reprovision mechanism (JIT config or
+    an instance-replace loop). If false (RECOMMENDED for the first long-lived
+    runner) the runner stays registered and picks up job after job — simpler,
+    at the cost of no per-job isolation. See the runbook's ephemeral trade-off.
+  EOT
+  type        = bool
+  default     = false
 }
 
 # ── Backup retention ──────────────────────────────────────────────────────────

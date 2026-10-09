@@ -155,7 +155,7 @@ func TestGoldenUnmeteredToleratesMissingTable(t *testing.T) {
 		t.Fatalf("drop: %v", err)
 	}
 
-	d := flows.Dest{Name: "test", Pool: pool, EvSchema: "ug", RefSchema: "ug"}
+	d := flows.Dest{Name: "test", Pool: pool, EvSchema: "ug", RefSchema: "ug", SilverSchema: "ug", GoldSchema: "ug", GrainSchema: "ug"}
 	// Machine-level set = {6}; a real logger (nil is also tolerated by the pass).
 	n, err := RunUnmetered(ctx, d, []int{6}, slog.Default())
 	if err != nil {

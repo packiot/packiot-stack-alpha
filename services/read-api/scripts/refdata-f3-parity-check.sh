@@ -75,7 +75,7 @@
 #                                  operator ROUTE reads v_entities_per_user_role_operator which IS present)
 #     scrap-targets / oee-targets  scrap_targets / oee_targets                    F3_MISSING (BLOCKER)
 #     report-downtimes           v_report_downtimes                               F3_MISSING (dba-owned view, prod-gated)
-#   query.go metric catalog:  agg_equipment_values_{1min,10min,1hour}             SERVABLE_BOTH
+#   query.go metric catalog:  agg_equipment_values_{1min,1hour}             SERVABLE_BOTH
 #   query.go bespoke:  dashboard_config / user_screen_config                      F3_MISSING (refdata-owned tables,
 #                        created by ensureSchema/28-refdata-tables.sql at F1 startup — must be created in F3 too)
 #

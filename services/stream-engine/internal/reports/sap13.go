@@ -20,9 +20,13 @@ import (
 // CONFLICT statement, verbatim-embedded (sync06 archetype): Go owns
 // scheduling/config/observability, the set-based SQL stays SQL.
 //
-// Three transforms only (see sap13_body.sql header): pool write
+// Five transforms only (see sap13_body.sql header): pool write
 // target, customer_id injection, pool conflict key
-// (customer_id, linie, tag, shicht, auftrag_key).
+// (customer_id, linie, tag, shicht, auftrag_key), and the labels_data
+// box-source repoint equipment_boxes_cust_13 -> customer_reports.boxes
+// (t244c dropped the per-tenant table; #247), and (ADR-0062 P3b) the
+// box-label casts as core.try_int4/try_int8 — a non-numeric label is no
+// match instead of an aborted run.
 //
 // COORDINATION CONTRACT (issue #223): back4-api's neopac
 // data-sync.controller.js co-writes this dataset and must target the

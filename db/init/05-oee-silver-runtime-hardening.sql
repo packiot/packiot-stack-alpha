@@ -1,5 +1,5 @@
 -- 05-oee-silver-runtime-hardening.sql — REFACTORED schemas only
--- (F3 public in packiot_shadow; F2 shadow_go_port in packiot). NEVER legacy packiot.public.
+-- (F3 public in packiot_analytics; F2 shadow_go_port in packiot). NEVER legacy packiot.public.
 --
 -- Two low-risk, reversible hardening passes on the small, high-churn OEE Silver
 -- rollup tables, from an approved DBA review. Sed-replace __SCH__ per schema.

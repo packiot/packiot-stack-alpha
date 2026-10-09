@@ -82,7 +82,7 @@ Host header + resolving the alias hostname to a CloudFront IP:
 CF=$(terraform output -raw edge_cloudfront_domain_name)
 CF_IP=$(dig +short "$CF" | head -1)
 
-for svc in api hasura grafana edge-nodered oeecloud-nodered rabbitmq adminer operator; do
+for svc in api hasura grafana edge-nodered oeecloud-nodered rabbitmq db histdb operator; do
   echo "== $svc =="
   curl -sS -o /dev/null -w '%{http_code}\n' \
     --resolve "$svc.staging.packiot.app:443:$CF_IP" \
@@ -141,7 +141,7 @@ terraform apply -var 'edge_cutover=true'
 `<svc>.staging.packiot.app` now ALIAS → CloudFront. Watch:
 
 ```bash
-for svc in api hasura grafana edge-nodered oeecloud-nodered rabbitmq adminer operator; do
+for svc in api hasura grafana edge-nodered oeecloud-nodered rabbitmq db histdb operator; do
   echo "== $svc =="; curl -sS -o /dev/null -w '%{http_code}\n' "https://$svc.staging.packiot.app/"
 done
 ```
