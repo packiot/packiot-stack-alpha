@@ -25,9 +25,15 @@ P = json.load(open(os.path.join(W, 'cat-prod.json')))
 
 
 def staging_only(s, n):
-    """Objects that exist only for staging's own operation (backups, backfill tooling, sandbox twin, mirror, CPACK shadow)."""
+    """Objects that exist only for staging's own operation (backups, backfill tooling, sandbox twin, mirror cursor).
+
+    silver.equipment_events_cpac_shadow is NOT staging-only any more (promotion 2026-10, B5/B11): prod's stream-engine
+    runs ent 3's CPAC deriver in SHADOW mode like staging (CPAC_EVENT_ENTERPRISES=3, live list empty), and it writes
+    that table — without it the deriver fails every tick. It is created empty (no prod source). ops.mirror_replay_cursor
+    stays excluded: the prod legacy-replicator creates it IF NOT EXISTS and must COLD-start (BACKFILL_SINCE), so
+    staging's cursor row must never travel."""
     return (n.startswith('_bkp') or (s == 'ops' and (n.startswith('_') or n.startswith('bf') or n.startswith('sandbox')))
-            or (s, n) in {('ops', 'mirror_replay_cursor'), ('silver', 'equipment_events_cpac_shadow')})
+            or (s, n) in {('ops', 'mirror_replay_cursor')})
 
 
 CAGGS = {(c['s'], c['n']): c for c in S['caggs']}

@@ -160,6 +160,75 @@ $RMQ list_bindings source_name destination_name routing_key --formatter=tsv --no
 If `rabbitmqctl delete_queue --if-empty` refuses, a message arrived after the drain: inspect it (management API `get` with
 `ack_requeue_true`), and re-check that no old-name producer is still running (`docker ps`).
 
+## 5b. CPACK events: start the legacy-replicator and backfill from 2026-08-12 (B11, decided 2026-10-09)
+Prod has recorded no CPACK `equipment_events` since 2026-08-12. The factory tee carries telemetry only (and only some
+lines since 08-13). CPACK's downtimes and justifications live in the **legacy** control plane (packiot40, ent 1). Staging's
+twin gets them through `legacy-replicator`, and prod now runs the same service (`compose.production.yml`, profile
+`legacy-replicator`, identical config, `BACKFILL_SINCE=2026-08-12`). ent 3's CPAC deriver stays **shadow-only**
+(`equipment_events_cpac_shadow`; the live list is empty), so the replicator is the only writer of replayed events.
+
+**Pre-reqs (before the window):**
+- The `terraform/production` apply includes the app-role read on `databaseCredentials-??????` (`ec2.tf`).
+  `/opt/packiot/.env` has `LEGACY_DB_PASSWORD` (from `databaseCredentials`.`DB_PASSWORD`, appended once; never echoed).
+- The **legacy DB accepts the prod app box's egress IP** on 5432 (staging's is allowlisted; prod's is not known to be).
+  Probe from the app box: `docker run --rm postgres:16-alpine pg_isready -h 18.220.223.110 -p 5432` → `accepting connections`.
+
+**Steps (after step 5 + smoke tests, still inside the window):**
+```bash
+cd /opt/packiot/stack
+# 1. the cursor must NOT exist (cold start = the backfill). The transplant never copies staging's cursor.
+docker exec -i stack-pgbouncer-1 psql -h "$(grep -m1 '^POSTGRES_HOST_UPSTREAM=' /opt/packiot/.env | cut -d= -f2-)" \
+  -U postgres -d packiot -Atc "SELECT to_regclass('ops.mirror_replay_cursor') IS NULL
+                                 OR NOT EXISTS (SELECT 1 FROM ops.mirror_replay_cursor WHERE source='legacy-cpack')"   # → t
+# 2. start it, and keep it across future deploys
+docker compose -f compose.production.yml --profile legacy-replicator up -d --build legacy-replicator
+grep -q '^COMPOSE_PROFILES=' /opt/packiot/.env \
+  && sed -i 's/^COMPOSE_PROFILES=\(.*\)$/COMPOSE_PROFILES=\1,legacy-replicator/' /opt/packiot/.env \
+  || echo 'COMPOSE_PROFILES=client-ingest,legacy-replicator' >> /opt/packiot/.env
+grep '^COMPOSE_PROFILES=' /opt/packiot/.env       # profiles are not secret
+# 3. watch the replay catch up (cursor id rises until it reaches the legacy tip; then it's live)
+docker logs -f --since 5m legacy-replicator 2>&1 | grep -E 'cursor|seed|dispatched|error' --line-buffered
+```
+`psql` connects with the `.env` credentials (`PGPASSWORD` from `POSTGRES_PASSWORD`, never printed). The same applies to
+every query below.
+
+**Verify (read-only), once the cursor has reached the legacy tip:**
+```sql
+-- prod (new stack): replay progress + per-day CPACK base events since the gap
+SELECT source, last_log_id, last_run_at FROM ops.mirror_replay_cursor WHERE source = 'legacy-cpack';
+SELECT date_trunc('day', ts_event AT TIME ZONE 'America/Sao_Paulo')::date AS day, count(*) AS events,
+       count(*) FILTER (WHERE status <> 6) AS stops, count(*) FILTER (WHERE cd_category IS NOT NULL) AS justified
+  FROM silver.equipment_events
+ WHERE id_enterprise = 3 AND ts_event >= '2026-08-12'
+ GROUP BY 1 ORDER BY 1;
+SELECT count(*) AS dlq FROM ops.mirror_replay_dlq WHERE source = 'legacy-cpack';     -- expect ~0
+```
+```sql
+-- legacy packiot40 (SELECT-only awslambda, BEGIN READ ONLY): the same per-day shape for ent 1
+SELECT date_trunc('day', ts_event AT TIME ZONE 'America/Sao_Paulo')::date AS day, count(*) AS events,
+       count(*) FILTER (WHERE status <> 6) AS stops, count(*) FILTER (WHERE cd_category IS NOT NULL) AS justified
+  FROM equipment_events WHERE id_enterprise = 1 AND ts_event >= '2026-08-12'
+ GROUP BY 1 ORDER BY 1;
+```
+**Pass:** every day from 2026-08-12 has events on prod, and per-day counts are within a few % of legacy (staging's twin
+matches ~96 % live; legacy base events that were never logged to `user_logs` are the known residual). A larger gap means
+those base events never went through `user_logs`. That is a follow-up (a topic-mapped direct copy in the shape of
+`services/analytics-sync/scripts/backfill-event-fcs-from-legacy.sh`), not a reason to enable a second live writer.
+
+**After it verifies:**
+4. Refresh the serving layer for the whole window. The replicator's own refresh only covers touched days of *manual*
+   events:
+   `SELECT serving.refresh_downtime_events_resolved('2026-08-12'::timestamptz, now());`
+5. Recompute OEE availability for 2026-08-12 → now. The stops change running/available time, and the window is past the
+   engine's live recompute horizons (10 d hour / 25 d shift). Follow `docs/runbooks/history-recompute.md`:
+   `cmd/recompute-render` with the running stream-engine's env, then `scripts/recompute/run-day-recompute.sh` one day at
+   a time, oldest first.
+6. In `compose.production.yml`, set `RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS` back to `35` (staging's value). It is 60 so
+   the first passes cover the gap.
+
+**Rollback:** `docker compose -f compose.production.yml stop legacy-replicator` and remove the profile from
+`COMPOSE_PROFILES`. Replayed rows are ordinary idempotent upserts. Nothing in legacy is ever written.
+
 ## 6. Decisions and follow-ups before the real run (user)
 1. **CPACK configuration differs from staging on 10 columns** of `core.equipments`:
    - `event_should_be_displayed`: staging `true`, prod `NULL`. With `NULL`, the downtime list is **empty**.

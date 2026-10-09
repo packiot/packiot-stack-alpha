@@ -216,7 +216,7 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 | B8 | Transplant + runbook §6 decisions (CPACK config sync, retention, events gap since 08-12, Hasura metadata, roles/extensions) | the deploy must follow the transplant, never precede it |
 | B9 | `historian-gateway` inline definition is the 09-07 shape (DB `postgres`, no OOM guards) | harmless while the profile is off; switch to `compose.historian-gateway.yml` before enabling a prod cold tier |
 | B10 | `monitoring/prometheus/prometheus.yml` is staging's (scrapes services prod doesn't run) | targets show down; no Alertmanager on prod |
-| B11 | CPACK live downtime events on prod (none since 2026-08-12) | not fixed by the CPAC flags (shadow table); needs a prod `legacy-replicator` or a gated live-CPAC promotion (§8) |
+| B11 | CPACK live downtime events on prod (none since 2026-08-12) | **DECIDED 2026-10-09 + IMPLEMENTED**: prod `legacy-replicator` (§11, runbook §5b, backfill from 2026-08-12). Remaining: legacy DB allowlist for prod's egress IP, `databaseCredentials` grant apply, `LEGACY_DB_PASSWORD` in `.env` |
 
 ## 7. Checks run locally (2026-10-08)
 - `docker compose -f compose.production.yml config --no-interpolate -q` OK (also `compose.staging.yml`,
@@ -339,3 +339,28 @@ The missing guard was **ported** onto csadmin `staging` (branch `fix/enterprise-
 `893ce93`). It adds a load state (loading/loaded/error, cancellation-safe), keeps Save disabled until the record has
 loaded on an edit, and shows a "couldn't load" card on failure. Tests: 4 new (2 red on the unpatched page);
 vitest 288/288, `tsc -b` clean, eslint clean, packml ratchet OK.
+
+## 11. B11 — CPACK events via the legacy-replicator (decided 2026-10-09)
+- **Service:** `compose.production.yml` `legacy-replicator`, the same binary (`services/analytics-sync`,
+  `Dockerfile.replicator`) and env as staging:
+  - source = legacy packiot40 (`18.220.223.110`, SELECT-only `awslambda`), ent 1 → ent 3;
+  - base events, PO reconciler + enricher, manual-event reconciler (lookback 60 for the first week, then 35);
+  - dest = prod's DB direct (`POSTGRES_HOST_UPSTREAM`/`POSTGRES_DB`);
+  - profiled (`legacy-replicator`), so the promotion deploy doesn't start it. The runbook starts it after the smoke tests.
+- **Backfill mechanism:** the replicator's own cold start. With no `ops.mirror_replay_cursor` row for
+  `legacy-cpack`, `BACKFILL_SINCE=2026-08-12` seeds the cursor just below the first legacy `user_logs` row on/after that
+  date and replays forward into live. The transplant never copies staging's cursor (`build.py` keeps it staging-only).
+  `scripts/ops/backfill-lead-events.sh` is **not** used: it mints count-silence events, which would be a second writer for
+  CPACK.
+- **Single writer:** ent 3's CPAC deriver stays shadow-only. The transplant now creates
+  `silver.equipment_events_cpac_shadow` (no longer staging-only in `build.py`); without it the deriver B5 enabled would
+  fail every tick. `ops.legacy_manual_event_link` comes over empty (the replay-era seed migration is not applied: prod
+  never ran a replicator), so the reconciler owns only rows it creates.
+- **Secrets (authored, not applied):**
+  - `ec2.tf` gives the app role read on `databaseCredentials-??????` (same grant as staging).
+  - `app_init.sh` writes `LEGACY_DB_PASSWORD` from its `DB_PASSWORD` key.
+  - No new secret: it is the existing legacy read-only credential.
+- **Needs the user / infra:**
+  - the legacy DB's network allowlist for the prod app box egress IP;
+  - the terraform apply;
+  - after the backfill, the history recompute of 2026-08-12 → now (runbook §5b steps 4–5).

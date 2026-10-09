@@ -166,6 +166,10 @@ REFDATA_QUERY_API_KEYS=$(get_secret "packiot/production/refdata-query-keys" 2>/d
 INTERNAL_KEYS=$(get_secret "packiot/production/internal-keys" 2>/dev/null || echo "{}")
 INTERNAL_API_KEY=$(echo "$INTERNAL_KEYS" | jq -r '.internal_api_key // ""')
 READAPI_RO_PASSWORD=$(echo "$INTERNAL_KEYS" | jq -r '.readapi_ro_password // ""')
+# PROMOTION 2026-10 (B11): legacy-replicator source password (SELECT-only
+# awslambda on legacy packiot40). Top-level secret `databaseCredentials`, key
+# DB_PASSWORD. // "" → the profiled service simply can't connect until set.
+LEGACY_DB_PASSWORD=$(get_secret "databaseCredentials" 2>/dev/null | jq -r '.DB_PASSWORD // ""' || echo "")
 
 # historian-gateway (COLD S3 parquet union) — OPT-IN, profile-gated in
 # compose.production.yml (`--profile historian`). All // "" best-effort: a box
@@ -294,6 +298,8 @@ REFDATA_QUERY_API_KEYS=$REFDATA_QUERY_API_KEYS
 READAPI_RO_USER=readapi_ro
 READAPI_RO_PASSWORD=$READAPI_RO_PASSWORD
 INTERNAL_API_KEY=$INTERNAL_API_KEY
+# Promotion 2026-10 (B11): legacy-replicator (profile legacy-replicator).
+LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
 
 # Superset embedded-BI guest-token broker (ADR-0045 W2). edge-api reaches
 # Superset through the origin-locked host and stamps X-Origin-Verify. Routes

@@ -1449,6 +1449,99 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
 
+  # ── legacy-replicator (PROMOTION 2026-10, B11 — CPACK operator actions + events) ─
+  # Same binary and config as staging's `legacy-replicator`: replays CPACK operator
+  # actions (PO lifecycle, downtime create/justify/split/edit) from the LEGACY prod
+  # DB (packiot40, enterprise 1 "C-PACK", SELECT-only user awslambda) into prod's
+  # CPACK tenant (ent 3), plus the PO reconciler/enricher and the manual-event
+  # reconciler. WHY on prod: the factory tee carries telemetry only (and only some
+  # lines since 2026-08-13); CPACK's downtimes/justifications live in the legacy
+  # control plane — prod's last CPACK equipment_events row is 2026-08-12. Staging's
+  # twin gets them exactly this way. Equipment maps by packml BASE topic, POs by
+  # (id_enterprise, id_order); every write is an idempotent natural-key upsert and
+  # never clobbers a tee-produced row. ent 3's CPAC deriver stays SHADOW-only
+  # (stream-engine CPAC_EVENT_LIVE_ENTERPRISES empty) → this is the single live
+  # writer of replayed CPACK events (no double writers).
+  #
+  # PROFILED (`legacy-replicator`): NOT started by the promotion deploy. The runbook
+  # (§5b) starts it after the transplant + deploy + smoke tests, then adds the
+  # profile to COMPOSE_PROFILES in /opt/packiot/.env so later deploys keep it.
+  # Cold start (no ops.mirror_replay_cursor row for CURSOR_SOURCE) seeds the cursor
+  # just below the first legacy user_logs row at BACKFILL_SINCE and replays forward
+  # — that IS the 2026-08-12 → now backfill. An existing cursor is always respected.
+  #
+  # Secrets: LEGACY_DB_PASSWORD ← top-level SM secret `databaseCredentials`
+  # (key DB_PASSWORD), written to .env by app_init.sh (the app role gets read on
+  # that secret in ec2.tf). Empty default so compose never fails interpolation
+  # while the profile is off. Network: the legacy DB must accept the prod app
+  # box's egress IP (staging's is allowlisted) — runbook §5b pre-req.
+  legacy-replicator:
+    build:
+      context: ./services/analytics-sync
+      dockerfile: Dockerfile.replicator
+    container_name: legacy-replicator
+    profiles: ["legacy-replicator"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      LOG_LEVEL: info
+      REPLICATE_ENABLED: "true"
+      # SOURCE — legacy prod DB (SELECT-only; never written). Same as staging.
+      LEGACY_DB_HOST: 18.220.223.110
+      LEGACY_DB_PORT: "5432"
+      LEGACY_DB_USER: awslambda
+      LEGACY_DB_PASSWORD: ${LEGACY_DB_PASSWORD:-}
+      LEGACY_DB_NAME: packiot40
+      # DEST — prod's (transplanted, medallion) DB, DIRECT to the r7g like the
+      # other DDL/long-session one-shots (the replicator creates ops.mirror_replay_*
+      # IF NOT EXISTS and holds a cursor transaction per batch).
+      DEST_DB_HOST: ${POSTGRES_HOST_UPSTREAM}
+      DEST_DB_PORT: "5432"
+      DEST_DB_USER: ${POSTGRES_USER}
+      DEST_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DEST_DB_NAME: ${POSTGRES_DB}
+      # Enterprise id-map — CPACK legacy 1 -> new-stack 3 (same as staging).
+      SRC_ENTERPRISE: "1"
+      DST_ENTERPRISE: "3"
+      # Cold-start backfill = prod's event gap (last CPACK event 2026-08-12).
+      # Takes precedence over BACKFILL_SINCE_DAYS; ignored once the cursor exists.
+      BACKFILL_SINCE: "2026-08-12"
+      REPLICATE_BASE_EVENTS: "true"
+      # Same cursor key as staging's instance — different DB, so no collision.
+      CURSOR_SOURCE: legacy-cpack
+      POLL_INTERVAL_MS: "3000"
+      BATCH_SIZE: "200"
+      HEALTH_PORT: "9104"
+      HEALTHCHECK_MAX_AGE_SEC: "600"
+      RECONCILE_PO_ENABLED: "true"
+      RECONCILE_PO_INTERVAL_SEC: "300"
+      RECONCILE_PO_WINDOW_DAYS: "14"
+      RECONCILE_PO_ENRICH_ENABLED: "true"
+      RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      RECONCILE_MANUAL_EVENTS_ENABLED: "true"
+      RECONCILE_MANUAL_EVENTS_INTERVAL_SEC: "300"
+      # 60 (staging: 35) so the first passes cover the whole 2026-08-12 gap; drop to
+      # 35 once the backfill is verified (runbook §5b step 6).
+      RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "60"
+      RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
+      RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
+    networks:
+      packiot-net:
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/legacy-replicator", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   # ── historian-gateway (D3 — transparent hot+cold query layer) ─────────────────
   # Exposes `ev_all`: live timescaledb (HOT, postgres_fdw to the r7g) UNION S3
   # Parquet historian (COLD, pg_duckdb). Consumers (read-api, Superset, tools)
