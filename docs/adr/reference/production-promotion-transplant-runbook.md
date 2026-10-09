@@ -74,7 +74,7 @@ serve real-time unions.
    - `catalog.sql` on staging and on prod (READ ONLY);
    - `build.py`.
    Re-run the rehearsal on a fresh AMI clone and the parity check. Snapshot the prod DB volume.
-1. Announce the window. Stop the writers (ingest, stream-engine, edge-api, read-api, oeecloud-worker, Hasura) on the app box.
+1. Announce the window. Drain and archive RabbitMQ first (§5a, "before step 1"), then stop the writers (ingest, stream-engine, edge-api, read-api, oeecloud-worker, Hasura) on the app box.
 2. Run `xplant.sh create pre hyper views copy repair post checks data logic grants policies` on the prod DB host
    (about 2.5 min).
 3. Verify (catalog + data checks from §4) and **stop if anything differs**.
@@ -86,9 +86,79 @@ serve real-time unions.
    (180 ms in the rehearsal). Restart the Timescale background workers; restart pgbouncer (the pooled
    connections cache the old `search_path`).
 5. Deploy the promoted `production` branch (new images), then start the services and run the smoke tests.
+   Then retire the old RabbitMQ queues (§5a). §5a's drain and archive run **before** step 1.
 6. Run `xplant.sh refresh` (about 6 min; the caggs are real-time meanwhile), then the post-cutover reviews (§6).
 - **Rollback:** stop the services, swap the names back (112 ms in the rehearsal), redeploy the previous images.
   The old DB is untouched.
+
+## 5a. RabbitMQ: retire the `oeecloud-worker-q*` queues (rename → `stream-engine-q*`)
+The promoted stream-engine consumes `stream-engine-q`, `stream-engine-q-<tenant>` (+ `-retry-30s`, `-failed`) as user
+`stream-engine`. Prod's old worker consumed `oeecloud-worker-q*`. Those queues stay **bound to `oee` / `oee-retry`** after the
+deploy, so every message would also be copied into a queue nobody reads, until they are removed.
+All commands run on the prod app box (SSM). The container is `stack-rabbitmq-1` (project `stack`). The management API
+listens on `127.0.0.1:15672`. Credentials come from `/opt/packiot/.env`; **never echo them**.
+
+```bash
+RMQ="docker exec stack-rabbitmq-1 rabbitmqctl -q"   # -q: no "Listing ..." banner
+AU=$(grep -E '^RABBITMQ_USER=' /opt/packiot/.env | cut -d= -f2-)
+AP=$(grep -E '^RABBITMQ_PASSWORD=' /opt/packiot/.env | cut -d= -f2-)
+```
+
+**Before step 1 (drain while the old worker still runs).** Stop the producers first, then let the old worker drain:
+```bash
+cd /opt/packiot/stack
+docker compose -f compose.production.yml stop edge-transformer ingest-shim operator-adapter   # producers (old names)
+# wait until every main + retry queue is empty (retry queues dead-letter back to `oee` after 30 s)
+watch -n5 "$RMQ list_queues name messages consumers --formatter=tsv --no-table-headers | grep -E '^oeecloud-worker-q' | grep -v -- '-failed'"
+docker compose -f compose.production.yml stop oeecloud-worker
+# record the end state (kept with the cutover log)
+$RMQ list_queues name messages consumers --formatter=tsv --no-table-headers | grep -E '^(oeecloud-worker-q|edge-transformer-q)' > /root/rmq-pre-promotion-queues.tsv
+```
+The deploy recreates the `rabbitmq` container (new config mounts, B1). The broker keeps its Mnesia under
+`rabbit@<container hostname>`, and the hostname changes on recreate, so the broker may come up with **no** old queues.
+Users come back from `definitions.json`, and clients re-declare their own exchanges/queues/bindings. Anything still
+queued is lost, which is why the drain above is mandatory. Archive `-failed` queues **now** (next block, before
+step 5), not after.
+
+**Archive the dead-letter queues** (`-failed`) before anything is deleted (humans may want them):
+```bash
+for q in $($RMQ list_queues name messages --formatter=tsv --no-table-headers | awk '$1 ~ /^oeecloud-worker-q.*-failed$/ && $2 > 0 {print $1}'); do
+  n=$($RMQ list_queues name messages --formatter=tsv --no-table-headers | awk -v q="$q" '$1==q {print $2}')
+  curl -sf -u "$AU:$AP" -H 'content-type: application/json' \
+    -X POST "http://127.0.0.1:15672/api/queues/%2F/$q/get" \
+    -d "{\"count\":$n,\"ackmode\":\"ack_requeue_true\",\"encoding\":\"auto\"}" \
+    > "/root/rmq-archive-$q.json"
+  echo "$q: $n archived ($(jq length /root/rmq-archive-$q.json))"
+done
+```
+
+**After step 5: verify stream-engine is consuming, then delete the old queues.**
+```bash
+# 1. stream-engine holds a consumer on its main queues and they drain
+$RMQ list_queues name messages consumers --formatter=tsv --no-table-headers | grep -E '^stream-engine-q' | grep -v -- '-retry-30s\|-failed'
+#    → every line: consumers >= 1, messages trending to 0
+$RMQ list_connections user name --formatter=tsv --no-table-headers | grep -E '^(stream-engine|sparkplug-decoder)\b'   # least-priv users in use
+
+# 2. the old queues still exist? (may already be gone after the broker recreate — then stop here)
+$RMQ list_queues name messages consumers --formatter=tsv --no-table-headers | grep -E '^oeecloud-worker-q'
+#    → every line must read messages=0, consumers=0 (except archived -failed, which hold their copies)
+
+# 3. delete — main + retry ONLY if empty (refuses otherwise); bindings go with the queue
+for q in $($RMQ list_queues name --formatter=tsv --no-table-headers | grep -E '^oeecloud-worker-q' | grep -v -- '-failed$'); do
+  $RMQ delete_queue --if-empty "$q"
+done
+#    -failed queues: delete after the archive above has been checked
+for q in $($RMQ list_queues name --formatter=tsv --no-table-headers | grep -E '^oeecloud-worker-q.*-failed$'); do
+  $RMQ delete_queue "$q"
+done
+
+# 4. nothing left bound to the old names; shared exchanges (oee, oee-retry, oee-failed) are KEPT
+$RMQ list_queues name --formatter=tsv --no-table-headers | grep -c '^oeecloud-worker-q'                       # → 0
+$RMQ list_bindings source_name destination_name routing_key --formatter=tsv --no-table-headers | grep -c 'oeecloud-worker-q'   # → 0
+```
+`edge-transformer-q*` is **not** renamed (sparkplug-decoder keeps `WORKER_QUEUE=edge-transformer-q`). Leave it alone.
+If `rabbitmqctl delete_queue --if-empty` refuses, a message arrived after the drain: inspect it (management API `get` with
+`ack_requeue_true`), and re-check that no old-name producer is still running (`docker ps`).
 
 ## 6. Decisions and follow-ups before the real run (user)
 1. **CPACK configuration differs from staging on 10 columns** of `core.equipments`:

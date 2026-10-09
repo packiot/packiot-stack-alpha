@@ -207,7 +207,7 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 | # | Item | Why it blocks |
 |---|---|---|
 | B1 | Create SM secrets `rabbitmq-stream-engine-creds` + `rabbitmq-sparkplug-decoder-creds` **and** the RabbitMQ users/permissions | **AUTHORED on the branch** (§9): TF secrets + least-priv users via `load_definitions`. Remaining: **`terraform apply`** of `terraform/production` (user) before the deploy |
-| B2 | Queue rename: `oeecloud-worker-q*` → `stream-engine-q*` | old queues stay bound to `oee` and fill up unconsumed; drain then delete after cutover |
+| B2 | Queue rename: `oeecloud-worker-q*` → `stream-engine-q*` | **RESOLVED on the branch**: runbook §5a (drain + archive `-failed` before step 1; verify consumers, then `rabbitmqctl delete_queue --if-empty` after step 5) |
 | B3 | Prod runner PAT cannot fetch `csadmin` (`30e7a31b`); the release pins csadmin `a0ab759` (+ new operator/edge-api shas) | `Fetch submodules` fails → deploy aborts before build. Grant the PAT csadmin access first |
 | B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | possible regression of a prod fix; port or prove superseded |
 | B5 | Service config parity (§5b) | **RESOLVED on the branch** (§8). Remaining: pre-go checks C1–C3, and the `READAPI_RO_PASSWORD` / `INTERNAL_API_KEY` values (§9) |
