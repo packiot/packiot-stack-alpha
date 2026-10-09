@@ -28,6 +28,9 @@ type Metrics struct {
 	// insert|update|move|delete|link|unresolved|delete_guarded.
 	ManualEvents *prometheus.CounterVec
 
+	// Base (PLC) event reconciler (base_reconcile.go), by action: insert|unresolved.
+	BaseEvents *prometheus.CounterVec
+
 	// DLQ (dlq.go).
 	DLQRetried *prometheus.CounterVec // by outcome — DLQ rows re-driven by the retrier
 	DLQDepth   prometheus.Gauge       // current mirror_replay_dlq depth for this source
@@ -81,6 +84,10 @@ func New() *Metrics {
 			Name: "legacy_replicator_manual_events_total",
 			Help: "manual downtime events reconciled from legacy equipment_events_man, by action",
 		}, []string{"action"}),
+		BaseEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "legacy_replicator_base_events_total",
+			Help: "base PLC events reconciled from legacy equipment_events, by action",
+		}, []string{"action"}),
 		DLQRetried: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "legacy_replicator_dlq_retried_total",
 			Help: "DLQ rows re-driven by the retrier, by outcome (succeeded|failed|gone)",
@@ -92,7 +99,7 @@ func New() *Metrics {
 	}
 	reg.MustRegister(m.Dispatched, m.Skipped, m.Failed, m.UpdateNoop, m.Cursor,
 		m.ReconcileInserted, m.ReconcileFinished, m.ReconcileUnresolved,
-		m.ReconcileEnriched, m.ReconcileEnrichSkip, m.ManualEvents,
+		m.ReconcileEnriched, m.ReconcileEnrichSkip, m.ManualEvents, m.BaseEvents,
 		m.DLQRetried, m.DLQDepth)
 	return m
 }
@@ -116,6 +123,12 @@ func (m *Metrics) IncReconcileEnrichSkip(reason string) {
 func (m *Metrics) AddManualEvents(action string, n int) {
 	if n > 0 {
 		m.ManualEvents.WithLabelValues(action).Add(float64(n))
+	}
+}
+
+func (m *Metrics) AddBaseEvents(action string, n int) {
+	if n > 0 {
+		m.BaseEvents.WithLabelValues(action).Add(float64(n))
 	}
 }
 

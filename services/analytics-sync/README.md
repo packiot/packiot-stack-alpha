@@ -121,6 +121,25 @@ Three replay-fidelity residuals closed (`internal/replicate`):
    new forced auto events. Historical mis-inserted `_man` rows are NOT deleted
    (a documented reversible cleanup is proposed separately).
 
+### legacy-replicator base (PLC) event reconciler (2026-10-09)
+
+`internal/replicate/base_reconcile.go` — copies legacy `equipment_events` rows with
+`forced_creation_system = false` (the PLC's run/stop transitions) that the twin lacks,
+every `RECONCILE_BASE_EVENTS_INTERVAL_SEC` (120) over `ts_event >= now -
+RECONCILE_BASE_EVENTS_LOOKBACK_HOURS` (72). Flag `RECONCILE_BASE_EVENTS_ENABLED`
+(default `false`; also needs `REPLICATE_BASE_EVENTS`).
+
+- **Why**: the replay copies base events only from `downtime-event-created` audit rows,
+  which legacy edge-api writes when the edge POSTs `/api/downtimes`. On 2026-10-07 ~14:17
+  UTC the CPACK edge moved to Pub/Sub and the legacy oeecloud writes `equipment_events`
+  directly — no audit row. The twin's event stream froze (2,605 legacy events missing by
+  10-09) and last-event STOPs stayed open (invariant `S2_stale_open_stops`).
+- **Insert-only**, `ON CONFLICT (id_equipment, ts_event) DO NOTHING`, plus a ±1 s
+  neighbour guard shared with the replay's insert: payload timestamps carry
+  milliseconds, legacy stores whole seconds. `ts_end` stays the closer's job.
+- Refreshes `serving.downtime_events_resolved` for the UTC days it inserted into.
+  Stands down while a sandbox is held.
+
 ### legacy-replicator manual downtime-event reconciler (2026-09-29)
 
 `internal/replicate/manual_reconcile.go` — mirrors legacy `equipment_events_man`

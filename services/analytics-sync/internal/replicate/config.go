@@ -122,6 +122,16 @@ type Config struct {
 	SandboxHoldEnabled bool
 	Hold               *Hold
 
+	// BASE (PLC) event reconciler (base_reconcile.go). Copies legacy
+	// equipment_events fcs=false rows the twin lacks within a lookback — the
+	// replay only sees base events announced in user_logs, which stopped when the
+	// CPACK edge moved to Pub/Sub (2026-10-07). Ships INERT
+	// (RECONCILE_BASE_EVENTS_ENABLED=false); also requires REPLICATE_BASE_EVENTS.
+	ReconcileBaseEventsEnabled        bool
+	ReconcileBaseEventsIntervalSec    int
+	ReconcileBaseEventsLookbackHours  int
+	ReconcileBaseEventsRefreshServing bool
+
 	ReconcileManualEnabled        bool
 	ReconcileManualIntervalSec    int
 	ReconcileManualLookbackDays   int
@@ -195,6 +205,11 @@ func Load() *Config {
 		ReconcileEnrichKeepLegacyIDs: getenv("RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS", "true") == "true",
 
 		SandboxHoldEnabled: getenv("SANDBOX_HOLD_ENABLED", "false") == "true",
+
+		ReconcileBaseEventsEnabled:        getenv("RECONCILE_BASE_EVENTS_ENABLED", "false") == "true",
+		ReconcileBaseEventsIntervalSec:    getenvInt("RECONCILE_BASE_EVENTS_INTERVAL_SEC", 120),
+		ReconcileBaseEventsLookbackHours:  getenvInt("RECONCILE_BASE_EVENTS_LOOKBACK_HOURS", 72),
+		ReconcileBaseEventsRefreshServing: getenv("RECONCILE_BASE_EVENTS_REFRESH_SERVING", "true") == "true",
 
 		ReconcileManualEnabled:        getenv("RECONCILE_MANUAL_EVENTS_ENABLED", "false") == "true",
 		ReconcileManualIntervalSec:    getenvInt("RECONCILE_MANUAL_EVENTS_INTERVAL_SEC", 300),

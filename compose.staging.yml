@@ -3284,6 +3284,17 @@ services:
       # query per tick. Rollback: "false" + redeploy (filled values stay).
       RECONCILE_PO_ENRICH_ENABLED: "true"
       RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      # Base (PLC) event reconciler (base_reconcile.go): copies legacy equipment_events
+      # (forced_creation_system=false) the twin lacks within the lookback. The replay
+      # only sees base events announced in user_logs (downtime-event-created), and
+      # since the CPACK edge moved to Pub/Sub (2026-10-07 ~14:17 UTC) legacy writes
+      # them with no audit row: the twin's events froze and last-event STOPs stayed
+      # open (S2_stale_open_stops). Insert-only, ±1 s duplicate guard, refreshes
+      # serving.downtime_events_resolved for touched days. Legacy read: id_equipment =
+      # ANY + ts_event range (its unique key). Rollback: "false" + redeploy.
+      RECONCILE_BASE_EVENTS_ENABLED: "true"
+      RECONCILE_BASE_EVENTS_INTERVAL_SEC: "120"
+      RECONCILE_BASE_EVENTS_LOOKBACK_HOURS: "96"
       # Manual downtime-event reconciler (manual_reconcile.go): mirrors legacy
       # equipment_events_man -> silver.equipment_events_man within the lookback —
       # inserts, edits (incl. moved start times), legacy-duplicate collapse, and
@@ -3398,6 +3409,17 @@ services:
       RECONCILE_PO_ENRICH_ENABLED: "true"
       RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
       RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS: "false"
+      # Base (PLC) event reconciler (base_reconcile.go): copies legacy equipment_events
+      # (forced_creation_system=false) the twin lacks within the lookback. The replay
+      # only sees base events announced in user_logs (downtime-event-created), and
+      # since the CPACK edge moved to Pub/Sub (2026-10-07 ~14:17 UTC) legacy writes
+      # them with no audit row: the twin's events froze and last-event STOPs stayed
+      # open (S2_stale_open_stops). Insert-only, ±1 s duplicate guard, refreshes
+      # serving.downtime_events_resolved for touched days. Legacy read: id_equipment =
+      # ANY + ts_event range (its unique key). Rollback: "false" + redeploy.
+      RECONCILE_BASE_EVENTS_ENABLED: "true"
+      RECONCILE_BASE_EVENTS_INTERVAL_SEC: "120"
+      RECONCILE_BASE_EVENTS_LOOKBACK_HOURS: "96"
       # Manual-event reconciler — same pass as the ent-3 replicator, into the
       # sandbox tenant (its seeded provenance is in the same migration).
       RECONCILE_MANUAL_EVENTS_ENABLED: "true"
