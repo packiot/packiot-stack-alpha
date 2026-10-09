@@ -177,8 +177,9 @@ twin gets them through `legacy-replicator`, and prod now runs the same service (
 ```bash
 cd /opt/packiot/stack
 # 1. the cursor must NOT exist (cold start = the backfill). The transplant never copies staging's cursor.
-docker exec -i stack-pgbouncer-1 psql -h "$(grep -m1 '^POSTGRES_HOST_UPSTREAM=' /opt/packiot/.env | cut -d= -f2-)" \
-  -U postgres -d packiot -Atc "SELECT to_regclass('ops.mirror_replay_cursor') IS NULL
+E() { grep -m1 "^$1=" /opt/packiot/.env | cut -d= -f2-; }
+docker exec -i -e PGPASSWORD="$(E POSTGRES_PASSWORD)" stack-pgbouncer-1 psql -h "$(E POSTGRES_HOST_UPSTREAM)" \
+  -U "$(E POSTGRES_USER)" -d "$(E POSTGRES_DB)" -Atc "SELECT to_regclass('ops.mirror_replay_cursor') IS NULL
                                  OR NOT EXISTS (SELECT 1 FROM ops.mirror_replay_cursor WHERE source='legacy-cpack')"   # → t
 # 2. start it, and keep it across future deploys
 docker compose -f compose.production.yml --profile legacy-replicator up -d --build legacy-replicator
