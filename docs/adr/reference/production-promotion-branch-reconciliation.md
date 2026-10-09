@@ -158,8 +158,7 @@ run on staging and are **absent** from the promoted prod compose: `edge-session-
 `customize`, `barcode-service` + `barcode-app`, `analytics-sync`, `oeecloud-fanout`, observability
 (`postgres-exporter`, `node-exporter`, `redis-exporter`, `cadvisor`, `blackbox-exporter`, `alloy`, `tempo`,
 `alertmanager`), `cloudbeaver`, `pgweb-analytics`, `ollama`; plus staging-only rigs (plc-sim, s7, agents, twins,
-sandbox operators, legacy-replicator(-sbx), mirror-worker-go, simulator, edge-nodered). Each needs a keep-off /
-bring-to-prod decision (B6).
+sandbox operators, legacy-replicator(-sbx), mirror-worker-go, simulator, edge-nodered). Decided 2026-10-09: all stay off in this release (B6, §12).
 
 ### 5b. Config the promoted services read with **different values than staging** (as first merged — resolved in §8)
 The staging-maintained prod compose lags staging's own service config. With no env set, code defaults apply:
@@ -211,7 +210,7 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 | B3 | Prod runner PAT cannot fetch `csadmin` (`30e7a31b`); the release pins csadmin `a0ab759` (+ new operator/edge-api shas) | `Fetch submodules` fails → deploy aborts before build. Grant the PAT csadmin access first |
 | B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | **RESOLVED** (§10): 3 of 4 fixes superseded on staging; the edit-prefetch guard was ported (packiot/csadmin#120) and the release pins the result |
 | B5 | Service config parity (§5b) | **RESOLVED on the branch** (§8). Remaining: pre-go checks C1–C3, and the `READAPI_RO_PASSWORD` / `INTERNAL_API_KEY` values (§9) |
-| B6 | Services absent from prod compose (§5a) | decide per service: observability, edge-session-broker, customize, barcode, analytics-sync, fanout |
+| B6 | Services absent from prod compose (§5a) | **RESOLVED 2026-10-09 (user): core only** — all staging-only services stay OFF in this release; release-2 candidates listed in §12 |
 | B7 | edge-api#297 | the release pins edge-api **`c5061d5`** (= `8c6adfa` + prettier); it becomes reachable from edge-api `staging` once #297 merges with a merge commit (being handled by the coordinator) |
 | B8 | Transplant + runbook §6 decisions (CPACK config sync, retention, events gap since 08-12, Hasura metadata, roles/extensions) | the deploy must follow the transplant, never precede it |
 | B9 | `historian-gateway` inline definition is the 09-07 shape (DB `postgres`, no OOM guards) | harmless while the profile is off; switch to `compose.historian-gateway.yml` before enabling a prod cold tier |
@@ -364,3 +363,19 @@ vitest 288/288, `tsc -b` clean, eslint clean, packml ratchet OK.
   - the legacy DB's network allowlist for the prod app box egress IP;
   - the terraform apply;
   - after the backfill, the history recompute of 2026-08-12 → now (runbook §5b steps 4–5).
+
+## 12. B6 — release scope = core only (decided 2026-10-09)
+This release promotes the **core** app tier only: the 25 services of today's prod compose under their new names, plus
+`legacy-replicator` (B11, profiled). Every other service that runs on staging stays **OFF**: none of them is in
+`compose.production.yml`, so the deploy cannot start them. The 30 staging services not in the prod compose:
+
+| Group | Services | Release 2? |
+|---|---|---|
+| **Barcode** | `barcode-service`, `barcode-app` | **yes, first** |
+| **Customize** | `customize` | **yes, first** |
+| **Observability** | `postgres-exporter`, `node-exporter`, `redis-exporter`, `cadvisor`, `blackbox-exporter`, `alloy`, `tempo`, `alertmanager` | **yes, first**. Also unblocks B10, the prod Prometheus targets, and `OTEL_*` |
+| Box access | `edge-session-broker` (ADR-0057; + edge-api `EDGE_SESSION_BROKER_*`/`SSM_*`) | candidate |
+| DB browsing | `cloudbeaver`, `pgweb-analytics`, `ollama` | candidate (staff tools) |
+| Staging-only, never on prod | `plc-sim`, `simulator`, `s7-softplc`, `s7-reader`, `edge-nodered` (simulation); `sparkplug-agent-cpack`, `sparkplug-agent-shared` (factory-side agents); `bispharma-twin`, `bispharma-box-scan-mock`, `operator-bispharma` (Bispharma staging tenant); `legacy-replicator-sbx`, `operator-sbx`, `oeecloud-fanout` (sandbox twin); `mirror-worker-go`, `analytics-sync` (retired comparator / superseded by legacy-replicator) | no |
+
+(§5a's earlier "24" was a rough count; this table is the exact diff of the two compose files.)
