@@ -45,7 +45,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-      start_period: 30s
+      # the full seed's first-start load takes ~2–4 min on a laptop (10-09: ~3 min, 1.69 M rows); failures inside
+      # start_period don't count and the first success ends it, so a slow load no longer reads as "unhealthy" while a
+      # crashed init still fails fast (the container exits)
+      start_period: 600s
 
   # ── rabbitmq (same image + conf + plugins as staging) ─────────────────────
   # Loads the `oee` topology at boot so a decoder-only slice still routes

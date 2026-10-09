@@ -136,20 +136,21 @@ jobs:
 
           # ADR-0060 D4 step 4: run the in-DB data invariants (#1543) on the packaged seed. The procedure must run.
           # Gate = referential + validity (orphans, bad routing, bounds: what a broken extract/anonymize/load would
-          # cause). Freshness/orchestration/consistency checks also see the 7-day window edges (a week or shift that
-          # starts before `since`) and the paused-then-resumed jobs, so they are reported as warnings, not gates.
+          # cause) + C3 cagg-vs-raw (a load that refreshes caggs wrongly: the 10-09 build shipped an empty hourly cagg).
+          # Other checks also see the 7-day window edges (a week or shift that starts before `since`) and the
+          # paused-then-resumed jobs, so they are reported as warnings, not gates.
           "${PSQL[@]}" -q -c 'CALL ops.job_data_invariants()'
           "${PSQL[@]}" -F ' | ' -c "SELECT CASE WHEN ok THEN 'ok  ' ELSE 'FAIL' END, dimension, check_id, observed, expected
                                      FROM ops.data_invariant_result WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result)
                                     ORDER BY ok, dimension, check_id"
           GATE=$("${PSQL[@]}" -c "SELECT coalesce(string_agg(check_id, ', ' ORDER BY check_id), '') FROM ops.data_invariant_result
                                    WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result)
-                                     AND NOT ok AND dimension IN ('referential', 'validity')")
+                                     AND NOT ok AND (dimension IN ('referential', 'validity') OR check_id = 'C3_cagg_vs_raw_24h')")
           WARN=$("${PSQL[@]}" -c "SELECT coalesce(string_agg(check_id, ', ' ORDER BY check_id), '') FROM ops.data_invariant_result
                                    WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result)
-                                     AND NOT ok AND dimension NOT IN ('referential', 'validity')")
+                                     AND NOT ok AND NOT (dimension IN ('referential', 'validity') OR check_id = 'C3_cagg_vs_raw_24h')")
           [ -z "$WARN" ] || echo "::warning title=dev seed invariants (not gating)::$WARN"
-          [ -z "$GATE" ] || { echo "ABORT: referential/validity invariants fail on the seed: $GATE"; exit 1; }
+          [ -z "$GATE" ] || { echo "ABORT: gating data invariants fail on the seed: $GATE"; exit 1; }
 
       - name: Push to GHCR (private)
         if: env.PUSH == 'true'
