@@ -1,4 +1,4 @@
-# schema	table	kind	column	data_type  — snapshot of packiot_analytics (staging) 2026-10-06; names/types only, no data
+# schema	table	kind	column	data_type  — snapshot of packiot_analytics (staging) 2026-10-06; names/types only, no data; core.po_number_corrections + ops._fix_line_scrap_20261009 added 2026-10-09 from their DDL (db/migrations/t-adr0062-p1-po-number-expand, scripts/ops/repair-line-scrap-and-unbacked.sh)
 bi	downtimes	view	id_enterprise	integer
 bi	downtimes	view	id_downtime	bigint
 bi	downtimes	view	id_equipment	integer
@@ -561,6 +561,11 @@ core	packml_register	view	id_unit	integer
 core	packml_register	view	line_unit_seq	character varying
 core	packml_register	view	device_nm	character varying
 core	packml_register	view	device_key	text
+core	po_number_corrections	table	id_production_order	bigint
+core	po_number_corrections	table	from_text	character varying
+core	po_number_corrections	table	to_text	character varying
+core	po_number_corrections	table	reason	text
+core	po_number_corrections	table	created_at	timestamp with time zone
 core	product_families	table	id_product_family	bigint
 core	product_families	table	nm_product_family	character varying
 core	product_families	table	id_enterprise	integer
@@ -2164,6 +2169,18 @@ ops	_ev_reconcile_leg	table	status	integer
 ops	_ev_reconcile_leg	table	duration	integer
 ops	_ev_reconcile_leg	table	fcs	boolean
 ops	_ev_reconcile_leg	table	id_equipment	integer
+ops	_fix_line_scrap_20261009	table	id_enterprise	integer
+ops	_fix_line_scrap_20261009	table	id_equipment	integer
+ops	_fix_line_scrap_20261009	table	ts_value	timestamp with time zone
+ops	_fix_line_scrap_20261009	table	kind	text
+ops	_fix_line_scrap_20261009	table	old_gross	real
+ops	_fix_line_scrap_20261009	table	old_net	real
+ops	_fix_line_scrap_20261009	table	old_scrap	real
+ops	_fix_line_scrap_20261009	table	new_gross	real
+ops	_fix_line_scrap_20261009	table	new_net	real
+ops	_fix_line_scrap_20261009	table	new_scrap	real
+ops	_fix_line_scrap_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_line_scrap_20261009	table	applied_at	timestamp with time zone
 ops	_fix_unbacked_20261001	table	id_equipment	integer
 ops	_fix_unbacked_20261001	table	id_enterprise	integer
 ops	_fix_unbacked_20261001	table	ts_value	timestamp with time zone
