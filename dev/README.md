@@ -189,8 +189,8 @@ curl -s -H "x-api-key: $KEY" http://127.0.0.1:8080/api/lines | jq length
 ```
 
 The SPAs are the staging images (nginx, static build): use them to check a whole flow. For UI work, run the SPA's own
-dev server against this slice's edge-api. Logging in to csadmin/customize works with the dev users, but the dev pool
-has no `cs-admin` group, so CS-Admin routes (cross-tenant, onboarding) are refused (contracts.md F12). front4 can use the edge-api slice
+dev server against this slice's edge-api. Logging in to csadmin/customize works with the dev users; `dev-admin@example.com` is in the dev pool's `cs-admin`
+group (contracts.md F12, fixed 2026-10-09), so it can use the CS-Admin routes (cross-tenant, onboarding). front4 can use the edge-api slice
 too: `DEV_FRONT4_EDGE_API=http://localhost:8080 make dev SVC="front4 edge-api"`.
 
 ## Smoke checks and CI (ADR-0060 D8)

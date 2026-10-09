@@ -53,6 +53,7 @@ layer and still have a correct picture.
 
 | You are… | Read, in order |
 |---|---|
+| **Shipping a change** | [Local development](operations/local-development.md) → [Branches, merging and deploying to staging](operations/branches-and-merging.md) → [CI/CD](components/ci-cd.md) |
 | **New engineer** | [Architecture overview](architecture/overview.md) → [A counter's journey](architecture/data-journey.md) → [Domain model](architecture/domain-model.md) → the subsystem you'll work on → its component pages |
 | **Customer Success** | Plain-language guides first: [Setting up a new client](guide/setting-up-a-client.md) and [Customizing a client](guide/customize/index.md). Technical detail: [Domain model](architecture/domain-model.md) → [Onboarding a client (technical)](operations/onboarding-a-client.md) → [Edge subsystem](subsystems/edge.md) |
 | **Data / DBA** | [Analytics DB](subsystems/analytics-db.md) → [Database reference](reference/database-reference.md) → [DBA guide](operations/dba-guide.md) → [Historian](subsystems/historian.md) |

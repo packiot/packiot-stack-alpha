@@ -170,6 +170,8 @@ nav:
           - Configuration: reference/configuration.md
           - ADR index: reference/adr-index.md
       - "4 · Operations":
+          - Local development: operations/local-development.md
+          - Branches, merging & deploying: operations/branches-and-merging.md
           - Runbooks: operations/runbooks.md
           - Onboarding a client: operations/onboarding-a-client.md
           - First-time edge box setup: operations/first-time-box-setup.md

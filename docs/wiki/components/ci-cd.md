@@ -2,14 +2,15 @@
 title: CI/CD
 layer: 3
 owner_area: platform
-last_verified: 2026-09-28
+last_verified: 2026-10-09
 ---
 # CI/CD
 
 > **Layer 3 · Components** — every GitHub Actions workflow in `.github/workflows/`: what
 > triggers it, where it runs, what it gates or deploys, and how to dispatch and roll back.
 > For engineers merging, deploying or debugging a red check.
-> Up: [Platform & operations](../subsystems/platform.md)
+> Up: [Platform & operations](../subsystems/platform.md) · The everyday procedure (branch → PR → merge → verify):
+> [Branches, merging and deploying to staging](../operations/branches-and-merging.md)
 
 ## Responsibility
 
@@ -21,9 +22,9 @@ running stack on its host with every expected service up.
 
 | Item | Value |
 |---|---|
-| Location | `.github/workflows/` (16 files) |
+| Location | `.github/workflows/` (19 files) |
 | Deploy branches | `staging` → staging app host; `production` → new-stack production app host |
-| Protected branch | `staging`: ruleset "Protect staging" — PR required, `Validate compose files` check required, no force-push/delete |
+| Protected branch | `staging` only: ruleset "Protect staging" — PR required (0 approvals), `Validate compose files` the **only** required check, no force-push/delete, no bypass actors. The submodule repositories (private, GitHub Free) have **no** branch protection at all |
 | Hosted runners | `ubuntu-latest` (metered minutes): lint, tests, gitleaks, wiki build |
 | Self-hosted runners | `[self-hosted, staging, linux, arm64]` = **the staging app host itself**; `[self-hosted, production, linux, arm64]` = the production app host; per-client labels at factories |
 | Serialization | `concurrency: deploy-staging` / `deploy-production`, `cancel-in-progress: false` (deploys queue, never cancel) |
@@ -43,9 +44,12 @@ bundles), GHCR image `ghcr.io/packiot/packiot-postgres:latest`, S3 wiki sync.
 
 | Workflow | Trigger | Runner | Does | Gate? |
 |---|---|---|---|---|
-| `deploy-staging.yml` | push `staging`, dispatch | self-hosted staging | builds + deploys the staging stack; post-deploy gate and diagnostics | deploy fails red if any service is down |
+| `deploy-staging.yml` | push `staging`, dispatch | `gate`: ubuntu · `deploy`: self-hosted staging | `gate` skips the run when `staging` already moved past its commit (#1642); `deploy` builds + deploys the staging stack, post-deploy gate and diagnostics | deploy fails red if any service is down |
 | `deploy-production.yml` | push `production`, dispatch | self-hosted production | `compose.production.yml build` + `up -d --remove-orphans`; diagnostic `ps` + ERROR-log count | no hard gate |
-| `pr-validation.yml` | PR → `staging`/`development`, dispatch | ubuntu | `docker compose config --no-interpolate -q` on staging + development files | **required** (`Validate compose files`) |
+| `pr-validation.yml` | PR → `staging`/`development`, dispatch | ubuntu | `Validate compose files`: `docker compose config --no-interpolate -q`; `packml ratchet (ADR-0061)`: `scripts/ci/packml-ratchet.sh` (per-file shrink-only baseline of PackML references; exceptions in `scripts/ci/packml-allowlist.txt`) | compose: **required**; ratchet: hard, not required |
+| `dev-slices.yml` | PR → `staging` touching `dev/**`, `db/migrations/**`, `services/**`, `customize/**`, `grafana/**`, broker configs, a submodule pin, `Makefile`; dispatch | ubuntu (matrix) | boots the dev environment per slice (`tier0-grafana`, `pipeline`, `barcode`, `edge`) from the published dev seed and runs `make dev-smoke`; `edge` needs repo secret `DEV_SUBMODULES_TOKEN` and is **skipped (still green)** without it — see [Local development](../operations/local-development.md) | hard, not required |
+| `dev-seed-build.yml` | dispatch only | self-hosted staging (reads staging read-only) | builds + publishes the anonymized dev seed `ghcr.io/packiot/devseed` (extract → anonymize → leak gate → package → validate) | — |
+| `emergency-db-restore.yml` | dispatch only (typed confirmation) | self-hosted staging | **staging** emergency restore: `terraform/staging/scripts/restore-db.sh` (side DB → verify gate → rename swap), stops and restarts the writers. Runbook `docs/runbooks/emergency-db-restore.md`; see [DBA guide](../operations/dba-guide.md) | — |
 | `gitleaks.yml` | every PR, push `staging` | ubuntu | pinned gitleaks 8.21.2, full history, `.gitleaks.toml` | blocks merge on a finding |
 | `superset-rls-isolation.yml` | PR → `staging`, dispatch | ubuntu | ephemeral Postgres; 2-tenant RLS isolation on `bi.*` views; overlay is profile-gated | intended required check (fails, never skips: `SUPERSET_GATE_REQUIRE=1`) |
 | `go-services.yml` | PR → `staging`/`development` touching `services/{mirror-worker-go,stream-engine,ingest-shim,operator-gateway,sparkplug-decoder,read-api,analytics-sync}/**` | ubuntu | per service `go vet`, `go test -race`, `go build`; govulncheck + golangci-lint soft; stream-engine golden SQL fixtures vs Postgres 15 | hard for vet/test/build; not yet a required check |
@@ -60,11 +64,17 @@ bundles), GHCR image `ghcr.io/packiot/packiot-postgres:latest`, S3 wiki sync.
 | `client-edge-deploy.yml` | dispatch (`client`, `target` staging/production, `edge_model` nodered/reader, `confirm`) | `[self-hosted, <client>]` runner **at the factory** | deploys `compose.edge.yml` bundle; verifies agent `/healthz`, uplink connected, unmapped tags not growing | fails red on data-continuity loss |
 | `generate-client-bundle.yml` | dispatch | self-hosted production | builds a per-client edge bundle artifact; signs a client mTLS cert with the prod CA from Secrets Manager, shreds the CA key | — |
 
-Workflows that live in **other** repositories but drive this one: each submodule repo
-(`edge-api`, `operator4`, `csadmin`, `edge-node-red`) has `bump-stack-submodule.yml`, which on
-a push to its `staging` (or `development`) branch opens a bot PR here that bumps the gitlink,
-then enables auto-merge. It authenticates with the submodule repo's `PARENT_REPO_TOKEN` secret
-(needs contents + pull-requests write on this repo).
+Workflows that live in **other** repositories but drive this one: `edge-api`, `operator4` and
+`edge-node-red` each have `bump-stack-submodule.yml` (verified 2026-10-09; **`csadmin` has none** —
+its pin is bumped by hand in a PR). On a push to the submodule's `staging` it opens a bot PR here
+(`chore(submodule): bump <name> to <sha> (staging) (auto)`) and enables auto-merge (squash). A push
+to the submodule's `development` targets this repo's **retired** `development` branch, which is
+unprotected, so the bot merges it directly. It authenticates with the submodule repo's
+`PARENT_REPO_TOKEN` secret (needs contents + pull-requests write on this repo).
+
+!!! warning "Bump PRs wait only for the required check"
+    Auto-merge fires once `Validate compose files` passes; `dev-slices`, `go-services` and the other
+    checks on the bump PR do not block it. The submodule repository's own CI is the effective gate.
 
 ### deploy-staging.yml step by step
 
@@ -80,12 +90,15 @@ Runs on `[self-hosted, staging, linux, arm64]` in
 | 5 | Ensure `HIST_GW_SVC_PASSWORD` | mirrors `packiot/staging/historian-svc` into `.env` if absent | warns only |
 | 6 | Generate RabbitMQ definitions | template + admin creds from `.env` + `stream-engine`/`sparkplug-decoder` passwords from Secrets Manager → `/opt/packiot/rabbitmq/definitions.json` (atomic `mv`) | yes |
 | 7 | Materialize Alertmanager Slack webhook | writes `monitoring/alertmanager/slack_api_url` if `packiot/staging/app.slack_api_url` is set | yes (only on AWS error) |
+| 7a | Pull barcode-app from GHCR | optional; inert until its secret exists | no |
+| 7b | Resolve compose profiles | `.env` `COMPOSE_PROFILES` + `shared-tee` | yes |
 | 8 | Build images | `docker compose -f compose.staging.yml -f compose.superset.yml -p stack build` | yes |
 | 9 | Deploy | `… -p stack up -d --remove-orphans` | yes |
 | 10 | Prune | `docker image prune -f`; `docker builder prune -f --keep-storage 5GB` | yes |
 | 11 | Reload Prometheus | `POST /-/reload` via `--network container:prometheus` | no |
 | 12 | Reload Alloy | `POST :12345/-/reload` | no |
 | 13 | Restart postgres-exporter | only if `monitoring/postgres-exporter/` changed since `github.event.before` (always on dispatch) | no |
+| 13b | Restart Loki | only if its config changed (Loki reads config at startup only; #1559) | no |
 | 14 | Reload Alertmanager | only if running | no |
 | 15 | **Service-state gate** | enumerates services from `compose config`; one-shots must be `exited(0)`, others `running` (+`healthy` if they have a HC); 300 s deadline; prints last 40 log lines per failure. Runs even if step 9 failed (`if: !cancelled()`) | **yes** |
 | 16 | Inject synthetic Sparkplug counter | group `E2EFIXTURE` on mosquitto; never a real tenant group | no |
@@ -132,7 +145,7 @@ stack` composition as build/deploy, so profile-gated services only count when th
 
 ## Data & invariants
 
-- Deploys never cancel each other; each staging commit is deployed in order.
+- Deploys never cancel each other. A queued run whose commit `staging` has already moved past is skipped by the `gate` job, so the newest commit always deploys last (before #1642 an older run could finish last and roll code back).
 - The deploy does not trust `up -d`'s exit code; it re-derives state from `ps`.
 - Secrets never enter hosted CI: prod DB drift checks run on the host via SSM; the prod CA key
   is used on the production runner and shredded.
