@@ -3,8 +3,9 @@
 # 2026-10-06 16:32 unbacked-increment burst. STAGING DATA ONLY: prod is promoted from its own data (transplant), so
 # nothing here is ever replayed there.
 #
-#   C  impossible single-row increments (|incr| > LIMIT in one ~15 s sample: stale upstream baseline after the
-#      10-06 disk-full restart, and CER400 10-08 21:58) → 0, the 10-01 precedent (ops._fix_unbacked_20261001).
+#   C  impossible single-row increments (|incr| > LIMIT in one ~15 s sample, NOT backed by the row's own totalizer:
+#      stale upstream baseline after the 10-06 disk-full restart) → 0, the 10-01 precedent (ops._fix_unbacked_20261001).
+#      A totalizer-backed lump is real production and is kept (CER400 publishes consumed only at births).
 #   AB line scrap (tp=3): the line's scrap is Σ first-machine consumed − Σ last-machine processed. Phase 9 lost
 #      deltas to the same-second upsert (A) and derived −Σnet for lines without an infeed (B). For every line-day
 #      whose stored Σscrap ≠ Σ(gross − net), set per row scrap := gross − net when the line-day has an infeed
@@ -48,6 +49,15 @@ N=$(P "INSERT INTO $FIX (id_enterprise, id_equipment, ts_value, kind, old_gross,
          FROM silver.equipment_values v
         WHERE v.id_enterprise = ANY('{$ENTS}'::int[]) AND v.ts_value >= now() - interval '$DAYS days'
           AND (abs(v.gross_production_incr) > $LIMIT OR abs(v.net_production_incr) > $LIMIT OR abs(v.scrap_incr) > $LIMIT)
+          -- NOT when the row's own totalizer moved by the increment: that is real, lumpy production (CER400's consumed
+          -- counter is only published at (re)births, so each lump = production since the previous birth; staging run
+          -- 1 zeroed a backed +43,857 and it had to be restored, 2026-10-09). Magnitude alone is not evidence.
+          AND NOT coalesce(abs(v.gross_production_incr) > $LIMIT AND abs((v.gross_production_total - (SELECT p.gross_production_total
+                  FROM silver.equipment_values p WHERE p.id_equipment = v.id_equipment AND p.ts_value < v.ts_value
+                   AND p.gross_production_total IS NOT NULL ORDER BY p.ts_value DESC LIMIT 1)) - v.gross_production_incr) <= 100, false)
+          AND NOT coalesce(abs(v.net_production_incr) > $LIMIT AND abs((v.net_production_total - (SELECT p.net_production_total
+                  FROM silver.equipment_values p WHERE p.id_equipment = v.id_equipment AND p.ts_value < v.ts_value
+                   AND p.net_production_total IS NOT NULL ORDER BY p.ts_value DESC LIMIT 1)) - v.net_production_incr) <= 100, false)
        ON CONFLICT (id_equipment, ts_value, kind) DO UPDATE
          SET old_gross = EXCLUDED.old_gross, old_net = EXCLUDED.old_net, old_scrap = EXCLUDED.old_scrap,
              new_gross = EXCLUDED.new_gross, new_net = EXCLUDED.new_net, new_scrap = EXCLUDED.new_scrap, snapped_at = now()
