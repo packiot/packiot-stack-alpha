@@ -90,6 +90,13 @@ func runPhase9LineAggregation(
 		var scrapLineNet int64
 		var scrapLineGross int64
 
+		// Line scrap = Σ first-machine Consumed − Σ last-machine Processed. It is only defined once the line HAS an
+		// infeed: a line whose first machine has no Consumed sensor (staging CER400, SLEEVE1/2, ISIMAT, PTH*) got
+		// −Σprocessed as "scrap" (2026-10-08: CER400 −10 every tick, PTH40_03 −4.7M/day). The accumulator therefore
+		// starts at the first Consumed contribution; Processed before that changes nothing.
+		lineHasInfeedKey := enterpriseToLine + "/Admin/ProdDefectiveCount___HAS_INFEED"
+		hasInfeed, _ := state.Int(lineHasInfeedKey)
+
 		// First-machine: contribute to LINE Consumed + bump Defective counter.
 		if prodConsumedSet && machineIdx == firstMachine {
 			metric := Metric{
@@ -112,6 +119,10 @@ func runPhase9LineAggregation(
 			curDef, _ := state.Int(lineDefKey)
 			newDef := curDef + consIncr
 			appendIntMutation(dec, lineDefKey, newDef, "line.defective.add_consumed")
+			if hasInfeed != 1 {
+				appendIntMutation(dec, lineHasInfeedKey, 1, "line.defective.has_infeed")
+				hasInfeed = 1
+			}
 
 			scrapLineGross = consIncr
 		}
@@ -130,18 +141,29 @@ func runPhase9LineAggregation(
 			}
 			dec.Metrics = append(dec.Metrics, metric)
 
-			lineDefKey := enterpriseToLine + "/Admin/ProdDefectiveCount"
-			curDef, _ := state.Int(lineDefKey)
-			newDef := curDef - procIncr
-			appendIntMutation(dec, lineDefKey, newDef, "line.defective.sub_processed")
+			if hasInfeed == 1 {
+				lineDefKey := enterpriseToLine + "/Admin/ProdDefectiveCount"
+				curDef, _ := state.Int(lineDefKey)
+				newDef := curDef - procIncr
+				appendIntMutation(dec, lineDefKey, newDef, "line.defective.sub_processed")
 
-			scrapLineNet = -procIncr
+				scrapLineNet = -procIncr
+			}
 		}
 
 		// Debounced line-Defective emission: fires when either scrap side moved
-		// AND >20 ms elapsed since the last line-Defective emission.
-		// NOTE: preserving JS's literal "20" (millis) — likely a bug but
-		// behavior-parity comes first. See state-machine doc §4.3.
+		// AND the trigger lands in a LATER WALL-CLOCK SECOND than the last
+		// line-Defective emission. At most one emission per second, because
+		// stream-engine keys silver.equipment_values by (ts_value truncated to
+		// the second, id_equipment) and upserts scrap_incr = EXCLUDED: two
+		// emissions in one second (the first machine's Consumed tick and the last
+		// machine's Processed tick landing together) overwrote each other and
+		// silently dropped half the telescoping sum — line L6's scrap ran 2–25×
+		// gross − net on staging (2026-10-08). A suppressed tick loses nothing:
+		// the accumulator (lineDefKey) keeps moving and ___PREVIOUS only advances
+		// on emission, so the next emission carries the skipped delta.
+		// (The JS literal was 20 ms — a debounce that could never separate
+		// second-resolution rows.)
 		if scrapLineNet != 0 || scrapLineGross != 0 {
 			lineDefTsKey := enterpriseToLine + "/Admin/ProdDefectiveCount___TS"
 			lineDefTs, tsSet := state.TimeMs(lineDefTsKey)
@@ -150,7 +172,7 @@ func runPhase9LineAggregation(
 				appendTimeMsMutation(dec, lineDefTsKey, timestampMs, "line.defective.ts_first")
 				continue
 			}
-			if lineDefTs+20 > timestampMs {
+			if timestampMs/1000 <= lineDefTs/1000 {
 				continue
 			}
 
