@@ -530,6 +530,30 @@ services:
       # exclusive single super_user + email allowlist. NOTE: only takes effect once
       # the dev super-admin user is PROVISIONED in prod (a seed step, cutover-gated).
       OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
+      # ── PROMOTION 2026-10 — staging behaviour parity (reconciliation doc §8) ──
+      # CS-Admin / operator Cognito auth + onboarding. These were meant for
+      # edge-api (#20 durability, 66f501b3) but sat in the refdata/read-api block,
+      # so edge-api only had them via the box .env (app_init.sh). Moved here.
+      AWS_REGION: us-east-1
+      AUTH_BEARER_ENABLED: "true"
+      COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
+      COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
+      COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
+      COGNITO_CS_ADMIN_GROUP: cs-admin
+      EDGE_API_COGNITO_AUTH_ENABLED: "true"
+      EDGE_API_ONBOARDING_ENABLED: "true"
+      # Teardown (destructive client removal) is ON on staging; kept OFF on prod
+      # until the user decides — a deliberate divergence (doc §8).
+      EDGE_API_TEARDOWN_ENABLED: "false"
+      ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
+      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
+      # Stale-PO gate — CPACK only (staging: 3,4).
+      PO_STALENESS_GATE_ENABLED: "true"
+      PO_STALENESS_GATE_ENTERPRISES: "3"
+      REDIS_URL: ${REDIS_URL:-redis://app-redis:6379/0}
+      # Not carried (no such service on prod — decision B6): EDGE_SESSION_BROKER_*,
+      # SSM_* (ADR-0057 box access), OTEL_* (no tempo). POSTGRES_ANALYTICS_URL is
+      # left unset: single-DB prod, the adapter binds the primary DB (identical).
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -694,6 +718,13 @@ services:
       OAUTH2_PROXY_COOKIE_DOMAINS: .packiot.app
       OAUTH2_PROXY_WHITELIST_DOMAINS: .packiot.app
       OAUTH2_PROXY_COOKIE_SECURE: "true"
+      # PROMOTION 2026-10 parity: server-side sessions in app-redis (db 1), like
+      # staging. Cookie-store sessions (split + a host-scoped copy) grew past the
+      # 8 KB CloudFront WAF SizeRestrictions_Cookie_HEADER cap on staging and got
+      # every admin UI 403'd at the edge; prod's .packiot.app scope (dash/wiki +
+      # *.prod) is the same exposure. The cookie then holds only a small ticket.
+      OAUTH2_PROXY_SESSION_STORE_TYPE: redis
+      OAUTH2_PROXY_REDIS_CONNECTION_URL: redis://app-redis:6379/1
       OAUTH2_PROXY_COOKIE_SAMESITE: lax
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_PASS_ACCESS_TOKEN: "false"
@@ -701,6 +732,9 @@ services:
       OAUTH2_PROXY_REVERSE_PROXY: "true"
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
       OAUTH2_PROXY_UPSTREAMS: static://202
+    depends_on:
+      app-redis:
+        condition: service_healthy   # session store (as staging)
     ports:
       - "127.0.0.1:4180:4180"
     networks:
@@ -811,7 +845,7 @@ services:
       # Single flow → no F1/F2/F3 triple to spread; keep lanes small. 2 keeps
       # po-control strictly ordered (read-modify-write) while data processes
       # concurrently. Bump only if a real client's volume needs it.
-      CONSUME_LANES: "2"
+      CONSUME_LANES: "4"   # PROMOTION 2026-10 parity: staging runs 4 (was 2)
       # Byte-identical statement-count optimization (fold shift-fill into the
       # equipment_values UPSERT). Keep on.
       SHIFT_FILL_FOLDED: "true"
@@ -857,7 +891,14 @@ services:
       # tenants (e.g. ent 5).
       COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
-      COUNTERS_ONLY_AVAILABILITY_ENABLED: "false"
+      # PROMOTION 2026-10 parity: staging runs the counters-only availability pass
+      # for the CPACK L6 members (counters-only Modbus line, SPEED:NO). Ids 68-72 =
+      # L6 BREYER/TEXA/POLYTYPE/RMH/PTH on staging; the new-stack prod carries the
+      # SAME CPACK ids (readiness §2b: 90 ISIMAT / 107 SLEEVE1 match). VERIFY on the
+      # transplanted DB before the go (reconciliation doc §8, check C1). The
+      # OEE_AVAIL_FLOOR pass below engages ONLY for this list.
+      COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
+      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "68,69,70,71,72"
       # Client-agnostic hardening (forward-port): the oldest-first backfill drain
       # that recomputes stranded recalc_needed hour rows (stream-engine
       # internal/rollup/backfill.go, dedicated advisory key). Safe on all tenants.
@@ -873,6 +914,57 @@ services:
       # services/oeecloud-worker/scripts/migrate-tenant-queues-sac.sh. Flip on
       # ONLY with OEECLOUD_WORKER_REPLICAS>1. Docs: strategy-d-shared-pool-sac.md.
       WORKER_POOL_SAC_ENABLED: "false"
+      # ── PROMOTION 2026-10 — staging behaviour parity (reconciliation doc §8) ──
+      # Reference = compose.staging.yml + staging's live .env-only flags, scoped to
+      # prod's tenants (CPACK = ent 3; ent 1 has no line/stop config). Staging-only
+      # tenant ids (4 Incoplast, 5 Bispharma, 2000003 sandbox) are dropped.
+      #
+      # Single-DB prod after the transplant: `packiot` IS the medallion
+      # (staging-packiot_analytics-shaped) DB. Without POSTGRES_ANALYTICS_DB_NAME
+      # the handler routes source_type=refactored to (main pool, `public`) — the
+      # pre-medallion names t252 dropped — so this is REQUIRED, not cosmetic.
+      # Staging points BOTH pools at packiot_analytics (CREDS_SOURCE=env,
+      # DB_NAME=packiot_analytics); prod points both at ${POSTGRES_DB} (SM creds).
+      POSTGRES_ANALYTICS_DB_NAME: ${POSTGRES_DB}
+      POSTGRES_MAX_CONNS: "5"
+      POSTGRES_ANALYTICS_MAX_CONNS: "15"
+      # ADR-0048/0049 OEE correctness (staging since 2026-08-22).
+      OEE_AVAIL_FLOOR_ENABLED: "true"
+      OEE_CANONICAL_APQ_ENABLED: "true"
+      # FU#8 PO-grain availability (available_time/planned_downtime on PO runtime).
+      PO_AVAILABILITY_ENABLED: "true"
+      # Stale-open stop closer — CPACK only (staging: 3,4,5,2000003).
+      EVENTS_CLOSE_STALE_ENABLED: "true"
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3"
+      # ADR-0010 §10.4 CPAC (status_type=0) stop deriver. NOTE: for ent 3 this
+      # writes the SHADOW comparison table (CPAC_EVENT_TARGET_TABLE default
+      # equipment_events_cpac_shadow), exactly like staging — it does NOT mint
+      # live CPACK downtimes. CPAC_EVENT_LIVE_ENTERPRISES stays EMPTY: CPACK must
+      # not get a second live writer (the #456 double-write class). See doc §8.
+      CPAC_EVENT_DERIVATION_ENABLED: "true"
+      CPAC_EVENT_ENTERPRISES: "3"
+      CPAC_STOP_THRESHOLD_DEFAULT_SEC: "600"
+      # ADR-0036 B1 medallion Bronze dual-write (now reached: refactored route).
+      BRONZE_RAW_APPEND: "true"
+      # Descriptor-driven box→production bridge (inert without box descriptors).
+      BOXES_BRIDGE_ENABLED: "true"
+      # Legacy customer-report ports for ents 6/13 (Neopac): NO such tenant on the
+      # new-stack prod, and shift06 is delete-and-reload — kept OFF on purpose
+      # (staging runs them as port proofs). Intervals/flags pinned for parity.
+      SHIFT06_REPORT_ENABLED: "false"
+      SHIFT06_INTERVAL_MINUTES: "15"
+      SAP13_REPORT_ENABLED: "false"
+      SAP13_INTERVAL_MINUTES: "15"
+      SAP13_REASONS_FROM_DIM: "false"
+      SYNC06_REPORT_ENABLED: "false"
+      BOXES13_REPORT_ENABLED: "false"
+      # Rollup batch caps (staging-tuned: fair live-shift progress, #1467).
+      ROLLUP_SHIFT_LIMIT: "75"
+      ROLLUP_BACKFILL_LIMIT: "50"
+      INCREMENT_SANITY_CLAMP_SPIKE_FRACTION: "0.5"
+      # Tenant allowlist: EMPTY = passthrough (all discovered tenants). Prod's only
+      # known Sparkplug tenant is `cpack`; ent 1's group is unverified, so no list.
+      WORKER_TENANT_ALLOWLIST: ""
     # Horizontal scale: default 1 (byte-identical). To run a pool of N, set
     # OEECLOUD_WORKER_REPLICAS=N + WORKER_POOL_SAC_ENABLED=true (post-migration)
     # and COMMENT OUT container_name (line ~753) + the static ipv4_address below
@@ -925,6 +1017,34 @@ services:
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: edge.plc-normalized
       WORKER_QUEUE: edge-transformer-q
+      # ── PROMOTION 2026-10 — staging behaviour parity (reconciliation doc §8) ──
+      # ADR-0061: resolve device_key → id_equipment through read-api's
+      # /internal/resolve-device (core.device_bindings) instead of the hand map.
+      # REFDATA_INTERNAL_KEY must equal read-api's INTERNAL_API_KEY (same .env
+      # key); unset ⇒ read-api 401s and nothing binds (fail-closed, never wrong).
+      # As on staging, the binder itself is gated by BIRTH_BOUND_ROUTING (default
+      # off, not set on staging either) — this wires the resolver, it does not
+      # switch writes (stream-engine BIRTHBOUND_SWITCHED_ENTERPRISES does that).
+      BIRTH_BOUND_RESOLVER: refdata
+      REFDATA_URL: http://read-api:9104
+      REFDATA_INTERNAL_KEY: ${INTERNAL_API_KEY:-}
+      # Per-tenant routing keys sparkplug.data.<tenant> → stream-engine-q-<tenant>
+      # (Strategy D queues; staging .env).
+      F3_PER_TENANT_ROUTING: "true"
+      # Ask an edge node for a rebirth when its birth state is unknown (staging .env).
+      ET_REQUEST_REBIRTH_ENABLED: "true"
+      # OEE settings (ideal speeds, line roles) from the DB, not compose maps.
+      OEE_PROFILE_FROM_DB: "true"
+      # Phase-9 line aggregation (line scrap one emission/s, #1650).
+      PHASE9_LINE_AGG_ENABLED: "true"
+      # CPACK L6/L5-TEXA counters-only lines emit no MachSpeed: swap Calc's
+      # 3·machSpeed glitch guard for 3·configured-rate (staging since ADR-0037).
+      # Rates come from the DB (COUNTERS_ONLY_FROM_DB above, kept from prod); this
+      # map is the opt-in allowlist + guard bound, keyed by the CPACK unit topic
+      # (tenant-independent), identical to staging. 147 = L6/L5 production_speed.
+      CALC_NO_SPEED_GUARD_FALLBACK: "true"
+      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147,"CPACK/SC/LINHAS/L5/TEXA":147}'
+      CALC_COUNTER_SPIKE_MARGIN: "0"
       RETRY_EXCHANGE: edge.plc-normalized-retry
       RETRY_QUEUE: edge-transformer-q-retry-30s
       FAILED_EXCHANGE: dlx.edge.plc-normalized
@@ -1095,8 +1215,14 @@ services:
     environment:
       DB_HOST: pgbouncer
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # PROMOTION 2026-10 parity: read as the least-privilege `readapi_ro`
+      # (t276: NOBYPASSRLS — tenant RLS is enforced in the DB, not only in code),
+      # like staging. pgbouncer resolves it via auth_user=postgres + auth_query.
+      # The role is created by the transplant (NOLOGIN placeholder) and needs a
+      # password at deploy (runbook §6.4); READAPI_RO_PASSWORD is REQUIRED — an
+      # unset value fails `compose up` before anything is replaced.
+      DB_USER: ${READAPI_RO_USER:-readapi_ro}
+      DB_PASSWORD: ${READAPI_RO_PASSWORD:?READAPI_RO_PASSWORD must be set in /opt/packiot/.env (packiot/production/internal-keys)}
       DB_NAME: ${POSTGRES_DB}
       REFDATA_FLOW: f3
       # Single DB: F3 target IS the main `packiot` pool (no packiot_analytics).
@@ -1120,12 +1246,15 @@ services:
       # from .env, which isn't in Secrets Manager → a fresh instance would lack it
       # and csadmin.prod auth would break). Dual-accept: no Bearer → api-key
       # path unchanged (safe for other consumers).
-      COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
-      COGNITO_CS_ADMIN_GROUP: cs-admin
-      EDGE_API_COGNITO_AUTH_ENABLED: "true"
-      EDGE_API_ONBOARDING_ENABLED: "true"
-      ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
-      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
+      # (edge-api's CS-Admin/onboarding keys that used to sit here moved to the
+      # edge-api service — read-api never read them.)
+      # Internal device resolver for the decoder (ADR-0061); shared with the
+      # decoder's REFDATA_INTERNAL_KEY. Unset ⇒ endpoint inert (401), fail-closed.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+      # Operator super-admin cross-tenant READ escalation — matches edge-api's
+      # WRITE flag (prod decision 2026-09-07) and staging.
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
+      # HIST_GW_* not set: no historian-gateway runs on prod (profile off, B9).
       # ADR-0035 cache-aside over app-redis (fail-open). Point REDIS_URL at
       # managed ElastiCache instead once provisioned (see app-redis note).
       REDIS_CACHE_ENABLED: "true"

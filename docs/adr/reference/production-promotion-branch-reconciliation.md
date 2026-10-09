@@ -161,7 +161,7 @@ run on staging and are **absent** from the promoted prod compose: `edge-session-
 sandbox operators, legacy-replicator(-sbx), mirror-worker-go, simulator, edge-nodered). Each needs a keep-off /
 bring-to-prod decision (B6).
 
-### 5b. Config the promoted services read with **different values than staging**
+### 5b. Config the promoted services read with **different values than staging** (as first merged — resolved in §8)
 The staging-maintained prod compose lags staging's own service config. With no env set, code defaults apply:
 
 | Service | Staging sets | Prod compose → code default |
@@ -210,12 +210,13 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 | B2 | Queue rename: `oeecloud-worker-q*` → `stream-engine-q*` | old queues stay bound to `oee` and fill up unconsumed; drain then delete after cutover |
 | B3 | Prod runner PAT cannot fetch `csadmin` (`30e7a31b`); the release pins csadmin `a0ab759` (+ new operator/edge-api shas) | `Fetch submodules` fails → deploy aborts before build. Grant the PAT csadmin access first |
 | B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | possible regression of a prod fix; port or prove superseded |
-| B5 | Service config parity (§5b) | prod would compute OEE with flags staging turned on months ago; needs a reviewed `compose.production.yml` parity change (tenant lists for prod's ents 1, 3) |
+| B5 | Service config parity (§5b) | **RESOLVED on the branch** (§8). Remaining: pre-go checks C1–C3, and the `READAPI_RO_PASSWORD` / `INTERNAL_API_KEY` values (§9) |
 | B6 | Services absent from prod compose (§5a) | decide per service: observability, edge-session-broker, customize, barcode, analytics-sync, fanout |
 | B7 | edge-api#297 | the release pins edge-api `8c6adfa`, reachable only from that branch until merged into edge-api `staging` |
 | B8 | Transplant + runbook §6 decisions (CPACK config sync, retention, events gap since 08-12, Hasura metadata, roles/extensions) | the deploy must follow the transplant, never precede it |
 | B9 | `historian-gateway` inline definition is the 09-07 shape (DB `postgres`, no OOM guards) | harmless while the profile is off; switch to `compose.historian-gateway.yml` before enabling a prod cold tier |
 | B10 | `monitoring/prometheus/prometheus.yml` is staging's (scrapes services prod doesn't run) | targets show down; no Alertmanager on prod |
+| B11 | CPACK live downtime events on prod (none since 2026-08-12) | not fixed by the CPAC flags (shadow table); needs a prod `legacy-replicator` or a gated live-CPAC promotion (§8) |
 
 ## 7. Checks run locally (2026-10-08)
 - `docker compose -f compose.production.yml config --no-interpolate -q` OK (also `compose.staging.yml`,
@@ -223,3 +224,70 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 - `scripts/ci/packml-ratchet.sh` OK (213 files, 1,166 lines, nothing new).
 - `terraform validate` on `terraform/production` (copy, `init -backend=false`, no AWS calls) → valid.
 - edge-api `8c6adfa`: `jest src/usecases/superset-embed` 15/15, `tsc --noEmit` clean.
+
+## 8. B5 — service config parity (compose.production.yml)
+Reference = `compose.staging.yml` + staging's live `.env`-only flags (`AGENT_BIRTH_ALL_MAPPED`, `CPAC_EVENT_DERIVATION_ENABLED`,
+`CPAC_EVENT_ENTERPRISES`, `CPAC_STOP_THRESHOLD_DEFAULT_SEC`, `ET_REQUEST_REBIRTH_ENABLED`, `F3_PER_TENANT_ROUTING`,
+`TENANT_DISCOVERY_INTERVAL_SECONDS`, `SAP13_INTERVAL_MINUTES`, `SHIFT06_INTERVAL_MINUTES`, `SAP13_REASONS_FROM_DIM`), scoped to
+prod's tenants (CPACK = ent 3; ent 1 has no line/stop config). Every flag now lives in `compose.production.yml`, so
+it gets reviewed. "unset" = code default. "prod-before" = today's `origin/production` compose (old service names).
+
+| Flag (service) | staging | prod-before | prod-after | why |
+|---|---|---|---|---|
+| `POSTGRES_ANALYTICS_DB_NAME` (stream-engine) | `packiot_analytics` | unset | `${POSTGRES_DB}` | **required**: unset routes `refactored` envelopes to `public.*`, which the transplanted DB no longer has (t252). Staging points both pools at the medallion DB; so does prod now |
+| `POSTGRES_MAX_CONNS` / `_ANALYTICS_MAX_CONNS` | 5 / 15 | unset (5/15) | 5 / 15 | explicit |
+| `CONSUME_LANES` | 4 | 2 | 4 | staging throughput setting |
+| `OEE_CANONICAL_APQ_ENABLED` | true | unset (false) | true | ADR-0048: oee = A·P·Q by construction |
+| `OEE_AVAIL_FLOOR_ENABLED` | true | unset (false) | true | ADR-0048 count-floor; engages only for the list below |
+| `COUNTERS_ONLY_AVAILABILITY_ENABLED` / `_EQUIPMENTS` | true / `68,69,70,71,72` | false / unset | true / `68,69,70,71,72` | CPACK L6 members; **check C1** |
+| `COUNTERS_ONLY_LINE_LEAD_ENTERPRISES` | `3,5,2000003` | 3 | 3 (unchanged) | drop Bispharma/sandbox |
+| `PO_AVAILABILITY_ENABLED` | true | unset (false) | true | PO-grain available_time (FU#8) |
+| `EVENTS_CLOSE_STALE_ENABLED` / `_ENTERPRISES` | true / `3,4,5,2000003` | unset | true / `3` | close never-closed CPACK stops |
+| `CPAC_EVENT_DERIVATION_ENABLED` / `_ENTERPRISES` | true / 3 (.env) | unset | true / 3 | parity — **shadow table only**, see note |
+| `CPAC_STOP_THRESHOLD_DEFAULT_SEC` | 600 (.env) | unset (300) | 600 | staging-tuned |
+| `CPAC_EVENT_LIVE_ENTERPRISES` | 5 | unset | unset | Bispharma only; CPACK must never get a 2nd live writer |
+| `EVENTS_WIDEROW_STATE_ENTERPRISES` | 4 | unset | unset | Incoplast staging-only |
+| `BRONZE_RAW_APPEND` | true | unset | true | Bronze dual-write (reached now that the refactored route is live) |
+| `BOXES_BRIDGE_ENABLED` | true | unset | true | descriptor-driven, inert without box descriptors |
+| `SHIFT06/SAP13/SYNC06/BOXES13_REPORT_ENABLED` | true | unset (false) | **false** | deliberate divergence: ents 6/13 don't exist on new-stack prod; shift06 is delete-and-reload |
+| `SHIFT06/SAP13_INTERVAL_MINUTES`, `SAP13_REASONS_FROM_DIM` | 15, 15, false (.env) | unset | 15, 15, false | pinned for parity |
+| `ROLLUP_SHIFT_LIMIT` / `ROLLUP_BACKFILL_LIMIT` | 75 / 50 | unset (300/200) | 75 / 50 | fair live-shift progress (#1467) |
+| `INCREMENT_SANITY_CLAMP_SPIKE_FRACTION` | 0.5 | unset (0.5) | 0.5 | explicit |
+| `TENANT_DISCOVERY_INTERVAL_SECONDS` | 60 | 60 | 60 | unchanged |
+| `WORKER_TENANT_ALLOWLIST` | `cpack,sbxcpack,bispharmastaging` | unset | `""` (passthrough) | only `cpack` is a known prod tenant; ent 1's group is unverified, so no list |
+| `CREDS_SOURCE`/`DB_*` (stream-engine, operator-gateway) | env | SM | SM (unchanged) | prod keeps Secrets Manager creds (`PG_SECRET_ID`) |
+| `BIRTH_BOUND_RESOLVER` + `REFDATA_URL` + `REFDATA_INTERNAL_KEY` (decoder) | refdata / read-api / `${INTERNAL_API_KEY}` | unset (map) | same as staging | ADR-0061 resolver over `core.device_bindings`; `BIRTH_BOUND_ROUTING` is off on both, so it doesn't switch writes yet |
+| `F3_PER_TENANT_ROUTING` (decoder) | true (.env) | unset | true | per-tenant routing keys → `stream-engine-q-<tenant>` |
+| `ET_REQUEST_REBIRTH_ENABLED` (decoder) | true (.env) | unset | true | rebirth request when birth state is unknown |
+| `OEE_PROFILE_FROM_DB`, `PHASE9_LINE_AGG_ENABLED`, `CALC_NO_SPEED_GUARD_FALLBACK` (decoder) | true | unset | true | DB OEE profile; line aggregation; CPACK counters-only guard |
+| `COUNTERS_ONLY_IDEAL_RATES` (decoder) | L6 + L5/TEXA → 147 | unset | same map | opt-in list + guard bound keyed by CPACK topic (tenant-independent); `COUNTERS_ONLY_FROM_DB=true` kept from prod |
+| `CALC_COUNTER_SPIKE_MARGIN` | 0 | unset (0) | 0 | explicit |
+| `AGENT_BIRTH_ALL_MAPPED` | true (.env) | — | not set | read by the sparkplug-agent only, which runs factory-side, not in the prod cloud stack |
+| `DB_USER`/`DB_PASSWORD` (read-api) | `readapi_ro` | `${POSTGRES_USER}` (owner) | `readapi_ro` / `${READAPI_RO_PASSWORD:?}` | t276 NOBYPASSRLS; the `:?` fails `up` before any container is replaced if the password is missing |
+| `INTERNAL_API_KEY` (read-api) | set | unset | `${INTERNAL_API_KEY:-}` | decoder resolver; unset = fail-closed |
+| `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED` (read-api) | true | unset (false) | true | matches edge-api's prod decision (2026-09-07) |
+| `HIST_GW_*` (read-api) | hist-gateway | unset | unset | no gateway on prod (B9) |
+| edge-api `AUTH_BEARER_ENABLED`, `EDGE_API_COGNITO_AUTH_ENABLED`, `EDGE_API_ONBOARDING_ENABLED`, `COGNITO_*`, `ONBOARD_*`, `REDIS_URL`, `AWS_REGION` | set | only via box `.env`; the compose copies sat in the read-api block (misplaced since 66f501b3) | set on edge-api; removed from read-api | durability: a fresh box keeps CS-Admin auth |
+| `EDGE_API_TEARDOWN_ENABLED` | true | unset (false) | **false** | deliberate divergence: destructive endpoints need the user's decision |
+| `PO_STALENESS_GATE_ENABLED` / `_ENTERPRISES` (edge-api) | true / `3,4` | unset | true / `3` | CPACK only |
+| `EDGE_SESSION_BROKER_*`, `SSM_*`, `OTEL_*` | set | unset | unset | services absent on prod (B6) |
+| `OAUTH2_PROXY_SESSION_STORE_TYPE` / `_REDIS_CONNECTION_URL` | redis / app-redis/1 | cookie | redis / app-redis/1 | the cookie-size WAF 403 class |
+
+**About the "no CPACK downtime events since 2026-08-12" premise.** `CPAC_EVENT_DERIVATION_ENABLED=true` +
+`CPAC_EVENT_ENTERPRISES=3` alone does **not** restore them. The code (`cmd/oeecloud-worker/main.go` §10.4,
+`config.go` `CPACEventTargetTable`) mints ent-3 events into the **shadow** table `equipment_events_cpac_shadow`. Live
+minting is only for `CPAC_EVENT_LIVE_ENTERPRISES`, which is explicitly forbidden for CPACK: CPACK's live
+`equipment_events` have other writers, so a second writer would double-write (the #456 class). On staging, CPACK's live
+events come from the **`legacy-replicator`** (`REPLICATE_BASE_EVENTS=true`, legacy packiot40 ent 1 → ent 3) plus the tee.
+The tee "carries only telemetry, and only some lines since 2026-08-13", which matches prod's last event on 08-12.
+**The likely root cause of the prod gap is that prod has no `legacy-replicator`.** This is now blocker **B11**: decide
+whether to run a prod `legacy-replicator` (src packiot40 ent 1 → prod ent 3; it needs a `LEGACY_DB_PASSWORD` key) or
+promote CPACK to live CPAC minting. The second option needs the comparator gate (`cpac_deriver_comparator.sql`) and must
+retire every other CPACK event writer first. Either way it needs a decision; flipping a flag won't do it.
+
+**Pre-go checks (read-only on the transplanted DB):**
+- **C1:** `SELECT id_equipment, name FROM core.equipments WHERE id_equipment IN (68,69,70,71,72) AND id_enterprise = 3`
+  → must be L6 BREYER/TEXA/POLYTYPE/RMH/PTH. Otherwise fix the list.
+- **C2:** `readapi_ro` has LOGIN + the password from `packiot/production/internal-keys`.
+- **C3:** after deploy, `stream-engine` logs `shadow pool ready` with `analytics_db=packiot` and no
+  `falling back to main pool` warnings.
