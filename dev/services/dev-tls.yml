@@ -1,0 +1,18 @@
+# ── dev-tls (one-shot helper) ────────────────────────────────────────────────
+# contract:
+#   inputs:   none
+#   outputs:  volume `dev-tls` with tls.crt + tls.key (self-signed, SAN localhost/ingest-shim/operator-gateway/127.0.0.1)
+#   external: none (openssl from the rabbitmq image Tier 0 already pulled; no network)
+# Staging mounts real host certs into ingest-shim and operator-gateway (both refuse plaintext). Dev mints a
+# throwaway pair on first use instead, so no key is ever checked in. Clients use `curl -k` (self-signed).
+services:
+  dev-tls:
+    image: rabbitmq:3.13-management
+    entrypoint: ["sh", "/make-cert.sh"]
+    volumes:
+      - ../tls/make-cert.sh:/make-cert.sh:ro
+      - dev-tls:/certs
+    restart: "no"
+
+volumes:
+  dev-tls:

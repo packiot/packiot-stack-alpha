@@ -1,0 +1,48 @@
+# ── ingest-shim (Tier 1) — ADR-0060 P4 ───────────────────────────────────────
+# contract (docs/dev/contracts.md §2, contracts/go-services.md §ingest-shim):
+#   inputs:   HTTPS POST /ingest/sparkplug (X-Ingest-Key; a factory tee node posts decoded SparkPlug envelopes)
+#   outputs:  RabbitMQ exchange `oee`, routing key `sparkplug.data.incoplast` (one copy per FANOUT_SOURCE_TYPES,
+#             source_type stamped); metrics :9105 (in-network only)
+#   external: none in dev — RabbitMQ creds from env (CREDS_SOURCE=env, staging: Secrets Manager), self-signed TLS from
+#             dev-tls (staging: host cert), tracing off (no OTEL endpoint)
+# Mirrors compose.staging.yml `ingest-shim`: same scope guard (SCOPE_GROUP=INCOPLAST), routing key, fan-out
+# (refactored only), publisher user (sparkplug-decoder: write on `oee`). The seed has no Incoplast tenant and nothing
+# binds `sparkplug.data.incoplast` in dev — exactly as on staging today, where those messages go to the alternate
+# exchange `oee-unroutable` (contracts.md F5). The smoke binds a temporary queue to prove the publish.
+#   make dev SVC=ingest-shim     # https://127.0.0.1:8444 (curl -k; X-Ingest-Key = DEV_INGEST_API_KEY)
+services:
+  ingest-shim:
+    build: ../../services/ingest-shim
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      dev-tls:
+        condition: service_completed_successfully
+    environment:
+      LOG_LEVEL: info
+      CREDS_SOURCE: env
+      RABBITMQ_USER: sparkplug-decoder
+      RABBITMQ_PASSWORD: ${RABBITMQ_SPARKPLUG_DECODER_PASSWORD:?set in dev/.env.dev}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      EXCHANGE: oee
+      ROUTING_KEY: sparkplug.data.incoplast
+      FANOUT_SOURCE_TYPES: refactored
+      SCOPE_GROUP: INCOPLAST
+      HTTP_ADDR: ":8444"
+      METRICS_ADDR: ":9105"
+      INGEST_API_KEY: ${DEV_INGEST_API_KEY:?set in dev/.env.dev}
+      TLS_CERT_FILE: /certs/tls.crt
+      TLS_KEY_FILE: /certs/tls.key
+    volumes:
+      - dev-tls:/certs:ro
+    ports:
+      - "127.0.0.1:${DEV_INGEST_SHIM_PORT:-8444}:8444"
+    healthcheck:
+      # distroless: the binary probes its own TLS /healthz (200 only while the AMQP publisher is connected)
+      test: ["CMD", "/usr/local/bin/ingest-shim", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped

@@ -1,0 +1,38 @@
+# ── analytics-sync (Tier 2) — ADR-0060 P4 ────────────────────────────────────
+# contract (docs/dev/contracts.md §2; services/analytics-sync/cmd/shadow-mirror):
+#   inputs:   (enabled only) postgres DB `packiot` (F1): user_logs + shadow_go_port.*; postgres packiot_analytics
+#   outputs:  (enabled only) shadow_go_port.* and packiot_analytics.public.* rows; always /healthz + /metrics :9103
+#   external: none
+# Mirrors compose.staging.yml `analytics-sync`, which runs IDLE (SHADOW_MIRROR_ENABLED=false): the F1 `packiot` DB it
+# replays from is retired, and CPACK's operator actions come from legacy-replicator instead. Dev runs it the same way:
+# the binary boots, serves health + metrics, and polls nothing. Turning it on needs the F1 `packiot` DB
+# (user_logs, shadow_go_port), which the dev seed does not carry (it is packiot_analytics only).
+# Its sibling binary legacy-replicator (same directory, cmd/legacy-replicator) reads the LEGACY production DB
+# (packiot40) and has no dev stand-in: it stays out of dev.
+#   make dev SVC=analytics-sync
+services:
+  analytics-sync:
+    build: ../../services/analytics-sync
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: info
+      SHADOW_MIRROR_ENABLED: "false"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      PG_DB_NAME: packiot
+      PG_ANALYTICS_DB_NAME: packiot_analytics
+      POLL_INTERVAL_MS: "2000"
+      BATCH_SIZE: "100"
+      MAX_RETRIES: "5"
+      HEALTH_PORT: "9103"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/analytics-sync", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped

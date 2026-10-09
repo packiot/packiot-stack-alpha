@@ -38,9 +38,9 @@ last_verified: 2026-10-09
 | Tier | What | Services |
 |---|---|---|
 | 0 | Data plane, always seeded | `postgres` (the **dev seed**), `rabbitmq` (+ the `oee` topology), `mosquitto`, `redis`, `minio` |
-| 1 | Producers | `seed-replay` (replays the seed's own week as "now") |
-| 2 | Processors | `sparkplug-decoder`, `stream-engine` |
-| 3 | APIs | `edge-api` (+ one-shot `edge-api-migrate`), `read-api` (+ `read-api-cors`), `barcode-service` |
+| 1 | Producers | `seed-replay` (replays the seed's own week as "now"), `ingest-shim` (HTTPS ingest → `oee`) |
+| 2 | Processors | `sparkplug-decoder`, `stream-engine`, `oeecloud-fanout`, `analytics-sync` (idle, as on staging) |
+| 3 | APIs | `edge-api` (+ one-shot `edge-api-migrate`), `read-api` (+ `read-api-cors`), `barcode-service`, `operator-gateway` |
 | 4 | UIs / observability | `front4`, `csadmin`, `customize`, `operator`, `grafana` |
 
 `make dev SVC="<service>"` starts that service **and everything it depends on** (its `depends_on`
@@ -115,6 +115,10 @@ started service is healthy (one-shots: exited 0) and fails if one does not get t
 | barcode-service | `make dev SVC="barcode-service"` | `http://127.0.0.1:8446` |
 | front4 | `FRONT4_DIR=../front4-staging make dev SVC=front4` | Vite dev server on <http://localhost:5173>, hot reload from **your checkout** |
 | The data pipeline | `make dev SVC="seed-replay stream-engine"` | live rows appear in `silver.equipment_values` at "now" |
+| ingest-shim | `make dev SVC="ingest-shim"` | `https://127.0.0.1:8444/ingest/sparkplug` (self-signed: `curl -k`; `X-Ingest-Key: dev-ingest-key`) |
+| oeecloud-fanout | `make dev SVC="oeecloud-fanout"` (add `seed-replay stream-engine` to fan out real replay traffic) | clones appear in `stream-engine-q-sbxcpack` (RabbitMQ UI <http://127.0.0.1:15672>) |
+| operator-gateway | `make dev SVC="operator-gateway"` | `https://127.0.0.1:8445/operator/*` (`X-Ingest-Key: dev-operator-gateway-key`); edge-api comes with it |
+| analytics-sync | `make dev SVC="analytics-sync"` | idle: `/healthz` + `/metrics` in-network on :9103 |
 
 **front4** runs from a separate clone because the stack's `front4` submodule pin is not maintained (front4
 deploys through AWS Amplify on its own, see [branches-and-merging](branches-and-merging.md#what-each-branch-deploys)):
@@ -126,6 +130,18 @@ DEV_FRONT4_EDGE_API=http://localhost:8080 make dev SVC="front4 edge-api"   # als
 ```
 
 The first start runs `yarn install` inside the container (about a minute).
+
+### The factory-facing bridges
+
+`ingest-shim` and `operator-gateway` refuse plaintext, as on staging. Dev mints a throwaway self-signed pair on first
+use (one-shot `dev-tls`, volume `dev-tls`); nothing is checked in. What dev changes from staging:
+
+| Service | Dev value | Why |
+|---|---|---|
+| `ingest-shim` | same scope (`INCOPLAST`), routing key `sparkplug.data.incoplast` | nothing binds that key in dev, exactly as on staging, so an accepted message lands in `oee-unroutable-q` (the mechanism behind contracts.md F5) |
+| `oeecloud-fanout` | source group = `DEV_SEED_GROUP` (`Client 0058ac384a`) | "CPACK" never appears in the anonymized seed; the pseudonym is a keyed HMAC, so it is stable across seed builds |
+| `operator-gateway` | tenant 3, topic prefix `DEV_SEED_GROUP`, edge-api key `dev-api-key-3` | staging's tenant (Incoplast, 4) is not in the seed |
+| `analytics-sync` | idle (`SHADOW_MIRROR_ENABLED=false`) | same as staging: its source DB (F1 `packiot`) is retired |
 
 ### Calling the APIs without logging in
 
@@ -184,7 +200,9 @@ week earlier, and lists scrap-only divergences for information.
 
 `make dev-smoke SVC="…"` (`dev/e2e/smoke.sh`) checks each named service: health plus one real request that reaches
 its data — edge-api `GET /api/lines` with the seed key, read-api with the read key, Grafana a SQL query through its
-datasource, the SPAs' nginx proxies, barcode-service's fail-closed 401, fresh silver rows for the pipeline.
+datasource, the SPAs' nginx proxies, barcode-service's fail-closed 401, fresh silver rows for the pipeline, a message seen on the target routing key for
+ingest-shim and oeecloud-fanout (through a temporary tap queue the smoke binds and deletes), and a manual downtime
+written through edge-api for operator-gateway.
 
 The same slices run in CI on every pull request into `staging` that touches `dev/`, `db/migrations/`, `services/`,
 `customize/`, `grafana/`, the broker configs, a submodule pin or the `Makefile`
@@ -195,12 +213,14 @@ The same slices run in CI on every pull request into `staging` that touches `dev
 | `tier0-grafana` | Tier 0 + grafana | postgres rabbitmq mosquitto redis minio grafana |
 | `pipeline` | seed-replay stream-engine read-api-cors | + read-api, decoder, stream-engine, live rows |
 | `barcode` | barcode-service | postgres barcode-service |
-| `edge` | edge-api csadmin customize operator front4 | + read-api, read-api-cors |
+| `ingest` | ingest-shim oeecloud-fanout analytics-sync | rabbitmq ingest-shim oeecloud-fanout analytics-sync |
+| `edge` | edge-api csadmin customize operator front4 operator-gateway | + read-api, read-api-cors |
 
 !!! warning "The `edge` slice is skipped until a secret exists"
     It needs the private repos edge-api, csadmin, operator4 and front4, which `GITHUB_TOKEN` cannot read. Until the
     repository secret `DEV_SUBMODULES_TOKEN` (read-only Contents on those four repos) is set, the slice is
     **skipped with a warning and still reports success**. Read the run summary, not just the green tick.
+    operator-gateway rides in this slice (it needs edge-api), so it is not CI-proven until the secret exists.
 
 Run the slice for what you changed before you open the PR:
 
@@ -225,8 +245,12 @@ make dev SVC="edge-api" && make dev-smoke SVC="edge-api"
 
 ## Limits (honest list)
 
-- No fragment yet for: operator-gateway, ingest-shim, oeecloud-fanout, analytics-sync, historian-gateway,
-  edge-session-broker, Superset.
+- Not in dev: **edge-session-broker** (it only runs AWS `session-manager-plugin` with an SSM handle edge-api gets
+  from AWS; offline there is nothing to bridge, ADR-0060 D3), **legacy-replicator** (reads the legacy production DB),
+  **historian-gateway** (feasible with MinIO, not built: the init script needs an S3 endpoint option and dev needs an
+  exporter that writes the seed in the cold-archive Parquet layout, which on staging comes from the legacy production
+  DB; so read-api `/v1/historian/*` is not testable locally) and **Superset** (optional, heavy, not built).
+- analytics-sync runs idle (as on staging): its replay needs the retired F1 `packiot` DB, which the seed does not carry.
 - edge-api in dev has no AWS: box operations, SSM, Cognito user administration, Superset and RabbitMQ commands answer
   errors.
 - The seed covers CPACK (tenant 3) only, and is only as fresh as its last weekly build (up to 7 days + whole-week rebase).
@@ -253,3 +277,8 @@ This page was executed end to end on 2026-10-09 from a clean volume (`make dev-r
 `staging`: the edge-api slice (`make dev-smoke` 4/4: health, knex 57/57, `/api/lines` with the seed key, 401 without
 one; the curl above returned 20 lines), the pipeline, Grafana and the three SPAs (19/19 checks), barcode-service
 (3/3), every published port on `127.0.0.1`, and `replay-parity.sql` `PASS` 31/31 after 8 minutes of replay.
+
+The four fragments added later the same day were verified the same way (`make dev-reset`, then `make dev SVC=<svc>` and
+`make dev-smoke SVC=<svc>` one at a time): analytics-sync 3/3, ingest-shim 5/5, oeecloud-fanout 3/3, operator-gateway
+5/5 (a manual downtime written through edge-api). With `seed-replay` running, oeecloud-fanout cloned the real replay
+traffic into `stream-engine-q-sbxcpack`.
