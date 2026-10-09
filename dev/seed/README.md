@@ -13,7 +13,8 @@
 
 **Built weekly** by `.github/workflows/dev-seed-build.yml` (Sunday 05:00 UTC, full seed, pushes `:<date>` + `:latest`; also
 `workflow_dispatch`). The boot test fails the build if the image does not load, a generated table is empty, a sequence
-is behind its ids, or a referential/validity data invariant (`ops.job_data_invariants`) fails on the seed.
+is behind its ids, or a referential/validity data invariant or C3 cagg-vs-raw (`ops.job_data_invariants`) fails on the seed.
+Caggs are refreshed at load in dependency order (`equipment_categorical_1hour` is built on the 1min cagg).
 
 **Fail-closed, three ways:** an unlisted table, an unclassified text column, or a column with an unknown data type all fail
 `validate.py`. When the schema grows, the seed build stops until someone decides what the new thing is.

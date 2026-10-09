@@ -170,7 +170,20 @@ gens = sorted(p.name for p in (out / 'payload' / 'generators').glob('*.sql'))
 L += ['SET session_replication_role = origin;',
       *[f"\\i /seed/generators/{g}" for g in gens],
       "UPDATE core.enterprises SET api_key = 'dev-api-key-' || id_enterprise;",
-      *[f"CALL refresh_continuous_aggregate('{c}', now() - interval '60 days', now() + interval '1 day');" for c in cagg],
+      # caggs in DEPENDENCY order, not by name: silver.equipment_categorical_1hour is built on the 1min cagg, and the
+      # old name-sorted list refreshed it first (from an empty source) — every seed up to 2026-10-09 had an empty
+      # hourly cagg for all but the last hours (C3_cagg_vs_raw_24h: 2,800,062 off). \gexec runs each CALL on its own
+      # (refresh_continuous_aggregate cannot run inside a transaction block / DO).
+      "WITH RECURSIVE d AS (",
+      "  SELECT ca.mat_hypertable_id, format('%I.%I', ca.user_view_schema, ca.user_view_name) AS v, 0 AS depth",
+      "    FROM _timescaledb_catalog.continuous_agg ca",
+      "   WHERE NOT EXISTS (SELECT 1 FROM _timescaledb_catalog.continuous_agg p WHERE p.mat_hypertable_id = ca.raw_hypertable_id)",
+      "  UNION ALL",
+      "  SELECT c.mat_hypertable_id, format('%I.%I', c.user_view_schema, c.user_view_name), d.depth + 1",
+      "    FROM _timescaledb_catalog.continuous_agg c JOIN d ON c.raw_hypertable_id = d.mat_hypertable_id)",
+      "SELECT format('CALL refresh_continuous_aggregate(%L, now() - interval %L, now() + interval %L)', v, '60 days', '1 day')",
+      "  FROM d ORDER BY depth, v",
+      "\\gexec",
       *[f"SELECT count(*) AS dropped_{i} FROM drop_chunks('{h}', older_than => now() - interval '35 days');" for i, h in enumerate(hyper)],
       'ANALYZE;']
 (out / 'payload' / 'load.sql').write_text('\n'.join(L) + '\n')
