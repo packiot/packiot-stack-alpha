@@ -140,6 +140,17 @@ func main() {
 		}
 	}()
 
+	// Base (PLC) event reconciler — copies legacy equipment_events the twin lacks.
+	// The replay only sees base events announced in user_logs; since the CPACK
+	// edge moved to Pub/Sub (2026-10-07) legacy writes them without an audit row.
+	// Ships INERT (RECONCILE_BASE_EVENTS_ENABLED=false).
+	baseRecon := replicate.NewBaseReconciler(legacyPool, destPool, resolver, cfg, m, logger)
+	go func() {
+		if err := baseRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("base-event reconciler terminated with error", slog.String("err", err.Error()))
+		}
+	}()
+
 	// DLQ retrier — re-drives rows the main loop captured on dispatch failure
 	// (23P01 window races, transient prod hiccups) so they are retried, not
 	// silently dropped. Reuses the same dispatcher for an identical replay path.

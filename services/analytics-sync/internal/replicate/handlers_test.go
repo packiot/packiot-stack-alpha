@@ -301,7 +301,7 @@ func TestDowntimeEventDecodesEpochMillis(t *testing.T) {
 // sums only fcs=false events — read 0 on every CPACK line. Human-created rows
 // (manual events, split segments) stay true.
 func TestBaseEventIsNotForcedCreation(t *testing.T) {
-	if !strings.Contains(sqlInsertEquipmentEvent, "VALUES ($1,$2,$3,$4,$5,false,now())") {
+	if !strings.Contains(sqlInsertEquipmentEvent, "$3, $4, $5, false, now()") {
 		t.Fatalf("base PLC event must insert forced_creation_system=false: %s", sqlInsertEquipmentEvent)
 	}
 	if !strings.Contains(sqlInsertManualEvent, ",true,now())") {

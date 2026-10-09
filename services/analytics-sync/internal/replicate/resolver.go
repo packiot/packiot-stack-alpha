@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 
@@ -218,6 +219,19 @@ func (r *Resolver) ResolveEquipment(legacyID int) (StagingEquip, bool) {
 	defer r.mu.RUnlock()
 	e, ok := r.equip[legacyID]
 	return e, ok
+}
+
+// LegacyIDs lists every legacy id_equipment the resolver maps (ascending) — the
+// base-event reconciler's legacy fetch key.
+func (r *Resolver) LegacyIDs() []int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]int, 0, len(r.equip))
+	for id := range r.equip {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
 }
 
 // DstEnterprise is the staging enterprise id for the polled tenant.
