@@ -601,6 +601,17 @@ services:
       # Rollback: set ENABLED "false" (or drop these two) → redeploy → inert.
       PO_STALENESS_GATE_ENABLED: "true"
       PO_STALENESS_GATE_ENTERPRISES: "3,4"
+      # ── Mirror-tenant PO write block (edge-api #298, user decision 10-09) ─────
+      # Staging ent 3 MIRRORS legacy CPACK: legacy-replicator + analytics-sync's
+      # PO reconciler write the analytics DB directly (never via edge-api). An
+      # operator/API PO write on ent 3 fights that replay (10-08: dev@packiot.com
+      # test POs + paused/finished real POs, ~74k net stolen). Every PO write route
+      # (create/start/stop/status/time/replace/delete/csv import/po-setup) on these
+      # tenants → 403 MIRROR_TENANT_WRITE_BLOCKED; reads + other tenants untouched.
+      # Test on the sandbox twin 2000003. Rollback: drop these two → redeploy.
+      # STAGING ONLY — unset in prod/dev (block is off when unset).
+      OPERATOR_WRITE_BLOCKED_ENTERPRISES: "3"
+      OPERATOR_WRITE_BLOCK_SANDBOX_ENTERPRISE: "2000003"
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on (src/
       # tracing.ts starts the NodeSDK). Completes the operator → operator-adapter
       # → edge-api → DB trace: the adapter's outbound traceparent continues into
