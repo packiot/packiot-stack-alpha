@@ -59,7 +59,7 @@ Staging renders `monitoring/rabbitmq/definitions.template.json` with jq and Secr
 (`deploy-staging.yml`, "Generate RabbitMQ definitions"). Dev renders
 `rabbitmq/definitions.dev.template.json` with sed and `.env.dev` (`rabbitmq/render-definitions.sh`,
 the container entrypoint). The dev template is staging's template (users `__ADMIN__`, `stream-engine`,
-`sparkplug-decoder`; their permissions; policy `oee-ae`; `oee-unroutable` fanout and queue) **plus**
+`sparkplug-decoder`; their permissions; policies `oee-ae` and `oee-unroutable-cap`; `oee-unroutable` fanout and queue) **plus**
 the topology stream-engine declares in code (`services/stream-engine/internal/amqp/topology.go`):
 
 - exchanges `oee`, `oee-retry`, `oee-failed` (topic)
@@ -203,7 +203,7 @@ make dev SVC="operator-gateway"                             # + edge-api (submod
 
 | Service | Host port | Tier | What it does in dev | Differs from staging |
 |---|---|---|---|---|
-| `ingest-shim` | 8444 (TLS) | 1 | `POST /ingest/sparkplug` (`X-Ingest-Key: dev-ingest-key`) → publisher-confirmed `oee` / `sparkplug.data.incoplast`, `source_type=refactored` | RabbitMQ creds from env; self-signed cert. Nothing binds the key in dev, as on staging: messages land in `oee-unroutable-q` (contracts.md F5) |
+| `ingest-shim` | 8444 (TLS) | 1 | `POST /ingest/sparkplug` (`X-Ingest-Key: dev-ingest-key`) → publisher-confirmed `oee` / `sparkplug.data.incoplast`, `source_type=refactored` | RabbitMQ creds from env; self-signed cert. Nothing binds the key in dev (staging binds it since 2026-10-09: `incoplast` is in its allow-list), so messages land in `oee-unroutable-q`, capped by policy `oee-unroutable-cap` (contracts.md F5) |
 | `oeecloud-fanout` | — (in-network :9102) | 2 | consumes `sparkplug.data` + `sparkplug.data.cpack`, re-tenants the seed group → `SBXCPACK`, republishes on `sparkplug.data.sbxcpack` | source group = the seed's anonymized group `DEV_SEED_GROUP` (no "CPACK" in the seed); clones pile up unconsumed in `stream-engine-q-sbxcpack` |
 | `analytics-sync` | — (in-network :9103) | 2 | boots idle (`SHADOW_MIRROR_ENABLED=false`): `/healthz` + `/metrics` only | none: staging runs it idle too (its F1 `packiot` source DB is retired) |
 | `operator-gateway` | 8445 (TLS) | 3 | `POST /operator/*` (`X-Ingest-Key: dev-operator-gateway-key`) → resolves `packml_topic` on the seed → edge-api with `dev-api-key-3` | tenant 3 + its seed topic prefix instead of Incoplast (enterprise 4, not in the seed); self-signed cert |

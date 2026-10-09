@@ -516,7 +516,7 @@ All of these are read in `services/stream-engine/internal/config/config.go:427-5
 | CONSUME_LANES | 1 (:443) | 4 (1946) |
 | TENANT_DISCOVERY_INTERVAL_SECONDS | 60 (:444) | 60 (2160) |
 | WORKER_POOL_SAC_ENABLED | false (:445) | false (2170) |
-| WORKER_TENANT_ALLOWLIST | "" = all (:502) | `${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging}` (1932) |
+| WORKER_TENANT_ALLOWLIST | "" = all (:502) | `${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging,incoplast}` (1934) |
 | HEALTH_PORT | 9101 (:446; `services/stream-engine/cmd/oeecloud-worker/main.go:673`) | 9101 (1956) |
 | LOG_LEVEL | info (:447) | info (1794) |
 | POSTGRES_ANALYTICS_DB_NAME | "" (:448) | packiot_analytics (1963) |

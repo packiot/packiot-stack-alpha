@@ -145,6 +145,8 @@ groups:
       # producer is emitting an unrecognised routing key (new tenant not yet
       # provisioned, or a routing-key typo/drift) — messages are RETAINED for
       # inspection/replay, not lost. Requires the rabbitmq-detailed scrape job.
+      # The deploy's synthetic E2EFIXTURE counter has its own sink queue
+      # (e2efixture-sink-q), so depth here is never "just the fixture".
       - alert: OeeUnroutableMessages
         expr: rabbitmq_detailed_queue_messages{queue="oee-unroutable-q"} > 0
         for: 5m
