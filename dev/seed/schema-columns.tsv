@@ -2677,6 +2677,224 @@ ops	sandbox_state	table	last_heal_at	timestamp with time zone
 ops	sandbox_state	table	last_heal_status	text
 ops	sandbox_state	table	healing_since	timestamp with time zone
 ops	sandbox_state	table	updated_at	timestamp with time zone
+ops	_bf_gap_20261009_log	table	id_equipment	integer
+ops	_bf_gap_20261009_log	table	day	date
+ops	_bf_gap_20261009_log	table	staged	integer
+ops	_bf_gap_20261009_log	table	inserted	integer
+ops	_bf_gap_20261009_log	table	marker	timestamp with time zone
+ops	_bf_gap_20261009_log	table	applied_at	timestamp with time zone
+ops	_bf_gap_20261009_plan	table	id_equipment	integer
+ops	_bf_gap_20261009_plan	table	tp_equipment	integer
+ops	_bf_gap_20261009_plan	table	tcol	character varying
+ops	_bf_gap_20261009_plan	table	src_eq	bigint
+ops	_bf_gap_20261009_plan	table	scol	character varying
+ops	_bf_gap_20261009_plan	table	nper	bigint
+ops	_bf_gap_20261009_plan	table	worst	double precision
+ops	_bf_gap_20261009_plan	table	mean	double precision
+ops	_bf_gap_20261009_plan	table	stg_tot	double precision
+ops	_bf_gap_20261009_plan	table	leg_tot	double precision
+ops	_bf_gap_20261009_plan	table	incr_ok	boolean
+ops	_bf_gap_20261009_plan	table	line_scrap_rule	boolean
+ops	_bf_gap_20261009_plan	table	val_ok	boolean
+ops	_bf_gap_20261009_plan	table	total_ok	boolean
+ops	_bf_gap_20261009_plan	table	val_med_absdiff	double precision
+ops	_bf_gap_20261009_rows	table	id_equipment	integer
+ops	_bf_gap_20261009_rows	table	ts_value	timestamp with time zone
+ops	_bf_gap_20261009_rows	table	id_enterprise	integer
+ops	_bf_gap_20261009_rows	table	id_site	integer
+ops	_bf_gap_20261009_rows	table	id_area	integer
+ops	_bf_gap_20261009_rows	table	tp_equipment	integer
+ops	_bf_gap_20261009_rows	table	gross_production_incr	real
+ops	_bf_gap_20261009_rows	table	net_production_incr	real
+ops	_bf_gap_20261009_rows	table	scrap_incr	real
+ops	_bf_gap_20261009_rows	table	gross_production_val	real
+ops	_bf_gap_20261009_rows	table	net_production_val	real
+ops	_bf_gap_20261009_rows	table	scrap_val	real
+ops	_bf_gap_20261009_rows	table	gross_production_total	double precision
+ops	_bf_gap_20261009_rows	table	net_production_total	double precision
+ops	_bf_gap_20261009_rows	table	scrap_total	double precision
+ops	_bf_gap_20261009_rows	table	speed	real
+ops	_bf_gap_20261009_rows	table	state	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	id_equipment	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	ts_value	date
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	recalc_needed	boolean
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee_p	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee_a	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee_q	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	available_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	running_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	stopped_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	planned_downtime	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	ideal_production	double precision
+ops	_bkp_gold_cpackgap_20261009_daily	table	idle_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	idle_starved	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	idle_blocked	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	target	double precision
+ops	_bkp_gold_cpackgap_20261009_daily	table	gross	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	net	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	downtime	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	changeover_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	scrap	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	speed	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	target_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_daily	table	proportional_target	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	computed_at	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_daily	table	source_watermark	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_daily	table	no_data_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	out_of_service_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	id_equipment	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ts_value	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	recalc_needed	boolean
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee_p	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee_a	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee_q	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	available_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	running_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	stopped_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	planned_downtime	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ideal_production	double precision
+ops	_bkp_gold_cpackgap_20261009_hourly	table	idle_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	idle_starved	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	idle_blocked	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	target	double precision
+ops	_bkp_gold_cpackgap_20261009_hourly	table	gross	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	net	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	downtime	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	changeover_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	scrap	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	speed	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ts_value_production	date
+ops	_bkp_gold_cpackgap_20261009_hourly	table	target_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_hourly	table	proportional_target	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	id_team	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ideal_speed	double precision
+ops	_bkp_gold_cpackgap_20261009_hourly	table	computed_at	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_hourly	table	source_watermark	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_hourly	table	no_data_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	out_of_service_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_runtime_shift	bigint
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_value	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_equipment	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	recalc_needed	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee_p	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee_a	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee_q	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	available_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	running_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	stopped_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	planned_downtime	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	ideal_production	double precision
+ops	_bkp_gold_cpackgap_20261009_shift	table	idle_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	idle_starved	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	idle_blocked	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_shift	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_shift_hour	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_team	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	duration	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_range	tstzrange
+ops	_bkp_gold_cpackgap_20261009_shift	table	gross	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	net	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	downtime	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	changeover_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	target	double precision
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_end	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	manually_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	invalidated	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	scrap	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	speed	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	cd_shift	character varying
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_value_production	date
+ops	_bkp_gold_cpackgap_20261009_shift	table	target_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	proportional_target	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	ideal_speed	double precision
+ops	_bkp_gold_cpackgap_20261009_shift	table	computed_at	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	source_watermark	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	no_data_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	out_of_service_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_production_order	bigint
+ops	_bkp_po_runtime_cpackgap_20261009	table	runtime_timerange	tstzrange
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	recalc_needed	boolean
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee_p	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee_a	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee_q	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	available_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	running_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	stopped_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	planned_downtime	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	ideal_production	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	idle_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	idle_starved	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	idle_blocked	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_production_orders_runtime	bigint
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_equipment	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_production_order_runtime	bigint
+ops	_bkp_po_runtime_cpackgap_20261009	table	net_production	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	gross_production	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	downtime	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	changeover_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	speed	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	last_update	timestamp with time zone
+ops	_bkp_po_runtime_cpackgap_20261009	table	multiplier	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	no_data_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	out_of_service_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_production_order	bigint
+ops	_bkp_po_runtime_cpackholes_20261009	table	runtime_timerange	tstzrange
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	recalc_needed	boolean
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee_p	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee_a	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee_q	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	available_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	running_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	stopped_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	planned_downtime	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	ideal_production	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	idle_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	idle_starved	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	idle_blocked	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_production_orders_runtime	bigint
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_equipment	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_production_order_runtime	bigint
+ops	_bkp_po_runtime_cpackholes_20261009	table	net_production	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	gross_production	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	downtime	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	changeover_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	speed	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	last_update	timestamp with time zone
+ops	_bkp_po_runtime_cpackholes_20261009	table	multiplier	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	no_data_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	out_of_service_time	integer
+ops	_fix_gap_edge_20261009	table	id_enterprise	integer
+ops	_fix_gap_edge_20261009	table	id_equipment	integer
+ops	_fix_gap_edge_20261009	table	ts_value	timestamp with time zone
+ops	_fix_gap_edge_20261009	table	reason	text
+ops	_fix_gap_edge_20261009	table	old_gross	real
+ops	_fix_gap_edge_20261009	table	old_net	real
+ops	_fix_gap_edge_20261009	table	old_scrap	real
+ops	_fix_gap_edge_20261009	table	new_gross	real
+ops	_fix_gap_edge_20261009	table	new_net	real
+ops	_fix_gap_edge_20261009	table	new_scrap	real
+ops	_fix_gap_edge_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_gap_edge_20261009	table	applied_at	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	id_enterprise	integer
+ops	_fix_gap_holes_20261009	table	id_equipment	integer
+ops	_fix_gap_holes_20261009	table	ts_value	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	role	text
+ops	_fix_gap_holes_20261009	table	tp	integer
+ops	_fix_gap_holes_20261009	table	hole_start	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	old_incr	real
+ops	_fix_gap_holes_20261009	table	ctr_move	double precision
+ops	_fix_gap_holes_20261009	table	extra	double precision
+ops	_fix_gap_holes_20261009	table	new_incr	real
+ops	_fix_gap_holes_20261009	table	decision	text
+ops	_fix_gap_holes_20261009	table	old_scrap	real
+ops	_fix_gap_holes_20261009	table	new_scrap	real
+ops	_fix_gap_holes_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	applied_at	timestamp with time zone
 public	knex_migrations	table	id	integer
 public	knex_migrations	table	name	character varying
 public	knex_migrations	table	batch	integer
