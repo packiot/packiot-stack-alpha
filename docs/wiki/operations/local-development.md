@@ -57,7 +57,7 @@ with staging's full schema (`pg_dump --schema-only`) and **7 days of CPACK (tena
 | Identities | Generated, not copied (`dev/seed/generators/`): `core.device_bindings` gets **fresh random** `dk_…` keys, and `identity.users` the three synthetic dev users. |
 | Time | On first start the loader shifts all timestamps by **whole weeks** so the newest data is 0–7 days old (shift calendars stay aligned). Run `seed-replay` to get data at "now". |
 | Credentials in it | Fakes only: `core.enterprises.api_key = dev-api-key-<id>`, `readapi_ro` password `dev`. |
-| How it is built | `.github/workflows/dev-seed-build.yml` (extract → anonymize → validate → publish to GHCR). **Manual dispatch only** today; the last build was 2026-10-07. A schema or data change on staging reaches dev only after the next build. |
+| How it is built | `.github/workflows/dev-seed-build.yml` (extract → anonymize → validate → publish to GHCR). **Weekly, Sunday 05:00 UTC** (plus manual `gh workflow run dev-seed-build.yml`); each build pushes `:<YYYY-MM-DD>` and `:latest`, and only after its boot test passes (seed loads, sequences past max(id), referential/validity data invariants green). A schema or data change on staging reaches dev at the next build; `docker pull ghcr.io/packiot/devseed:latest` + `make dev-reset` picks it up (compose does not re-pull a tag it already has). |
 
 !!! warning "The seed image is private"
     You must `docker login ghcr.io` with a GitHub token that has `read:packages`, or `make dev` fails pulling
@@ -218,7 +218,7 @@ make dev SVC="edge-api" && make dev-smoke SVC="edge-api"
 | Your code change has no effect | `make dev` reused the old image | `docker compose -f dev/compose.yml --env-file dev/.env.dev up -d --build <svc>` |
 | An SPA login works but CS-Admin pages are refused | The user is not in `cs-admin` | Use `dev-admin@example.com` |
 | `seed-replay` logs "no active device_bindings with seed values" | `DEVDB_IMAGE` is not the dev seed | Unset `DEVDB_IMAGE` or use the seed |
-| A new id collides on insert (`duplicate key … pkey`) | Seed sequences started at 1 (contracts.md F11) | Fixed by `dev/seed/sync-sequences.sql` on a fresh volume: `make dev-reset` |
+| A new id collides on insert (`duplicate key … pkey`) | Seed sequences started at 1 (contracts.md F11) | Fixed in the image since 2026-10-09 (and by the `dev/base.yml` backstop hook on a fresh volume): `make dev-reset` |
 | Data looks a few days old | Whole-week rebase: the newest seed data is 0–7 days old | Start `seed-replay` for data at "now" |
 | `replay-parity.sql` says `FAIL` with almost no equipment matching | `seed-replay` started less than 7 minutes ago: the compared window predates it | Wait until it has run ≥ 7 minutes, then re-run (proven 2026-10-09: 2/34 at 2 min → `PASS` 31/31 at 8 min) |
 | Parity lists line 50 as `info (scrap only)` | The seed's own L6 scrap predates the Phase-9 fix (contracts.md F10); gross/net match | Nothing — information only |
@@ -229,7 +229,7 @@ make dev SVC="edge-api" && make dev-smoke SVC="edge-api"
   edge-session-broker, Superset.
 - edge-api in dev has no AWS: box operations, SSM, Cognito user administration, Superset and RabbitMQ commands answer
   errors.
-- The seed covers CPACK (tenant 3) only, and is only as fresh as its last manual build.
+- The seed covers CPACK (tenant 3) only, and is only as fresh as its last weekly build (up to 7 days + whole-week rebase).
 - Tracing (Tempo/OTEL) and alerting are not part of dev.
 
 ## Source map

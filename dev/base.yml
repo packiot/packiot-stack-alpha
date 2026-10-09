@@ -27,7 +27,10 @@ services:
       - "127.0.0.1:${DEV_PG_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # runs once on a fresh volume, after the seed loader (50-devseed.sh): sequences past the seed's ids (F11)
+      # F11 backstop: seed images built since 2026-10-09 sync sequences inside load.sh themselves. This hook runs once
+      # on a fresh volume after the loader (50-devseed.sh) and only matters for an OLDER image: a stale cached
+      # :latest (compose does not re-pull a tag it already has) or a pinned dated tag. Idempotent (only ever moves a
+      # sequence forward to max(id)), so on a new image it is a no-op. Remove once no pre-10-09 seed is in use.
       - ./seed/sync-sequences.sql:/docker-entrypoint-initdb.d/60-devseed-sequences.sql:ro
     shm_size: 256m
     healthcheck:

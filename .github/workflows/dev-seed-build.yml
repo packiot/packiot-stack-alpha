@@ -11,8 +11,15 @@ name: Dev seed build
 #
 #   gh workflow run dev-seed-build.yml                      # full build + push
 #   gh workflow run dev-seed-build.yml -f row_limit=50 -f push=false   # smoke test, nothing pushed
+#
+# Weekly (ADR-0060 D4 "a scheduled CI job"): Sunday 05:00 UTC = Sunday 02:00 America/Sao_Paulo, off-peak for the
+# shared staging DB (weekend, night, nobody deploying). A full build takes ~10–15 min, so it is done well before the
+# 06:00 UTC sandbox-selfheal on the same staging runner. A scheduled run has no `inputs`, so ROW_LIMIT/PUSH below
+# default to the FULL seed: no LIMIT, push + :latest.
 
 on:
+  schedule:
+    - cron: '0 5 * * 0'
   workflow_dispatch:
     inputs:
       row_limit:
@@ -24,6 +31,7 @@ on:
         type: boolean
         default: true
 
+# one build at a time (schedule + dispatch share the group); a second one queues, never cancels a running extract
 concurrency:
   group: dev-seed-build
   cancel-in-progress: false
@@ -38,6 +46,9 @@ jobs:
     timeout-minutes: 90
     env:
       IMAGE: ghcr.io/packiot/devseed
+      # schedule → inputs is empty: '' = full seed; push defaults to true unless a dispatch explicitly says false
+      ROW_LIMIT: ${{ inputs.row_limit || '' }}
+      PUSH: ${{ github.event_name == 'schedule' || inputs.push }}
     steps:
       - name: Output dir
         # the `runner` context isn't available in job-level env; RUNNER_TEMP is
@@ -53,7 +64,7 @@ jobs:
 
       - name: Extract → anonymize → leak gate (read-only on staging)
         env:
-          DEVSEED_ROW_LIMIT: ${{ inputs.row_limit }}
+          DEVSEED_ROW_LIMIT: ${{ env.ROW_LIMIT }}
         run: |
           set -euo pipefail
           KEY=$(aws secretsmanager get-secret-value --secret-id packiot/staging/devseed --region us-east-1 \
@@ -75,10 +86,10 @@ jobs:
           set -euo pipefail
           # context = the anonymized payload + load.sh ONLY ($OUT/private never enters the build context)
           CTX="$OUT/ctx"; mkdir -p "$CTX"; mv "$OUT/payload" "$CTX/payload"
-          cp dev/seed/load.sh dev/seed/Dockerfile "$CTX/"
+          cp dev/seed/load.sh dev/seed/sync-sequences.sql dev/seed/Dockerfile "$CTX/"
           echo "CTX=$CTX" >> "$GITHUB_ENV"
           TAG=$(jq -r '.snapshot_end[0:10]' "$CTX/payload/metadata.json")
-          [ -z "${{ inputs.row_limit }}" ] || TAG="$TAG-smoke"
+          [ -z "$ROW_LIMIT" ] || TAG="$TAG-smoke"
           # multi-arch needs the docker-container driver; COPY-only Dockerfile → no QEMU for the foreign arch
           docker buildx inspect devseed >/dev/null 2>&1 || docker buildx create --name devseed --driver docker-container >/dev/null
           # native (arm64) image into the local daemon for the boot test; the multi-arch push reuses its cache
@@ -86,7 +97,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           docker image inspect "$IMAGE:$TAG" --format 'image {{.Id}} {{.Architecture}} size {{.Size}}'
 
-      - name: Boot test (the image must load, generated tables must be populated)
+      - name: Boot test (the image must load; generated tables, sequences and data invariants must hold)
         run: |
           set -euo pipefail
           C=devseed-boottest-$GITHUB_RUN_ID
@@ -115,15 +126,40 @@ jobs:
           END $$;
           SQL
 
+          # F11: load.sh must have moved every id sequence past the loaded ids. sync-sequences.sql is idempotent, so
+          # re-running it on a correct seed changes NO sequence; any change means the image shipped stale sequences.
+          PSQL=(docker exec -i "$C" psql -U postgres -d packiot_analytics -X -At -v ON_ERROR_STOP=1)
+          SEQ="SELECT md5(string_agg(format('%s.%s=%s', schemaname, sequencename, last_value), ',' ORDER BY schemaname, sequencename)) FROM pg_sequences"
+          BEFORE=$("${PSQL[@]}" -c "$SEQ"); "${PSQL[@]}" -q -f /seed/sync-sequences.sql; AFTER=$("${PSQL[@]}" -c "$SEQ")
+          [ "$BEFORE" = "$AFTER" ] || { echo "ABORT: sequences were behind max(id) after load (F11: load.sh did not sync them)"; exit 1; }
+          echo "sequences set past the loaded ids: $("${PSQL[@]}" -c "SELECT format('%s of %s', count(last_value), count(*)) FROM pg_sequences")"
+
+          # ADR-0060 D4 step 4: run the in-DB data invariants (#1543) on the packaged seed. The procedure must run.
+          # Gate = referential + validity (orphans, bad routing, bounds: what a broken extract/anonymize/load would
+          # cause). Freshness/orchestration/consistency checks also see the 7-day window edges (a week or shift that
+          # starts before `since`) and the paused-then-resumed jobs, so they are reported as warnings, not gates.
+          "${PSQL[@]}" -q -c 'CALL ops.job_data_invariants()'
+          "${PSQL[@]}" -F ' | ' -c "SELECT CASE WHEN ok THEN 'ok  ' ELSE 'FAIL' END, dimension, check_id, observed, expected
+                                     FROM ops.data_invariant_result WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result)
+                                    ORDER BY ok, dimension, check_id"
+          GATE=$("${PSQL[@]}" -c "SELECT coalesce(string_agg(check_id, ', ' ORDER BY check_id), '') FROM ops.data_invariant_result
+                                   WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result)
+                                     AND NOT ok AND dimension IN ('referential', 'validity')")
+          WARN=$("${PSQL[@]}" -c "SELECT coalesce(string_agg(check_id, ', ' ORDER BY check_id), '') FROM ops.data_invariant_result
+                                   WHERE run_at = (SELECT max(run_at) FROM ops.data_invariant_result)
+                                     AND NOT ok AND dimension NOT IN ('referential', 'validity')")
+          [ -z "$WARN" ] || echo "::warning title=dev seed invariants (not gating)::$WARN"
+          [ -z "$GATE" ] || { echo "ABORT: referential/validity invariants fail on the seed: $GATE"; exit 1; }
+
       - name: Push to GHCR (private)
-        if: inputs.push
+        if: env.PUSH == 'true'
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           # one manifest list for linux/amd64 (most dev laptops) + linux/arm64 (Graviton, Apple Silicon): the
           # first published seed was arm64-only and died with "exec format error" on an amd64 laptop
           TAGS=(-t "$IMAGE:${{ steps.build.outputs.tag }}")
-          [ -n "${{ inputs.row_limit }}" ] || TAGS+=(-t "$IMAGE:latest")
+          [ -n "$ROW_LIMIT" ] || TAGS+=(-t "$IMAGE:latest")
           docker buildx build --builder devseed --platform linux/amd64,linux/arm64 --push "${TAGS[@]}" "$CTX"
           docker buildx imagetools inspect "$IMAGE:${{ steps.build.outputs.tag }}" | grep -E 'Platform:' 
           docker logout ghcr.io >/dev/null 2>&1 || true
