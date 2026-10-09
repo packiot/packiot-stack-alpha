@@ -2895,6 +2895,11 @@ ops	_fix_gap_holes_20261009	table	old_scrap	real
 ops	_fix_gap_holes_20261009	table	new_scrap	real
 ops	_fix_gap_holes_20261009	table	snapped_at	timestamp with time zone
 ops	_fix_gap_holes_20261009	table	applied_at	timestamp with time zone
+ops	_fix_po_headers_20261009	table	taken_at	timestamp with time zone
+ops	_fix_po_headers_20261009	table	kind	text
+ops	_fix_po_headers_20261009	table	id_enterprise	integer
+ops	_fix_po_headers_20261009	table	id_order	integer
+ops	_fix_po_headers_20261009	table	snap	jsonb
 public	knex_migrations	table	id	integer
 public	knex_migrations	table	name	character varying
 public	knex_migrations	table	batch	integer

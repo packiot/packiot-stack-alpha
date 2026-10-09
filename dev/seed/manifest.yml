@@ -81,6 +81,7 @@ tables:
   ops._bkp_po_runtime_cpackholes_20261009: {mode: schema_only}  # plumbing/audit state: PO runtime backup before the legacy-hole fix, same rule as ops._bkp_* (2026-10-09)
   ops._fix_gap_edge_20261009: {mode: schema_only}  # plumbing/audit state: undo snapshot of the gap-edge catch-up zeroing (#1673), same rule as ops._bkp_* (2026-10-09)
   ops._fix_gap_holes_20261009: {mode: schema_only}  # plumbing/audit state: undo snapshot of the legacy-hole counter fix, same rule as ops._bkp_* (2026-10-09)
+  ops._fix_po_headers_20261009: {mode: schema_only}  # plumbing/audit state: undo snapshot of the CPACK PO header/window convergence repair (kind po|rt + whole row as jsonb, #1674), same rule as ops._bkp_* (2026-10-09)
   ops._bkp_bis_l58_open_event_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_l60_cfg_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_l60_sim_events_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
