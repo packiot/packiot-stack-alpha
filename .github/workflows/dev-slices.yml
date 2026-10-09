@@ -9,7 +9,8 @@ name: Dev slices
 #   tier0-grafana  Tier 0 + grafana
 #   pipeline       seed-replay → sparkplug-decoder → stream-engine (+ read-api, read-api-cors): live rows at "now"
 #   barcode        barcode-service
-#   edge           edge-api (+ its knex migrations on the seed) + csadmin, customize, operator, front4
+#   ingest         ingest-shim, oeecloud-fanout, analytics-sync (RabbitMQ-side bridges; no submodules)
+#   edge           edge-api (+ its knex migrations on the seed) + csadmin, customize, operator, front4, operator-gateway
 #
 # The edge slice needs the PRIVATE submodule repos (edge-api, csadmin, operator4, front4). GITHUB_TOKEN only reads
 # this repository, so it uses the repository secret DEV_SUBMODULES_TOKEN (read-only Contents on those four repos).
@@ -65,10 +66,13 @@ jobs:
           - slice: barcode
             up: barcode-service
             smoke: postgres barcode-service
+          - slice: ingest
+            up: ingest-shim oeecloud-fanout analytics-sync
+            smoke: rabbitmq ingest-shim oeecloud-fanout analytics-sync
           - slice: edge
             submodules: true
-            up: edge-api csadmin customize operator front4
-            smoke: postgres edge-api read-api read-api-cors csadmin customize operator front4
+            up: edge-api csadmin customize operator front4 operator-gateway
+            smoke: postgres edge-api read-api read-api-cors csadmin customize operator front4 operator-gateway
     env:
       FRONT4_DIR: ${{ github.workspace }}/.ci/front4-staging
     steps:
@@ -87,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
-            msg="edge slice SKIPPED: secret DEV_SUBMODULES_TOKEN is not available (not set, or a fork PR). edge-api, csadmin, customize, operator and front4 were NOT smoke-tested."
+            msg="edge slice SKIPPED: secret DEV_SUBMODULES_TOKEN is not available (not set, or a fork PR). edge-api, csadmin, customize, operator, front4 and operator-gateway were NOT smoke-tested."
             echo "::warning::$msg"; echo "### $msg" >> "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi

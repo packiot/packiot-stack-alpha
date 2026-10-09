@@ -37,3 +37,13 @@ include:
     env_file: .env.dev
   - path: services/operator.yml
     env_file: .env.dev
+  - path: services/dev-tls.yml
+    env_file: .env.dev
+  - path: services/analytics-sync.yml
+    env_file: .env.dev
+  - path: services/operator-gateway.yml
+    env_file: .env.dev
+  - path: services/ingest-shim.yml
+    env_file: .env.dev
+  - path: services/oeecloud-fanout.yml
+    env_file: .env.dev

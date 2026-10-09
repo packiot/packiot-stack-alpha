@@ -1,0 +1,52 @@
+# ── operator-gateway (Tier 3) — ADR-0060 P4 ──────────────────────────────────
+# contract (docs/dev/contracts.md §2, contracts/go-services.md §operator-gateway):
+#   inputs:   HTTPS POST /operator/{downtime,po,po/*,split} (X-Ingest-Key; a factory tee node's operator actions);
+#             postgres packiot_analytics read-only resolver: packml_register → equipments → areas → sites
+#   outputs:  edge-api /api/downtimes/*, /api/production-orders/* with the tenant's x-api-key (edge-api writes the
+#             rows + user_logs); /healthz (DB pool) + /metrics on the same TLS port
+#   external: none in dev — DB creds from env (CREDS_SOURCE=env), self-signed TLS from dev-tls (staging: host cert),
+#             tracing off
+# Mirrors compose.staging.yml `operator-gateway` (network alias operator-adapter, edge-api at :8080, direct DB).
+# Dev values instead of Incoplast's (enterprise 4, not in the seed): the seed tenant 3, its anonymized topic prefix
+# (DEV_SEED_GROUP) and its fake api key dev-api-key-3. The env names keep staging's INCOPLAST_* spelling.
+#   make dev SVC=operator-gateway     # https://127.0.0.1:8445 (curl -k; X-Ingest-Key = DEV_OPERATOR_GATEWAY_KEY)
+services:
+  operator-gateway:
+    build: ../../services/operator-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      edge-api:
+        condition: service_healthy
+      dev-tls:
+        condition: service_completed_successfully
+    environment:
+      PORT: "8443"
+      EDGE_API_URL: http://edge-api:8080
+      INCOPLAST_ENTERPRISE_ID: "3"
+      INCOPLAST_TOPIC_PREFIX: ${DEV_SEED_GROUP:?set in dev/.env.dev}
+      CREDS_SOURCE: env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      DB_NAME: packiot_analytics
+      OPERATOR_API_KEY: ${DEV_OPERATOR_GATEWAY_KEY:?set in dev/.env.dev}
+      EDGE_API_KEY: dev-api-key-3   # the seed's fake core.enterprises.api_key for tenant 3
+      TLS_CERT_FILE: /certs/tls.crt
+      TLS_KEY_FILE: /certs/tls.key
+    volumes:
+      - dev-tls:/certs:ro
+    ports:
+      - "127.0.0.1:${DEV_OPERATOR_GATEWAY_PORT:-8445}:8443"
+    networks:
+      default:
+        aliases: ["operator-adapter"]
+    healthcheck:
+      # distroless: TLS GET 127.0.0.1:8443/healthz, 200 only while the resolver's DB pool answers
+      test: ["CMD", "/usr/local/bin/operator-gateway", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped

@@ -31,6 +31,7 @@ Nothing here talks to AWS or staging. Every host port binds `127.0.0.1`.
 | `e2e/login-mission-control.py` | browser exit check: dev login → Mission Control with data |
 | `e2e/replay-parity.sql` | P3 exit check: replayed gross = the seed's gross one week earlier |
 | `e2e/smoke.sh` | per-service smoke (`make dev-smoke SVC=…`), also run by CI (`.github/workflows/dev-slices.yml`) |
+| `tls/make-cert.sh` | self-signed TLS pair for ingest-shim + operator-gateway (one-shot `dev-tls`) |
 | `seed/sync-sequences.sql` | init hook after the seed load: id sequences past the seed's rows (F11) |
 
 Adding a service: write `services/<svc>.yml` (contract header first, `depends_on` with
@@ -193,12 +194,44 @@ dev server against this slice's edge-api. Logging in to csadmin/customize works 
 group (contracts.md F12, fixed 2026-10-09), so it can use the CS-Admin routes (cross-tenant, onboarding). front4 can use the edge-api slice
 too: `DEV_FRONT4_EDGE_API=http://localhost:8080 make dev SVC="front4 edge-api"`.
 
+## Ingest, fan-out and operator bridge (ADR-0060 P4 remainder)
+
+```sh
+make dev SVC="ingest-shim oeecloud-fanout analytics-sync"   # Tier 0 + the three, no submodules needed
+make dev SVC="operator-gateway"                             # + edge-api (submodule) and its migrations
+```
+
+| Service | Host port | Tier | What it does in dev | Differs from staging |
+|---|---|---|---|---|
+| `ingest-shim` | 8444 (TLS) | 1 | `POST /ingest/sparkplug` (`X-Ingest-Key: dev-ingest-key`) → publisher-confirmed `oee` / `sparkplug.data.incoplast`, `source_type=refactored` | RabbitMQ creds from env; self-signed cert. Nothing binds the key in dev, as on staging: messages land in `oee-unroutable-q` (contracts.md F5) |
+| `oeecloud-fanout` | — (in-network :9102) | 2 | consumes `sparkplug.data` + `sparkplug.data.cpack`, re-tenants the seed group → `SBXCPACK`, republishes on `sparkplug.data.sbxcpack` | source group = the seed's anonymized group `DEV_SEED_GROUP` (no "CPACK" in the seed); clones pile up unconsumed in `stream-engine-q-sbxcpack` |
+| `analytics-sync` | — (in-network :9103) | 2 | boots idle (`SHADOW_MIRROR_ENABLED=false`): `/healthz` + `/metrics` only | none: staging runs it idle too (its F1 `packiot` source DB is retired) |
+| `operator-gateway` | 8445 (TLS) | 3 | `POST /operator/*` (`X-Ingest-Key: dev-operator-gateway-key`) → resolves `packml_topic` on the seed → edge-api with `dev-api-key-3` | tenant 3 + its seed topic prefix instead of Incoplast (enterprise 4, not in the seed); self-signed cert |
+| `dev-tls` (one-shot) | — | — | mints the self-signed pair both TLS services mount (volume `dev-tls`, openssl from the rabbitmq image) | staging mounts real host certs |
+
+```sh
+curl -sk https://127.0.0.1:8445/healthz                       # {"healthy":true,"db":true}
+KEY=$(grep '^DEV_INGEST_API_KEY=' dev/.env.dev | cut -d= -f2)  # the fake ingest key
+curl -sk -H "X-Ingest-Key: $KEY" -d '{"metrics":[{"name":"INCOPLAST/x","value":1}]}' https://127.0.0.1:8444/ingest/sparkplug
+```
+
+**Not in dev, on purpose:**
+
+| Service | Why it stays out |
+|---|---|
+| `edge-session-broker` | Its only job is to run AWS `session-manager-plugin` with an SSM `StartSession` handle that edge-api obtains from AWS. Offline there is no handle, so a fragment could prove nothing beyond "the port opens and a wrong token gets 401". ADR-0060 D3 keeps SSM out of dev; edge-api's box-access routes already answer errors without AWS |
+| `legacy-replicator` | reads the legacy production DB (`packiot40`); no stand-in |
+| `historian-gateway` | Feasible, not cheap. It needs (1) an S3 endpoint option in `services/historian-gateway/docker-entrypoint-initdb.d/10-historian-gateway.sh` (it calls `duckdb.create_simple_secret` with AWS defaults; pg_duckdb 1.2 accepts `endpoint`/`url_style`/`use_ssl`, so MinIO can stand in) and (2) a cold archive in MinIO: the init and every union view `read_parquet` the `*-legacy.parquet` layout that the nightly append writes **from the legacy production DB**. Dev would need its own exporter writing the seed in that layout. Until then, read-api's `/v1/historian/*` and the Superset historian dataset are not testable locally |
+| Superset | Optional by design (heavy: derived image, metadata DB, asset sync, Cognito OAuth client secret). Not built yet |
+
 ## Smoke checks and CI (ADR-0060 D8)
 
 `make dev-smoke SVC="…"` (`e2e/smoke.sh`) checks each named service: health plus one real request that reaches its
 data (edge-api `GET /api/lines` with the seed's key, read-api `/v1/operator-entities` with the read key, Grafana a SQL
 query through its datasource, the SPAs' nginx proxies to edge-api/read-api with the dev pool id baked in the bundle,
-barcode-service fail-closed 401 + its write-path tables, the pipeline fresh silver rows at "now"). Services with no
+barcode-service fail-closed 401 + its write-path tables, the pipeline fresh silver rows at "now", ingest-shim and
+oeecloud-fanout a message seen on the target routing key through a temporary tap queue, operator-gateway a manual
+downtime written through edge-api). Services with no
 host port are probed from inside the compose network. Exit code = number of failed services.
 
 `.github/workflows/dev-slices.yml` runs on every PR into `staging` that touches `dev/`, `db/migrations/`,
@@ -210,7 +243,8 @@ Docker, the published seed and `make dev SVC=… && make dev-smoke SVC=…`:
 | tier0-grafana | Tier 0 + grafana | postgres rabbitmq mosquitto redis minio grafana |
 | pipeline | seed-replay stream-engine read-api-cors | + read-api, decoder, stream-engine, live rows |
 | barcode | barcode-service | postgres barcode-service |
-| edge | edge-api csadmin customize operator front4 | + read-api, read-api-cors |
+| ingest | ingest-shim oeecloud-fanout analytics-sync | rabbitmq ingest-shim oeecloud-fanout analytics-sync |
+| edge | edge-api csadmin customize operator front4 operator-gateway | + read-api, read-api-cors |
 
 The edge slice needs the private repos edge-api, csadmin, operator4 and front4. `GITHUB_TOKEN` reads only this
 repository, so it uses the repository secret `DEV_SUBMODULES_TOKEN` (read-only Contents on those four). Without it the
