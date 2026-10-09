@@ -30,6 +30,7 @@ P(){ $PSQL -X -v ON_ERROR_STOP=1 -At -c "SET statement_timeout='10min'; SET lock
 Q(){ $PSQL -X -v ON_ERROR_STOP=1 -At -F ' ' -c "SET statement_timeout='10min'; $1" < /dev/null | sed 1d; }
 log(){ echo "[$(date -u +%T)] $*"; }
 FIX=ops._fix_line_scrap_20261009
+RUN_START=$(P "SELECT now()")   # caggs/flags below only for rows applied in THIS run
 
 P "CREATE TABLE IF NOT EXISTS $FIX (
      id_enterprise int, id_equipment int, ts_value timestamptz, kind text,
@@ -80,9 +81,13 @@ mapfile -t LINEDAYS < <(Q "
 log "AB: ${#LINEDAYS[@]} line-days to repair"
 for ld in "${LINEDAYS[@]}"; do
   read -r eq day <<<"$ld"
+  # Day bounds as LITERAL timestamps. A stable bound (`ts_value < date 'X' + 1`, TimeZone-dependent cast) makes an
+  # UPDATE on a COMPRESSED chunk match 0 rows on TimescaleDB 2.27 (staging 2026-10-09, reproduced in a rolled-back
+  # transaction: date-expression bound → UPDATE 0, literal bound → UPDATE 7981); SELECTs are unaffected.
+  NEXT=$(date -u -d "$day + 1 day" +%F)
   # infeed = the line-day has gross at all (a constant, so the UPDATE below is a plain-WHERE, join-free statement)
   INFEED=$(P "SELECT coalesce(sum(gross_production_incr),0) > 0 FROM silver.equipment_values
-               WHERE id_equipment=$eq AND ts_value >= '$day' AND ts_value < date '$day' + 1")
+               WHERE id_equipment=$eq AND ts_value >= '$day' AND ts_value < '$NEXT'")
   [ "$INFEED" = t ] && TGT="CASE WHEN v.gross_production_incr IS NULL AND v.net_production_incr IS NULL THEN NULL
                                  ELSE coalesce(v.gross_production_incr,0) - coalesce(v.net_production_incr,0) END" \
                     || TGT="NULL::real"
@@ -90,7 +95,7 @@ for ld in "${LINEDAYS[@]}"; do
          SELECT v.id_enterprise, v.id_equipment, v.ts_value, 'line_scrap', v.gross_production_incr, v.net_production_incr,
                 v.scrap_incr, v.gross_production_incr, v.net_production_incr, $TGT
            FROM silver.equipment_values v
-          WHERE v.id_equipment=$eq AND v.ts_value >= '$day' AND v.ts_value < date '$day' + 1
+          WHERE v.id_equipment=$eq AND v.ts_value >= '$day' AND v.ts_value < '$NEXT'
             AND v.scrap_incr IS DISTINCT FROM ($TGT)
          ON CONFLICT (id_equipment, ts_value, kind) DO UPDATE
          SET old_gross = EXCLUDED.old_gross, old_net = EXCLUDED.old_net, old_scrap = EXCLUDED.old_scrap,
@@ -98,11 +103,11 @@ for ld in "${LINEDAYS[@]}"; do
          WHERE $FIX.applied_at IS NULL")
   if [ "$DRY_RUN" = 1 ]; then log "  eq $eq $day infeed=$INFEED: $N rows (dry run)"; continue; fi
   U=$(P "UPDATE silver.equipment_values v SET scrap_incr = $TGT
-          WHERE v.id_equipment=$eq AND v.ts_value >= '$day' AND v.ts_value < date '$day' + 1
+          WHERE v.id_equipment=$eq AND v.ts_value >= '$day' AND v.ts_value < '$NEXT'
             AND v.scrap_incr IS DISTINCT FROM ($TGT)")
   # applied = read back: the row now holds the snapshotted new value
   P "UPDATE $FIX f SET applied_at = now() FROM silver.equipment_values v
-      WHERE f.kind='line_scrap' AND f.id_equipment=$eq AND f.ts_value >= '$day' AND f.ts_value < date '$day' + 1
+      WHERE f.kind='line_scrap' AND f.id_equipment=$eq AND f.ts_value >= '$day' AND f.ts_value < '$NEXT'
         AND f.applied_at IS NULL AND v.id_equipment=f.id_equipment AND v.ts_value=f.ts_value
         AND v.scrap_incr IS NOT DISTINCT FROM f.new_scrap" >/dev/null
   log "  eq $eq $day infeed=$INFEED: snapshot $N, $U"
@@ -118,7 +123,7 @@ D=$(P "DELETE FROM $FIX f USING silver.equipment_values v
 log "unapplied snapshots dropped: $D"
 
 # ── caggs: hierarchical 1min → 1hour, per touched day ─────────────────────────────────────────────────────────
-mapfile -t TDAYS < <(Q "SELECT DISTINCT date_trunc('day', ts_value)::date FROM $FIX WHERE applied_at IS NOT NULL ORDER BY 1")
+mapfile -t TDAYS < <(Q "SELECT DISTINCT date_trunc('day', ts_value)::date FROM $FIX WHERE applied_at >= '$RUN_START' ORDER BY 1")
 for day in "${TDAYS[@]}"; do
   for cagg in silver.agg_equipment_values_1min silver.equipment_metrics_1min silver.equipment_categorical_1min \
               silver.agg_equipment_values_1hour silver.equipment_categorical_1hour; do
@@ -128,8 +133,12 @@ for day in "${TDAYS[@]}"; do
   log "caggs refreshed: $day"
 done
 
-# ── gold + PO runtimes: only C changes gross/net (AB does not reach gold) — flag C's hours/shifts/days ────────────
-G=$(P "WITH c AS (SELECT DISTINCT id_equipment, ts_value FROM $FIX WHERE kind='unbacked' AND applied_at IS NOT NULL),
+# ── gold + PO runtimes: only C rows whose GROSS/NET changed reach gold (scrap does not: line-lead derives it) —
+# flag their hours/shifts/days, and NEVER older than 7 days (10-01 incident: re-flagging old shifts stalled the shift
+# rollup for all tenants; past the engine windows the state-only pass rewrites old rows wrong).
+G=$(P "WITH c AS (SELECT DISTINCT id_equipment, ts_value FROM $FIX
+                   WHERE kind='unbacked' AND applied_at >= '$RUN_START' AND ts_value >= now() - interval '7 days'
+                     AND (old_gross IS DISTINCT FROM new_gross OR old_net IS DISTINCT FROM new_net)),
             eqs AS (SELECT id_equipment FROM c
                     UNION SELECT e.id_equipment FROM core.equipments e JOIN c ON c.id_equipment IN (e.lead_machine, e.gross_machine, e.net_machine))
        , h AS (UPDATE gold.equipment_oee_hourly g SET recalc_needed = true FROM c
