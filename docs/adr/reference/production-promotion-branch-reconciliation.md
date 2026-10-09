@@ -209,7 +209,7 @@ DB roles after the transplant (runbook §6.4/6.5): `readapi_ro`, `histgw_ro` (pr
 | B1 | Create SM secrets `rabbitmq-stream-engine-creds` + `rabbitmq-sparkplug-decoder-creds` **and** the RabbitMQ users/permissions | **AUTHORED on the branch** (§9): TF secrets + least-priv users via `load_definitions`. Remaining: **`terraform apply`** of `terraform/production` (user) before the deploy |
 | B2 | Queue rename: `oeecloud-worker-q*` → `stream-engine-q*` | **RESOLVED on the branch**: runbook §5a (drain + archive `-failed` before step 1; verify consumers, then `rabbitmqctl delete_queue --if-empty` after step 5) |
 | B3 | Prod runner PAT cannot fetch `csadmin` (`30e7a31b`); the release pins csadmin `a0ab759` (+ new operator/edge-api shas) | `Fetch submodules` fails → deploy aborts before build. Grant the PAT csadmin access first |
-| B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | possible regression of a prod fix; port or prove superseded |
+| B4 | csadmin #16/#17 (prefetch overwrite guard, `*ApiToForm` mappers) not in staging's csadmin | **RESOLVED** (§10): 3 of 4 fixes superseded on staging; the edit-prefetch guard was ported (packiot/csadmin#120) and the release pins the result |
 | B5 | Service config parity (§5b) | **RESOLVED on the branch** (§8). Remaining: pre-go checks C1–C3, and the `READAPI_RO_PASSWORD` / `INTERNAL_API_KEY` values (§9) |
 | B6 | Services absent from prod compose (§5a) | decide per service: observability, edge-session-broker, customize, barcode, analytics-sync, fanout |
 | B7 | edge-api#297 | the release pins edge-api `8c6adfa`, reachable only from that branch until merged into edge-api `staging` |
@@ -323,3 +323,19 @@ retire every other CPACK event writer first. Either way it needs a decision; fli
   `rabbit@<container hostname>`, and compose gives a new hostname on recreate, so the broker can come up with an empty
   queue set. Users come back from the definitions, and clients re-declare their exchanges/queues/bindings. **Messages
   still queued at that moment are lost**, so drain first (runbook §5a).
+
+## 10. B4 — csadmin #16/#17 vs staging's csadmin
+`7af3aa6` (#17) is an **empty** commit on top of `caf16e6` (#16), so #16 is the whole change. It has 4 fixes. Each was
+checked against staging's csadmin `a0ab759`:
+
+| #16 fix | On staging? | Evidence |
+|---|---|---|
+| shift-form wrapped in `FormProvider` (white-screen) | **superseded** | `src/pages/shift-form.tsx` uses `FormProvider` |
+| users `user_name`/`user_email` → `name`/`email` (blank list/edit) | **superseded** | `src/api/users.ts` normalizer maps both |
+| site/area/enterprise `*ApiToForm` + `weekBeginToPoint` (schedule corruption, blank `code`) | **superseded (moot)** | #37 models `week_begin`/`day_begin`/`week_size` as operational seconds end-to-end (the schema, `toApi` and fields are all ints; no `WeekPoint` exists), and #63 removed the phantom `code`. `form.reset({...DEFAULTS, ...row})` now spreads a normalized row whose shape matches the schema |
+| enterprise edit: block Save on a failed GET-by-id prefetch | **missing** | `enterprise-form.tsx` called `get(id).then(reset)` with no error path, so a failed load left DEFAULTS editable and Save could overwrite the client |
+
+The missing guard was **ported** onto csadmin `staging` (branch `fix/enterprise-edit-prefetch-guard`, packiot/csadmin#120,
+`893ce93`). It adds a load state (loading/loaded/error, cancellation-safe), keeps Save disabled until the record has
+loaded on an edit, and shows a "couldn't load" card on failure. Tests: 4 new (2 red on the unpatched page);
+vitest 288/288, `tsc -b` clean, eslint clean, packml ratchet OK.
