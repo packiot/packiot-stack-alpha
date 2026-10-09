@@ -68,6 +68,9 @@ tables:
   identity.user_screen_config: {mode: schema_only}  # per-user UI state
   identity.users: {mode: replace}  # synthetic dev users (emails, phones, names)
   ops._fix_line_scrap_20261009: {mode: schema_only}  # plumbing/audit state: L6 scrap repair snapshot (old/new values for the undo), same rule as ops._bkp_* (2026-10-09)
+  ops._fix_link_phantoms_20261009: {mode: schema_only}  # plumbing/audit state: snapshot of deleted PLC-link phantom events (undo source, #1666), same rule as ops._bkp_* (2026-10-09)
+  ops._fix_s2_stale_stops_20261009: {mode: schema_only}  # plumbing/audit state: S2 stale open stops old/new ts_end (undo source, #1665), same rule as ops._bkp_* (2026-10-09)
+  ops._fix_testpo_20261009: {mode: schema_only}  # plumbing/audit state: test-PO cleanup snapshot (kind + whole row as jsonb; made ad hoc on staging, no script in the repo), same rule as ops._bkp_* (2026-10-09)
   ops._bkp_bis_l58_open_event_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_l60_cfg_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_l60_sim_events_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)

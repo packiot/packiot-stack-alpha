@@ -1,4 +1,4 @@
-# schema	table	kind	column	data_type  — snapshot of packiot_analytics (staging) 2026-10-06; names/types only, no data; core.po_number_corrections + ops._fix_line_scrap_20261009 added 2026-10-09 from their DDL (db/migrations/t-adr0062-p1-po-number-expand, scripts/ops/repair-line-scrap-and-unbacked.sh)
+# schema	table	kind	column	data_type  — inventory of packiot_analytics (staging) 2026-10-09, regenerated read-only with dev/seed/extract.sh step 1's query (replaces the 2026-10-06 snapshot + its 10-09 hand patch); names/types only, no data
 bi	downtimes	view	id_enterprise	integer
 bi	downtimes	view	id_downtime	bigint
 bi	downtimes	view	id_equipment	integer
@@ -52,6 +52,9 @@ bi	live_status	view	scrap_val	real
 bi	live_status	view	equipment_label	text
 bi	live_status	view	id_order_label	text
 bi	live_status	view	state_label	text
+bi	live_status	view	net_production_total	double precision
+bi	live_status	view	gross_production_total	double precision
+bi	live_status	view	scrap_total	double precision
 bi	oee_hourly	view	id_enterprise	integer
 bi	oee_hourly	view	id_equipment	integer
 bi	oee_hourly	view	nm_equipment	character varying
@@ -266,6 +269,10 @@ bronze	equipment_values_raw	hypertable	ideal_production_speed	integer
 bronze	equipment_values_raw	hypertable	check_number	bigint
 bronze	equipment_values_raw	hypertable	ingested_at	timestamp with time zone
 bronze	equipment_values_raw	hypertable	source_seq	bigint
+bronze	equipment_values_raw	hypertable	gross_production_total	double precision
+bronze	equipment_values_raw	hypertable	net_production_total	double precision
+bronze	equipment_values_raw	hypertable	scrap_total	double precision
+bronze	equipment_values_raw	hypertable	process_scrap_total	double precision
 bronze	sample_boxes	table	id_box	bigint
 bronze	sample_boxes	table	box_order_number	integer
 bronze	sample_boxes	table	should_increment	boolean
@@ -616,6 +623,7 @@ core	production_orders	table	id_label	bigint
 core	production_orders	table	oee_q	double precision
 core	production_orders	table	oee_a	double precision
 core	production_orders	table	oee_p	double precision
+core	production_orders	table	po_uuid	uuid
 core	products	table	id_product	bigint
 core	products	table	nm_product	character varying
 core	products	table	id_product_family	integer
@@ -2181,6 +2189,47 @@ ops	_fix_line_scrap_20261009	table	new_net	real
 ops	_fix_line_scrap_20261009	table	new_scrap	real
 ops	_fix_line_scrap_20261009	table	snapped_at	timestamp with time zone
 ops	_fix_line_scrap_20261009	table	applied_at	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	id_equipment	integer
+ops	_fix_link_phantoms_20261009	table	ts_event	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	status	integer
+ops	_fix_link_phantoms_20261009	table	id_equipment_event	bigint
+ops	_fix_link_phantoms_20261009	table	txt_downtime_notes	character varying
+ops	_fix_link_phantoms_20261009	table	idle	character varying
+ops	_fix_link_phantoms_20261009	table	idle_processed	boolean
+ops	_fix_link_phantoms_20261009	table	forced_creation_system	boolean
+ops	_fix_link_phantoms_20261009	table	fault	integer
+ops	_fix_link_phantoms_20261009	table	fault_processed	boolean
+ops	_fix_link_phantoms_20261009	table	cd_machine	character varying
+ops	_fix_link_phantoms_20261009	table	cd_category	character varying
+ops	_fix_link_phantoms_20261009	table	cd_subcategory	character varying
+ops	_fix_link_phantoms_20261009	table	change_over	boolean
+ops	_fix_link_phantoms_20261009	table	planned_downtime	boolean
+ops	_fix_link_phantoms_20261009	table	ts_end	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	duration	integer
+ops	_fix_link_phantoms_20261009	table	id_enterprise	integer
+ops	_fix_link_phantoms_20261009	table	desc_category	character varying
+ops	_fix_link_phantoms_20261009	table	desc_subcategory	character varying
+ops	_fix_link_phantoms_20261009	table	cd_category_client	integer
+ops	_fix_link_phantoms_20261009	table	cd_subcategory_client	integer
+ops	_fix_link_phantoms_20261009	table	last_update	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	ignore_cost	boolean
+ops	_fix_link_phantoms_20261009	table	ingested_at	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	source_seq	bigint
+ops	_fix_link_phantoms_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	deleted_at	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	id_enterprise	integer
+ops	_fix_s2_stale_stops_20261009	table	id_equipment	integer
+ops	_fix_s2_stale_stops_20261009	table	ts_event	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	status	integer
+ops	_fix_s2_stale_stops_20261009	table	old_ts_end	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	old_duration	integer
+ops	_fix_s2_stale_stops_20261009	table	new_ts_end	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	basis	text
+ops	_fix_s2_stale_stops_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	applied_at	timestamp with time zone
+ops	_fix_testpo_20261009	table	kind	text
+ops	_fix_testpo_20261009	table	row	jsonb
+ops	_fix_testpo_20261009	table	snapped_at	timestamp with time zone
 ops	_fix_unbacked_20261001	table	id_equipment	integer
 ops	_fix_unbacked_20261001	table	id_enterprise	integer
 ops	_fix_unbacked_20261001	table	ts_value	timestamp with time zone
@@ -3445,6 +3494,10 @@ silver	equipment_values	hypertable	ideal_production_speed	integer
 silver	equipment_values	hypertable	check_number	bigint
 silver	equipment_values	hypertable	ingested_at	timestamp with time zone
 silver	equipment_values	hypertable	source_seq	bigint
+silver	equipment_values	hypertable	gross_production_total	double precision
+silver	equipment_values	hypertable	net_production_total	double precision
+silver	equipment_values	hypertable	scrap_total	double precision
+silver	equipment_values	hypertable	process_scrap_total	double precision
 silver	equipment_values_labeled	view	id_equipment	integer
 silver	equipment_values_labeled	view	ts_value	timestamp with time zone
 silver	equipment_values_labeled	view	id_enterprise	integer
@@ -3506,6 +3559,10 @@ silver	equipment_values_labeled	view	source_seq	bigint
 silver	equipment_values_labeled	view	state_label	text
 silver	equipment_values_labeled	view	is_running	boolean
 silver	equipment_values_labeled	view	is_stopped	boolean
+silver	equipment_values_labeled	view	net_production_total	double precision
+silver	equipment_values_labeled	view	gross_production_total	double precision
+silver	equipment_values_labeled	view	scrap_total	double precision
+silver	equipment_values_labeled	view	process_scrap_total	double precision
 silver	machine_state	table	state	integer
 silver	machine_state	table	label	text
 silver	machine_state	table	is_running	boolean
