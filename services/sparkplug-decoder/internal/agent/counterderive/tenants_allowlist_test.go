@@ -95,3 +95,30 @@ func TestCPACKSleeveInfeedOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestCPACKIsimatProcessedIsGross pins the 2026-10-09 ISIMAT fix from the deployed
+// cpack.yaml: legacy reports gross == ProdProcessedCount and net = processed -
+// defective, so the raw Processed is overridden and both counts are derived.
+func TestCPACKIsimatProcessedIsGross(t *testing.T) {
+	cfg := loadTenants(t)["cpack.yaml"]
+	var entries []Entry
+	for _, e := range cfg.RawTagMap {
+		entries = append(entries, Entry{Suffix: e.MetricSuffix, Mode: e.CounterDerive})
+	}
+	st := New(entries)
+	const head = "/CELULA1/ISIMAT/ISIMAT/Admin"
+	proc, def, cons := head+"/ProdProcessedCount/335/Unit", head+"/ProdDefectiveCount/335/Unit", head+"/ProdConsumedCount/335/Unit"
+	if !st.Overrides(proc) {
+		t.Fatalf("ISIMAT %s must be overridden (processed_is_gross)", proc)
+	}
+	got := map[string]float64{}
+	for _, s := range st.Process([]rawtag.RawTag{
+		{Metric: proc, Value: 192562.0, TsMillis: 1, Quality: true},
+		{Metric: def, Value: 1113.0, TsMillis: 1, Quality: true},
+	}) {
+		got[s.Metric] = s.Value.(float64)
+	}
+	if got[cons] != 192562 || got[proc] != 191449 {
+		t.Errorf("ISIMAT gross=%v net=%v, want 192562 / 191449 (legacy 7 d to 2026-10-09)", got[cons], got[proc])
+	}
+}
