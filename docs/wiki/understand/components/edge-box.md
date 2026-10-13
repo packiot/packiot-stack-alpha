@@ -217,7 +217,7 @@ How the operator survives an outage today:
 |---|---|---|
 | Reads | nginx in the container caches `GET /v1/*` and `/v2/*` (`proxy_cache_valid 200 30s`, `proxy_cache_use_stale error timeout http_500..504`, `max_size=100m inactive=30d`). **GET only**: the SPA's reachability probe is a `HEAD`, so it still reaches the upstream and detects the outage | Shipped (`operator/nginx.edge.conf.template`) |
 | Writes | The [operator app](operator-app.md) durable write-queue (IndexedDB, `VITE_PO_WRITE_QUEUE_ENABLED=true` baked into the edge image) buffers per tablet and replays with an `Idempotency-Key` | Shipped |
-| Box-wide write outbox | `internal/writeforward`: forward to cloud; a 4xx is returned (never queued); transport error or 502/503/504 ⇒ persist to the SQLite outbox and return `202 {queued:true}`; `DrainOnce` replays FIFO, preserving `Idempotency-Key`, `X-Api-Key`, `Content-Type`, `Authorization` | **Engine only.** No `cmd/` binary imports it; not deployed |
+| Box-wide write outbox | ADR-0054 Option A: forward to cloud; a 4xx is returned (never queued); transport error or 502/503/504 ⇒ persist to the SQLite outbox and return `202 {queued:true}`; replay FIFO preserving `Idempotency-Key` | **Not built.** An unwired engine (`internal/writeforward`, no binary imported it) was removed on 2026-10-13; recover it from git history (`git show 192378b5:services/sparkplug-decoder/internal/writeforward/writeforward.go`) if Option A is picked up |
 | Local PO authority (Option B) | Local Postgres + bidirectional sync | Design only, gated on the PLC command channel (C1) |
 
 !!! warning "Gap in code (not tested live)"
@@ -312,7 +312,7 @@ edge-api (`edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts`):
 
 - edge-api: `shared/reader-bundle.spec.ts`, `shared/onprem-compose.spec.ts`,
   `shared/edge-ssm.service.spec.ts` (`npm test` in `edge-api/`).
-- Go: `go test ./internal/localstate/... ./internal/writeforward/... ./cmd/edge-dashboard/...`
+- Go: `go test ./internal/localstate/... ./cmd/edge-dashboard/...`
   in `services/sparkplug-decoder`.
 - Reader ↔ agent contract: `internal/agent/clientdescriptor/reader_contract_test.go`.
 
@@ -330,6 +330,5 @@ edge-api (`edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts`):
 | `docs/clients/edge-deployment/` | Mode-B bundle, `ssm-register.sh`, `ssm-register.service`, mTLS cert script |
 | `services/sparkplug-decoder/cmd/edge-dashboard/` | Floor dashboard |
 | `services/sparkplug-decoder/internal/localstate/localstate.go` | Current-state SQLite |
-| `services/sparkplug-decoder/internal/writeforward/writeforward.go` | Edge-operator forward-outbox engine |
 | `operator/Dockerfile.edge`, `operator/nginx.edge.conf.template` | Edge operator image |
 | `docs/adr/0049-edge-deploy-last-mile-automation.md`, `docs/adr/0053-on-prem-ingest-edge-for-outage-autonomy.md`, `docs/adr/0054-on-prem-edge-operator-outage-writes.md` | Decisions |

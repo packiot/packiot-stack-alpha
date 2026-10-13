@@ -213,7 +213,7 @@ The decoder is in the `pipeline` slice of `.github/workflows/dev-slices.yml` and
 | `internal/oeeprofile/`, `internal/countersrate/` | DB watchers |
 | `internal/birthbind/`, `internal/refdataresolver/` | ADR-0046 identity routing |
 | `internal/command/` | DCMD command channel |
-| `internal/erpconnector/`, `internal/edgeapiclient/`, `internal/writeforward/` | ERP read and edge-api clients |
+| `internal/erpconnector/`, `internal/edgeapiclient/` | ERP read and edge-api clients |
 | `internal/agent/` | sparkplug-agent: tag store, deriver, HTTP ingest, onboard API, uplink, capture |
 | `internal/s7/`, `internal/modbus/`, `internal/opcua/`, `internal/rawemit/` | PLC readers |
 | `internal/localstate/` | on-prem current-state SQLite |
