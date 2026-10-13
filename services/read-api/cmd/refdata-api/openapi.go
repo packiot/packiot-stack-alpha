@@ -915,6 +915,11 @@ func buildOpenAPISpec() (map[string]any, error) {
 
 	return map[string]any{
 		"openapi": "3.1.0",
+		// Cross-link to the "how it works" page (docs/WIKI-STYLE.md cross-linking contract).
+		"externalDocs": map[string]any{
+			"description": "How this service works (Packiot wiki, SSO)",
+			"url":         "https://wiki.packiot.app/understand/components/read-api/",
+		},
 		"info": map[string]any{
 			"title":       "read-api (refdata-api)",
 			"version":     "1.0.0",

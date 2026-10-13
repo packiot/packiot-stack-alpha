@@ -110,4 +110,9 @@ There are no tests and no CI workflow for this service.
 - [ADR-0057 — platform-mediated box access (SSM broker)](../../docs/adr/0057-platform-mediated-box-access-ssm-broker.md)
 - [ADR-0060 — local development environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [edge-session-broker](https://wiki.packiot.app/understand/components/edge-session-broker/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

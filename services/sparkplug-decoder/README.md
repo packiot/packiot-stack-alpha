@@ -231,4 +231,12 @@ The decoder is in the `pipeline` slice of `.github/workflows/dev-slices.yml` and
 - [ADR-0061 remove PackML from the cloud](../../docs/adr/0061-remove-packml-from-the-cloud.md)
 - [`docs/client.example.yaml`](docs/client.example.yaml) — example client config
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [sparkplug-decoder](https://wiki.packiot.app/understand/components/sparkplug-decoder/) |
+| API reference (generated from the spec) | [onboard-api](https://wiki.packiot.app/reference/api/onboard-api/) |
+| Interactive API docs (staging, SSO) | [API portal](https://api.staging.packiot.app/docs/) |
+| Sparkplug agent (HTTP ingest) | [component](https://wiki.packiot.app/understand/components/sparkplug-agent/) · [API](https://wiki.packiot.app/reference/api/sparkplug-agent/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

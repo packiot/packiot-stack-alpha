@@ -145,4 +145,11 @@ After changing `internal/httpserver/openapi.json`, run `make openapi` and commit
 - [ADR-0060 — local development environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 - [ADR-0061 — remove PackML from the cloud](../../docs/adr/0061-remove-packml-from-the-cloud.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [ingest-shim-and-fanout](https://wiki.packiot.app/understand/components/ingest-shim-and-fanout/) |
+| API reference (generated from the spec) | [ingest-shim](https://wiki.packiot.app/reference/api/ingest-shim/) |
+| Interactive API docs (staging, SSO) | [API portal](https://api.staging.packiot.app/docs/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

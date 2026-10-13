@@ -112,4 +112,9 @@ No CI workflow runs these tests; run them before changing `index.mjs`.
 - [ADR-0034 — adopt Cognito/Amplify auth](../../docs/adr/0034-adopt-cognito-amplify-auth.md)
 - [ADR-0034 reference — JIT user migration Lambda](../../docs/adr/reference/0034-jit-user-migration-lambda.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [oauth2-proxy-and-cognito](https://wiki.packiot.app/understand/components/oauth2-proxy-and-cognito/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

@@ -164,4 +164,11 @@ golden (`cmd/refdata-api/testdata/contract.golden.json`; refresh with
 - [ADR-0057 historian storage](../../docs/adr/0057-historian-storage-architecture-and-medallion-naming.md)
 - [ADR-0061 remove PackML from the cloud](../../docs/adr/0061-remove-packml-from-the-cloud.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [read-api](https://wiki.packiot.app/understand/components/read-api/) |
+| API reference (generated from the spec) | [read-api](https://wiki.packiot.app/reference/api/read-api/) |
+| Interactive API docs (staging, SSO) | [API portal](https://api.staging.packiot.app/docs/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

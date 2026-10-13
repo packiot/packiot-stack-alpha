@@ -137,4 +137,9 @@ clones accumulate there.
 - [ADR-0021 multitenancy model](../../docs/adr/0021-multitenancy-model.md)
 - [ADR-0060 dev environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [ingest-shim-and-fanout](https://wiki.packiot.app/understand/components/ingest-shim-and-fanout/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

@@ -134,8 +134,18 @@ staging, then merge.
 | Engineering wiki (layered: start here → architecture → subsystems → components → reference/ops) | source in [docs/wiki/](docs/wiki/index.md), published at **wiki.packiot.app** (behind SSO) |
 | How to write docs | [docs/WIKI-STYLE.md](docs/WIKI-STYLE.md) |
 | Architecture Decision Records | [docs/adr/](docs/adr/) |
-| Runbooks | [docs/runbooks/](docs/runbooks/), indexed in [docs/wiki/operations/runbooks.md](docs/wiki/operations/runbooks.md) |
+| Runbooks | [docs/runbooks/](docs/runbooks/), indexed in [docs/wiki/build/operate/runbooks.md](docs/wiki/build/operate/runbooks.md) |
 | HTTP API specs (OpenAPI 3.1) | [docs/api/openapi/](docs/api/openapi/) (`make openapi`); browsable at **https://api.staging.packiot.app/docs/** (behind the CS-Admin SSO) |
 | Per-service READMEs | [services/README.md](services/README.md) |
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs map
+
+| You want to… | Go to |
+|---|---|
+| Start, by role (CS, engineer, on call, integrator) | [Wiki home](https://wiki.packiot.app/) (SSO) |
+| Run it locally | [`dev/README.md`](dev/README.md) · [Your first week](https://wiki.packiot.app/learn/first-week/) |
+| Ship a change | [Branches, merging & deploying](https://wiki.packiot.app/build/develop/branches-and-merging/) · [Deploy](https://wiki.packiot.app/build/operate/deploy/) |
+| Understand how it works | [Understand](https://wiki.packiot.app/understand/) |
+| Call an API | [API reference](https://wiki.packiot.app/reference/api/) · [API portal](https://api.staging.packiot.app/docs/) |
+| Find a service's README, wiki page, API and dashboard | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |
+| Fix something broken | [Runbooks](https://wiki.packiot.app/build/operate/runbooks/) |

@@ -183,4 +183,9 @@ DATABASE_URL=postgres://... go test -tags golden ./internal/replicate/   # DB-ba
 - [ADR-0062 — production-order identity](../../docs/adr/0062-production-order-identity-and-alphanumeric-numbers.md)
 - [Runbook: sandbox twin](../../docs/runbooks/sandbox-twin.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [analytics-sync](https://wiki.packiot.app/understand/components/analytics-sync/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

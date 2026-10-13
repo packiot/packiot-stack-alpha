@@ -1,5 +1,9 @@
 {
   "openapi": "3.1.0",
+  "externalDocs": {
+    "description": "How this service works (Packiot wiki, SSO)",
+    "url": "https://wiki.packiot.app/understand/components/ingest-shim-and-fanout/"
+  },
   "info": {
     "title": "ingest-shim",
     "version": "0.1.0",
