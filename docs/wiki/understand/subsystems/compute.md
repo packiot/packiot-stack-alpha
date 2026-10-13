@@ -176,6 +176,7 @@ The full list with defaults is on the [stream-engine](../components/stream-engin
 | 2026-09-29 | "No clamps distorting data" (#1482): P and Q uncapped, gross < net shown as measured, scrap signed; lead-silent fallback |
 | 2026-10-01 | Availability three states: PLC link health (#1531), no-data events (#1532), exclusions (#1534); meter-fill flag (#1530); stranded-flag sweep (#1541) |
 | 2026-10-02 | Shift boundary hours split by overlap (#1545) and a shift-vs-silver invariant (#1546) |
+| 2026-10-13 | Day time columns stored raw (no production-day-length cap, like P and Q); invariant K7 reports days above their length |
 
 ## Go deeper
 

@@ -108,7 +108,10 @@ columns `recalc_needed`, `computed_at`, `source_watermark`. The `*_oee_bounds` C
 enforce `0 ≤ oee_a ≤ 1` and `oee, oee_p, oee_q ≥ 0` with **no upper bound** since 2026-09-29
 (`t-oee-uncapped-data`): performance above 1 means the ideal speed is too low, hourly quality above
 1 means units in transit. `scrap = gross − net` and may be negative. `no_data_time` and
-`out_of_service_time` (2026-10-01) hold time excluded from `available_time`.
+`out_of_service_time` (2026-10-01) hold time excluded from `available_time`. Time columns are
+bounded by the bucket at the hour and shift grains only; day, week and month store the raw sums
+(no day-length cap since 2026-10-13; invariant `K7_day_time_gt_day_length` reports a day above its
+length). No CHECK constraint bounds a time column.
 
 | Object | Kind, size | Grain / PK | Writer | Reader | Notes |
 |---|---|---|---|---|---|

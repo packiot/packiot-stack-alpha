@@ -505,8 +505,9 @@ clamp, exclusions and stranded sweep run on their code defaults).
   tenant's unstamped bindable metric is quarantined, never guessed.
 - **Tenant fence**: the equipment id comes from the resolver for the message's own topic (or the
   decoder's stamp for switched tenants); the tenant is the topic's first segment.
-- **Physical bounds** at every grain: running/stopped/downtime ≤ bucket length; day sums ≤ the real
-  (DST-aware) production-day length; `0 ≤ oee_a ≤ 1`; `oee`, `oee_p`, `oee_q` ≥ 0 with no upper
+- **Physical bounds**: running/stopped/downtime ≤ bucket length at the hour, shift, line-lead and
+  PO grains; day/week/month sums are stored raw (no day-length cap since 2026-10-13 — a day above
+  its DST-aware length is reported by invariant `K7_day_time_gt_day_length`); `0 ≤ oee_a ≤ 1`; `oee`, `oee_p`, `oee_q` ≥ 0 with no upper
   cap; no clamp between `net` and `gross` (#1482). Enforced by the SQL, the Silver clamp and the
   `*_oee_bounds` CHECK constraints.
 - **Single writer per cell**: line-lead writes tp=3 rows of its scope; counters-only availability
@@ -568,6 +569,7 @@ SELECT count(*) FROM gold.equipment_oee_hourly
 | Stranded flags (found 2026-10-01) | backlogs that never drain; repairs silently skipped | flags outside every pass's reach | #1541 hourly sweep with WARN |
 | Re-flag of 30-day-old shifts (2026-10-01, self-inflicted) | shift rollup stalled for every tenant ~22 min | oldest-first batch of expensive old shifts timed out each tick | cleared the flags; rule: re-flag gold ≤ 7 days only |
 | PO compute flag race (to 2026-09-30) | repaired POs with NULL counters and `recalc_needed = false` | phases were separate statements, each re-reading the flag | #1520: one REPEATABLE READ transaction |
+| Day-length cap (to 2026-10-13) | a day's time columns silently clipped to its length, hiding mis-attributed hour buckets; `oee_p` biased low on those days | `LEAST(Σ hours, day length)` in the day rollup (task #59) | store raw like P and Q; invariant K7 reports days above their length |
 | Clamps distorting data (to 2026-09-29) | line gross +1–2%, scrap +13–21% per month; P/Q capped at 1 | `net ≤ gross` clamps and upper caps in Gold | #1482: store raw; only availability capped |
 | Phantom RUNNING rows (to 2026-09-29) | count-silence deriver minted a running row every tick | uncorrected re-mint | #1486 + cleanup migration |
 | Live shift starved (to 2026-09-28) | current-shift OEE 0 all day; daily totals correct | oldest-first `LIMIT 75` against a 127-row recurring re-flag set | #1467 fair order (`computed_at NULLS FIRST`) |
