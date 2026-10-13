@@ -1,6 +1,6 @@
 # cpack-agent.yaml — sparkplug-agent descriptor for CPACK (ADR-0042 P1, Mode-A).
 #
-# This is the agentcfg schema (services/edge-transformer/internal/agent/agentcfg),
+# This is the agentcfg schema (services/sparkplug-decoder/internal/agent/agentcfg),
 # NOT the edge-transformer client.yaml. It drives ONE sparkplug-agent process
 # that turns CPACK's raw PLC tags (POSTed by the real CPACK Node-RED tee over
 # the HTTP front-door) into SparkPlug B, publishing to the INTERNAL mosquitto
@@ -8,7 +8,7 @@
 #
 # ══ REBUILT FROM REAL PROD TOPOLOGY (2026-07-23) ═════════════════════════════
 # The previous revision of this file was derived from
-# services/edge-transformer/cmd/plc-sim/main.go — and the sim was NOT faithful
+# services/sparkplug-decoder/cmd/plc-sim/main.go — and the sim was NOT faithful
 # to CPACK's real SparkPlug naming. The live-tee validation surfaced the drift:
 #   • real speed metric is  Status/CurMachSpeed   (sim/old-map: Status/MachSpeed)
 #   • real param  metric is  Status/Parameter     (sim/old-map: Status/Parameter30700)

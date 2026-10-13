@@ -22,7 +22,7 @@ last_verified: 2026-09-28
   same data as CPACK (enterprise 3).
 - **edge-transformer** is not a separate service. It is the old name of the
   [sparkplug-decoder](sparkplug-decoder.md) (the network alias `edge-transformer` and many metric
-  names remain). `services/edge-transformer/` contains only an orphaned test file.
+  names remain). The leftover `services/edge-transformer/` directory was removed on 2026-10-13.
 
 ## At a glance
 
@@ -199,4 +199,3 @@ gate on.
 | `services/oeecloud-fanout/internal/config/config.go` | env configuration |
 | `services/oeecloud-fanout/README.md` | design notes |
 | `compose.staging.yml` (`ingest-shim`, `oeecloud-fanout`) | staging wiring |
-| `services/edge-transformer/internal/agent/agentcfg/register_cpack_full_test.go` | orphaned test file (no module) |

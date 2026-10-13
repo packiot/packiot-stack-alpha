@@ -3,7 +3,7 @@
 **Status:** Built · flag-gated (default OFF) · **Date:** 2026-07-27 · **Task:** #13 / #54 ·
 **Governs:** [ADR-0045 §2.3 Option-B](../adr/0045-client-onboarding-architecture.md),
 [canonical model §2](../clients/bispharma-bisnago-canonical-model.md) ·
-**Code:** `services/edge-transformer/internal/agent/numeric`,
+**Code:** `services/sparkplug-decoder/internal/agent/numeric`,
 `internal/agent/httpingest` (`POST /v1/counters`), `cmd/sparkplug-agent` (flag),
 `cmd/numeric-sim` (staging driver).
 

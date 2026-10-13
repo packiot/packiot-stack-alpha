@@ -342,5 +342,5 @@ Alerts (`monitoring/prometheus/rules.yml`): `MQTTDisconnected`, `TransformerOutb
 | `docs/clients/cpack.yaml` | staging client descriptor mounted as `client.yaml` |
 | `docs/adr/0010-sparkplug-decode-in-go-end-state.md`, `0011-…`, `0037-oee-correctness-remediation.md`, `0045-client-onboarding-architecture.md`, `0049-oee-correctness.md`, `0058-client-customization-capability.md` | design decisions |
 
-`services/edge-transformer/` holds only a stray test file for a module path that no longer exists;
-it is not part of the running system.
+The old `services/edge-transformer/` directory (one stray test file, no module) was removed on
+2026-10-13; all code lives here.

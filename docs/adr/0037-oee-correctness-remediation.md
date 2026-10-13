@@ -20,7 +20,7 @@
 
 ## 1. Thesis
 
-**Most of these findings are not independent bugs — they are symptoms of one structural absence: there is no Silver validation layer (ADR-0036 §4) and no reprocess-able Bronze (ADR-0036 §3).** When invariants (`0≤A,P,Q,OEE≤1`, `net≤gross`, counter monotonicity, single-writer-per-tenant) have no designated home, they get implemented ad hoc in whichever of the two OEE engines — F1 (legacy pg, `edge-node-red/db/20-oee-engine-parity.sql`) or F3 (Go, `services/oeecloud-worker/` + `services/edge-transformer/`) — happened to touch the code, and the two **diverge**. Every P1/P2 finding below is a divergence or an absence. **The fix is not N point patches; it is standing up ADR-0036's layers and moving each finding into the right one.** The point patches are the *interim* mitigations; the layer is the durable cure.
+**Most of these findings are not independent bugs — they are symptoms of one structural absence: there is no Silver validation layer (ADR-0036 §4) and no reprocess-able Bronze (ADR-0036 §3).** When invariants (`0≤A,P,Q,OEE≤1`, `net≤gross`, counter monotonicity, single-writer-per-tenant) have no designated home, they get implemented ad hoc in whichever of the two OEE engines — F1 (legacy pg, `edge-node-red/db/20-oee-engine-parity.sql`) or F3 (Go, `services/oeecloud-worker/` + `services/sparkplug-decoder/`) — happened to touch the code, and the two **diverge**. Every P1/P2 finding below is a divergence or an absence. **The fix is not N point patches; it is standing up ADR-0036's layers and moving each finding into the right one.** The point patches are the *interim* mitigations; the layer is the durable cure.
 
 The findings below are **verified against the code** and re-cite the exact file/line.
 

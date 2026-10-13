@@ -104,7 +104,7 @@ Three squads reviewed this independently — the DBA saw a mutable, sentinel-enc
         └─▶ refdata-api datasets (reads: totals, genealogy, DQ)   ← replaces Hasura views
 ```
 
-Rationale for **a new Go service** rather than folding into edge-api: the scan path is a **high-frequency, durability-critical, real-time-fan-out** ingest with its own outbox/SSE/idempotency machinery — the same reasons `edge-transformer` and `oeecloud-worker` are their own Go services (`services/edge-transformer/internal/`, `services/oeecloud-worker/`). edge-api stays the *control-plane CRUD* authority (POs, config); `barcode-service` is a *stream ingest* authority. This is the ADR-0026 CQRS instinct applied one level down: writes with genuinely different shapes get different services.
+Rationale for **a new Go service** rather than folding into edge-api: the scan path is a **high-frequency, durability-critical, real-time-fan-out** ingest with its own outbox/SSE/idempotency machinery — the same reasons `edge-transformer` and `oeecloud-worker` are their own Go services (`services/sparkplug-decoder/internal/`, `services/oeecloud-worker/`). edge-api stays the *control-plane CRUD* authority (POs, config); `barcode-service` is a *stream ingest* authority. This is the ADR-0026 CQRS instinct applied one level down: writes with genuinely different shapes get different services.
 
 ### 2.2 One immutable Bronze fact — `box_scans` (the DBA's DDL sketch)
 

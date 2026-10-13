@@ -52,7 +52,7 @@ Every command records progress in a per-client manifest,
 The build tool:
 
 ```bash
-cd services/edge-transformer
+cd services/sparkplug-decoder
 go build -o /usr/local/bin/onboard ./cmd/onboard    # or `go run ./cmd/onboard <cmd> …`
 ```
 
@@ -218,7 +218,7 @@ equipment: 20 lines + 42 members). It shows the flow's whole point:
   descriptor); `L8/TEXA` is **dormant** (`MISSING`). Run:
 
   ```bash
-  cd services/edge-transformer
+  cd services/sparkplug-decoder
   go run ./cmd/onboard capture \
       --descriptor ../../docs/clients/cpack.descriptor.yaml \
       --healthz internal/agent/capture/testdata/healthz-cpack.json \

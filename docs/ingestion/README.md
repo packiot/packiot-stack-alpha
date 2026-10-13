@@ -181,7 +181,7 @@ SparkPlug B over MQTT → `edge-transformer` → worker → F3, on the SAME
 - **Disable plc-sim** (recommended): comment out / `docker compose … stop plc-sim`
   (or scale to 0). The real tee then fully replaces it. ← the clean cutover.
 - **Repoint plc-sim to a throwaway group** (e.g. `groupID = "CPACKSIM"` in
-  `services/edge-transformer/cmd/plc-sim/main.go`) so its topics no longer resolve
+  `services/sparkplug-decoder/cmd/plc-sim/main.go`) so its topics no longer resolve
   to ent 3 — only if you want synthetic + real running side by side for A/B.
 
 **Validation ordering:** stop plc-sim → confirm ent-3 `equipment_values` stops
