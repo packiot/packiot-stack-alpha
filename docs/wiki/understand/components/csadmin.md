@@ -84,7 +84,7 @@ session, webui, …), `edge-bundle/*`, `promote/{plan,bundle,apply}`, `teardown/
 | Onboarding | `onboarding` (wizard, `?step=`) |
 | Factory | `site`, `area`, `machines`, `sectors`, `lines`, `shift`, `team`, `production-targets`, `downtime-reasons` |
 | Edge & PLC | `edge` (edge config and bundle runs), `box` (Box Ops over SSM), `packml-register`, `sensors`, `plc-status` |
-| Access | `users` (app users), `roles`, `cognito-users` ("Login Users") |
+| Access | `users` (app users), `roles`, `cognito-users` ("Login accounts") |
 | Other | `translations`, Customization Hub ↗ (external), `remove-client` (teardown) |
 
 ### Tenant targeting

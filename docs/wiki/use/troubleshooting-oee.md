@@ -74,8 +74,8 @@ Availability, so 0 % OEE is the right answer.
 | Likely cause | What to check | Fix |
 |---|---|---|
 | The line was really stopped | Ask the client, or look at the line's stops for that shift in front4 | Nothing: the number is right |
-| No rated speed on the lead machine | CS Admin → the line's **lead machine** → **Production speed** is empty | Set it (see [Setting up a client, step 4](setting-up-a-client.md#step-4-lines-and-machines)) |
-| The "parts in" or "good parts" counter never moves | CS Admin → **Topology** tab: is the machine green? Then check which counter is set as gross and net ([step 6](setting-up-a-client.md#step-6-plc-connections)) | Fix the sensor tag, or ask the client's integrator what each counter means |
+| No rated speed on the lead machine | CS Admin → the line's **lead machine** → **Production speed** is empty | Set it (see [Setting up a client → Lines and machines](setting-up-a-client.md#step-4-lines-and-machines)) |
+| The "parts in" or "good parts" counter never moves | CS Admin → **Topology** tab: is the machine green? Then check which counter is set as gross and net ([Connect the PLCs](setting-up-a-client.md#step-6-plc-connections)) | Fix the sensor tag, or ask the client's integrator what each counter means |
 | No data at all for the line | See [No data for a line](#no-data-for-a-line) | — |
 
 !!! info "Blank is not 0"
@@ -91,10 +91,10 @@ green, and OEE is still 0 %.
 
 | Likely cause | What to check | Fix |
 |---|---|---|
-| No shifts for that day or time | CS Admin → **Shift**: does a shift cover that time? Without shifts the dashboards stay empty | Create or fix the shift ([step 5](setting-up-a-client.md#step-5-shifts)) |
+| No shifts for that day or time | CS Admin → **Shift**: does a shift cover that time? Without shifts the dashboards stay empty | Create or fix the shift ([Shifts](setting-up-a-client.md#step-5-shifts)) |
 | The factory box is off or has no internet | CS Admin → **Topology** tab: are **all** machines of the client red? [Ingest debug][g-ingest-debug] stage ④ **Write rate** is flat 0 and stage ③ **Queue depth** is 0 (nothing arriving) | Ask the client if the box has power and internet. Then call the platform team |
 | The box is fine but cannot read one PLC | Only the machines of that PLC are red; the others are green | Ask the client if the PLC is on and its cable or network changed. The time shows as **No data** |
-| The line is out of service on purpose | CS Admin → the line's **Line configuration** → **Out of service** card lists a period that covers these days | Nothing, if it is intended. Out-of-service days are left out of OEE and of the production target. Remove the period if it is wrong |
+| The line is out of service on purpose | CS Admin → **Factory → Lines** → the line's settings → **Out of service** card lists a period that covers these days | Nothing, if it is intended. Out-of-service days are left out of OEE and of the production target. Remove the period if it is wrong |
 | Data arrives but Packiot does not know where it belongs (setup not finished) | [Ingest debug][g-ingest-debug] stage ⑤ **Unmapped topics** shows bars | Finish the PLC and machine setup in CS Admin, or call the platform team |
 | Data arrives but OEE stopped being calculated | [CS · Client health][g-cs] → **OEE freshness**: the age keeps climbing, while **Live data freshness** is fine | Call the platform team: the calculation has stopped |
 
@@ -111,7 +111,7 @@ running time. Above 100 % means "more parts than the rated speed allows".
 | Likely cause | What to check | Fix |
 |---|---|---|
 | The rated speed is too low | Ask the client for the nameplate speed of the line and compare with **Production speed** on the lead machine | Correct the speed. Only new results change; ask for a recompute for past days |
-| A counter jumped (PLC restart, counter reset) | Is it one hour or one shift only, with a huge value? | Packiot ignores jumps above a limit set in **Customize → OEE settings → Ignore impossible counter jumps** ([OEE settings](customize/oee-settings.md#ignore-impossible-counter-jumps)). If it still got through, call the platform team |
+| A counter jumped (PLC restart, counter reset) | Is it one hour or one shift only, with a huge value? | Packiot screens out impossible jumps by itself (the old **Ignore impossible counter jumps** setting is retired). If one still got through, call the platform team |
 | Running time is too short (the line ran but Packiot thought it was stopped) | Compare with the line's stops: are there stops while the line was producing? | Check how "running" is decided for this line: **Its own signals** or **Its lead machine** ([OEE settings](customize/oee-settings.md#the-one-question-per-line)) |
 
 !!! tip "The client health averages skip these shifts"
@@ -127,7 +127,7 @@ Quality = good parts out ÷ parts in. It depends only on the two counters.
 
 | What you see | Likely cause | Fix |
 |---|---|---|
-| Above 100 % for a whole shift or day | "Parts in" and "good parts" counters are **swapped**, or a station in the **middle** of the line is set as the output | Fix the sensor tags ([step 6](setting-up-a-client.md#step-6-plc-connections)). The PLC gives numbers, not meanings: ask the client's integrator |
+| Above 100 % for a whole shift or day | "Parts in" and "good parts" counters are **swapped**, or a station in the **middle** of the line is set as the output | Fix the sensor tags ([Connect the PLCs](setting-up-a-client.md#step-6-plc-connections)). The PLC gives numbers, not meanings: ask the client's integrator |
 | A bit above 100 % in a single **hour**, normal for the shift | Parts that entered at the end of one hour come out in the next hour | Normal. Look at the shift or day instead |
 | Much too low | The scrap counter or the "parts in" counter counts something else (for example, it counts twice), or scrap is calculated as in − out but there is a buffer between them | Check the counters with the client. A scrap formula is changed in **Customize → Calculations** ([Calculations](customize/calculations.md)) |
 
@@ -140,7 +140,7 @@ Quality = good parts out ÷ parts in. It depends only on the two counters.
 | The operator did not give a reason yet | The stop is recent | Operators give the reason in the **Operator app** on the tablet. Remind the client |
 | The client's list of reasons is empty or missing the right one | CS Admin → **Downtime Reasons** | Add the reasons the client uses |
 | The stop is on a single machine, but the client looks at the line | For lines that only count parts, a line's stops come from its **lead machine** | Check the line's lead machine in CS Admin. If line stops are still missing, call the platform team (this is set per line on our side) |
-| Very short stops | Stops shorter than the short-stop limit are counted as short stops, not as normal stops (the limits are on the machine; see [step 4](setting-up-a-client.md#step-4-lines-and-machines)) | Normal |
+| Very short stops | Stops shorter than the short-stop limit are counted as short stops, not as normal stops (the limits are on the machine; see [Lines and machines](setting-up-a-client.md#step-4-lines-and-machines)) | Normal |
 
 Time marked **No data** (PLC not readable) is **not** a stop, so it never asks for a reason.
 

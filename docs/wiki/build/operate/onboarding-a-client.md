@@ -35,7 +35,7 @@ controls the numbering) or *captured* from live data and confirmed before cutove
 
 | You need | Why | Where it comes from |
 |---|---|---|
-| A Cognito user in group `cs-admin` | csadmin's cross-tenant access | an existing CS admin, csadmin → Access → Login Users (type `cs`) |
+| A Cognito user in group `cs-admin` | csadmin's cross-tenant access | an existing CS admin, csadmin → Access → Login accounts (type `cs`) |
 | The site list, line list and machine list with the names you want in topics | names become topic segments | the client; intake template `docs/clients/bispharma-intake.md` |
 | Each PLC's host/IP, protocol, rack/slot | PLC connections | the client's integrator |
 | The **meaning** of each PLC register (which address is infeed, outfeed, scrap) | the tag map | the integrator's program, or the client's existing Node-RED `flows.json` (see [worked example](#worked-example-bispharma-sp)) |
@@ -223,7 +223,7 @@ Cutover wires the tag map; it does not by itself make OEE right. Check each item
 2. **Rated speed.** OEE Performance = actual ÷ rated. `apply-line-meters` fills any producing
    equipment that has none with `ONBOARD_DEFAULT_PRODUCTION_SPEED` (default 60); a real value
    always wins. Only the **lead machine's** `production_speed` drives a line's Performance.
-3. **Line meters (line-metered tenants).** In **Lines → line configuration**, click
+3. **Line meters (line-metered tenants).** In **Lines → Line settings**, click
    **Auto-assign from sensors** (`POST /api/onboarding/apply-line-meters`). It reads each
    machine's sensor role from the descriptor (`ProdConsumedCount` = gross/infeed,
    `ProdProcessedCount` = net/outfeed), never the machine name, and fills the line's
@@ -274,11 +274,11 @@ counters red) is a no-go: data flows but cannot be trusted.
 
 | Who | What to create | Where |
 |---|---|---|
-| Client managers (front4) | Cognito user (type `client`) + `identity.users` row with a role whose `permissions.desktop.line` lists the lines and `desktop.screen` the pages | csadmin **Login Users** (creates both, born-linked), then **Users & Roles** / **Roles** |
+| Client managers (front4) | Cognito user (type `client`) + `identity.users` row with a role whose `permissions.desktop.line` lists the lines and `desktop.screen` the pages | csadmin **Login accounts** (creates both, born-linked), then **Users** and **Roles**; the lines each role sees are set in front4 → **Settings → Users and Permissions** |
 | Operators | same, and `identity.users.user_name` must equal the email (operator login looks it up by `user_name`) | csadmin |
 | The operator app for this tenant | a new operator container + vhost + keys: `OPERATOR_<X>_EDGE_API_KEY` (the tenant's `enterprises.api_key`) and a read key in read-api `QUERY_API_KEYS` | stack PR (copy `operator-bispharma`), `/opt/packiot/.env` |
 | Box scanning | on-prem `barcode_edge` opt-in (step 3), or a cloud barcode instance with the tenant's key | [Barcode app](../../understand/components/barcode-app.md) |
-| CS engineers | Cognito user type `cs` (joins `cs-admin`) | csadmin **Login Users** |
+| CS engineers | Cognito user type `cs` (joins `cs-admin`) | csadmin **Login accounts** |
 
 A role with an empty line list makes front4 load a blank workspace; read-api caches
 identity per token, so restart read-api after fixing a role. See
