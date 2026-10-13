@@ -126,7 +126,7 @@
             "required": [ "profile_yaml", "register_sql", "position_sql", "agent_yaml", "tee_node_json" ],
             "properties": {
               "profile_yaml": { "type": "string", "description": "Tenant conversion profile (YAML)." },
-              "register_sql": { "type": "string", "description": "packml_register SQL." },
+              "register_sql": { "type": "string", "description": "SQL that registers the generated equipment topics (topic-routing table)." },
               "position_sql": { "type": "string", "description": "equipments.position backfill SQL (line flow order)." },
               "agent_yaml": { "type": "string", "description": "sparkplug-agent client config (YAML)." },
               "tee_node_json": { "type": "string", "description": "Node-RED tee node (JSON text)." },

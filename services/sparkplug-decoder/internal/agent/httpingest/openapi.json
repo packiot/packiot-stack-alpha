@@ -146,7 +146,7 @@
       "RawTagEnvelope": {
         "type": "object",
         "additionalProperties": true,
-        "description": "Tier-1 raw-tag envelope (ADR-0042 section 2.3). Tag names are metric SUFFIXES; the agent prepends the equipment's packml_topic. Unknown fields are ignored.",
+        "description": "Tier-1 raw-tag envelope (ADR-0042 section 2.3). Tag names are metric SUFFIXES; the agent prepends the equipment's topic. Unknown fields are ignored.",
         "properties": {
           "group": { "type": "string", "description": "Tenant SparkPlug group. `group_id` and `tenant` are accepted as aliases (first non-empty wins)." },
           "group_id": { "type": "string" },
@@ -164,7 +164,7 @@
                 "q": { "type": "boolean", "description": "Quality; absent means good." },
                 "long": { "type": "boolean", "description": "Advisory 64-bit integer type hint." },
                 "ts": { "type": "integer", "format": "int64", "description": "Per-tag time, unix milliseconds; overrides `scan_ts`." },
-                "param": { "type": "integer", "description": "PackML parameter id carried by an id-bearing Parameter metric (e.g. 30701); 0 or absent means none." }
+                "param": { "type": "integer", "description": "Parameter id carried by an id-bearing Parameter metric (e.g. 30701); 0 or absent means none." }
               }
             }
           },
