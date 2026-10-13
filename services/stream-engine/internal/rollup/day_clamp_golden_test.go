@@ -64,7 +64,9 @@ const dayClampSchema = `
 	    changeover_time double precision, scrap double precision, speed double precision,
 	    proportional_target double precision,
 	    -- ADR-0036 §5A lineage columns (T0-2).
-	    computed_at timestamptz, source_watermark timestamptz
+	    computed_at timestamptz, source_watermark timestamptz,
+	    -- Availability exclusions (db/migrations/t-availability-exclusions/01-up.sql).
+	    no_data_time integer NOT NULL DEFAULT 0, out_of_service_time integer NOT NULL DEFAULT 0
 	);
 	CREATE TABLE dayclamp.equipment_oee_hourly (
 	    id_equipment int, ts_value timestamptz, ts_value_production date,
@@ -73,7 +75,9 @@ const dayClampSchema = `
 	    ideal_production double precision, target double precision,
 	    gross double precision, net double precision, downtime double precision,
 	    changeover_time double precision, scrap double precision, speed double precision,
-	    proportional_target double precision
+	    proportional_target double precision,
+	    -- Availability exclusions (db/migrations/t-availability-exclusions/01-up.sql).
+	    no_data_time integer NOT NULL DEFAULT 0, out_of_service_time integer NOT NULL DEFAULT 0
 	);
 
 	-- Injected TRUE production-day length per equipment (seconds). The

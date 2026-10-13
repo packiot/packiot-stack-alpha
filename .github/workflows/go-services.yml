@@ -76,32 +76,79 @@ jobs:
           version: v1.62
           working-directory: services/${{ matrix.service }}
 
-  golden-fixtures:
-    name: stream-engine — golden fixtures (verified SQL vs ephemeral PG)
+  # Golden fixtures = `//go:build golden` tests that run real SQL against an
+  # ephemeral Postgres. Two robustness rules learned the hard way (#1719 found
+  # five tagged tests CI never ran — a `-run 'Golden|BronzeRaw'` name filter
+  # plus a hand-kept package list silently dropped TestCloseFirstOnStartHealsZombie,
+  # TestFinishClosesUpper, TestDayOverMintClampBehaviour and all of analytics-sync):
+  #   1. SELECT BY BUILD TAG, NOT BY NAME. The module set is discovered from the
+  #      tree (every go.mod that owns a golden-tagged file) and each module runs
+  #      `go test -tags golden ./...` with no -run filter. Its ordinary unit tests
+  #      run again here too — cheap (seconds), and the price of never needing a
+  #      name convention or a package list to stay in sync.
+  #   2. A golden test that SKIPS is a test that did not run: every fixture skips
+  #      on an empty DATABASE_URL, so a skip with that message fails the job.
+  # -p 1: packages of one module share the one database and several fixtures
+  # DROP/CREATE the same public tables — package-parallel runs would race.
+  golden-discover:
+    name: golden fixtures — discover modules
     runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.find.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          set -euo pipefail
+          mods=$(grep -rlE --include='*_test.go' '^//go:build .*\bgolden\b' services \
+            | while read -r f; do
+                d=$(dirname "$f")
+                while [ ! -f "$d/go.mod" ]; do d=$(dirname "$d"); done
+                echo "$d"
+              done | sort -u)
+          echo "golden modules:"; echo "$mods"
+          echo "modules=$(echo "$mods" | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  golden-fixtures:
+    name: ${{ matrix.module }} — golden fixtures (verified SQL vs ephemeral PG)
+    needs: golden-discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.golden-discover.outputs.modules) }}
     services:
       postgres:
-        image: postgres:15
+        # Same engine as the dev seed and staging: PostgreSQL 15.17 + TimescaleDB 2.27.0.
+        image: timescale/timescaledb:2.27.0-pg15
         env:
           POSTGRES_PASSWORD: golden
           POSTGRES_DB: golden
         ports: ['5432:5432']
+        # -h 127.0.0.1: the image's init phase runs a socket-only temp server, so a
+        # TCP probe only goes healthy once the real server is up.
         options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s
-          --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1" --health-interval 5s
+          --health-timeout 5s --health-retries 20
     defaults:
       run:
-        working-directory: services/stream-engine
+        working-directory: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: services/stream-engine/go.mod
-          cache-dependency-path: services/stream-engine/go.sum
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: go vet (golden tag)
+        run: go vet -tags golden ./...
       - name: golden fixture tests
         env:
           DATABASE_URL: postgres://postgres:golden@localhost:5432/golden?sslmode=disable
-        # -run matches by test NAME: a `golden`-tagged test whose name lacks "Golden" (or a package
-        # missing from this list) compiles but never runs. BronzeRaw = internal/writers
-        # bronze_raw_golden_test.go (ADR-0036 B1 collision + immutability).
-        run: go test -tags golden -run 'Golden|BronzeRaw' ./internal/rollup/ ./internal/events/ ./internal/pocontrol/ ./internal/writers/
+        run: |
+          set -o pipefail
+          go test -tags golden -p 1 -count=1 -v ./... 2>&1 | tee golden.log | grep -E '^(--- |FAIL|ok )'
+          if grep -n 'DATABASE_URL not set' golden.log; then
+            echo "::error::a golden fixture skipped for lack of a database — it did not run"
+            exit 1
+          fi
