@@ -1092,12 +1092,13 @@ services:
       # ${POSTGRES_USER}, so FORCE ROW LEVEL SECURITY co-enforces the tenant fence.
       # REQUIRED before this file deploys: t276 applied on the prod DB, the role
       # given LOGIN + a password (ALTER ROLE readapi_ro LOGIN PASSWORD …, one-time,
-      # out of band), and READAPI_RO_PASSWORD in /opt/packiot/.env. The `:?` makes
+      # out of band), and READAPI_RO_PASSWORD in /opt/packiot/.env (Secrets Manager
+      # packiot/production/internal-keys on the release branch). The `:?` makes
       # compose refuse to start rather than run read-api as the superuser or with
       # an empty password. Rollback: READAPI_RO_USER=<superuser> +
       # READAPI_RO_PASSWORD=$POSTGRES_PASSWORD in .env.
       DB_USER: ${READAPI_RO_USER:-readapi_ro}
-      DB_PASSWORD: ${READAPI_RO_PASSWORD:?set READAPI_RO_PASSWORD in /opt/packiot/.env (readapi_ro login, t276)}
+      DB_PASSWORD: ${READAPI_RO_PASSWORD:?READAPI_RO_PASSWORD must be set in /opt/packiot/.env (packiot/production/internal-keys)}
       DB_NAME: ${POSTGRES_DB}
       REFDATA_FLOW: f3
       # Single DB: F3 target IS the main `packiot` pool (no packiot_analytics).
