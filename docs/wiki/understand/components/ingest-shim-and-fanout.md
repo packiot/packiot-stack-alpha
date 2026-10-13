@@ -53,7 +53,8 @@ Response codes (`internal/httpserver/server.go`):
 | Code | When | Metric outcome (`ingest_shim_requests_total{outcome}`) |
 |---|---|---|
 | 202 | every copy confirmed by the broker | `published` |
-| 400 | empty, too large, unparseable, or no topic/group found | `rejected_bad` |
+| 400 | empty, unparseable, or no topic/group found | `rejected_bad` |
+| 413 | body over `MAX_BODY_BYTES` | `rejected_bad` |
 | 401 | missing or wrong `X-Ingest-Key` (constant-time compare) | `rejected_auth` |
 | 403 | first segment of `topic`/`group`/`group_id`/first metric name ≠ `SCOPE_GROUP` | `rejected_scope` |
 | 503 | any publish copy nacked / timed out | `publish_failed` |

@@ -39,7 +39,7 @@
         ],
         "operationId": "postTags",
         "summary": "Ingest one raw tag envelope",
-        "description": "Accepts one scan's worth of PLC readings from a connectivity plane (a client's Node-RED tee or the Go PLC reader).\n\n**Order of checks**: `X-Ingest-Key` (401) → body read under AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB; over the cap, unreadable or empty → 400) → tenant routing / scope (403) → envelope decode (400) → optional PLC link report recorded → tags fed to the tenant pipeline → 202.\n\n**Tenant scoping**: single-tenant agents accept an envelope with no group and reject a different declared group (403 `out-of-scope group`). Multi-tenant agents (the shared staging front door) require a group from the body (`group`, then `group_id`, then `tenant`) or, failing that, the `X-Ingest-Group` header; a missing or unknown group is 403. One tenant's tags can never reach another tenant's pipeline.\n\n**Side effects**: each tag whose metric suffix is in the tenant's tag map is written to the agent's in-memory tag store under the equipment's SparkPlug topic and published upstream as SparkPlug B data (the cloud decoder then writes it to the database). Tags not in the tag map are dropped and counted in a metric, not rejected, so `accepted` may be lower than `total`. When the body carries `link` with `endpoint` and a positive `scan_ts`, one PLC connection tick is added to `silver.plc_link_minutes` (tenant × endpoint × minute; used to tell \"PLC unreachable\" apart from \"line stopped\").\n\n**Idempotency**: not deduplicated. Readings are absolute values at a timestamp, so re-posting repeats samples rather than adding to them; the link tick is counted again.\n\n**Limits**: one body ≤ AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB). No rate limit. An empty `tags` list is valid (a heartbeat, or a failed PLC read reported only through `link`).",
+        "description": "Accepts one scan's worth of PLC readings from a connectivity plane (a client's Node-RED tee or the Go PLC reader).\n\n**Order of checks**: `X-Ingest-Key` (401) → body read under AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB; over the cap → 413; unreadable or empty → 400) → tenant routing / scope (403) → envelope decode (400) → optional PLC link report recorded → tags fed to the tenant pipeline → 202.\n\n**Tenant scoping**: single-tenant agents accept an envelope with no group and reject a different declared group (403 `out-of-scope group`). Multi-tenant agents (the shared staging front door) require a group from the body (`group`, then `group_id`, then `tenant`) or, failing that, the `X-Ingest-Group` header; a missing or unknown group is 403. One tenant's tags can never reach another tenant's pipeline.\n\n**Side effects**: each tag whose metric suffix is in the tenant's tag map is written to the agent's in-memory tag store under the equipment's SparkPlug topic and published upstream as SparkPlug B data (the cloud decoder then writes it to the database). Tags not in the tag map are dropped and counted in a metric, not rejected, so `accepted` may be lower than `total`. When the body carries `link` with `endpoint` and a positive `scan_ts`, one PLC connection tick is added to `silver.plc_link_minutes` (tenant × endpoint × minute; used to tell \"PLC unreachable\" apart from \"line stopped\").\n\n**Idempotency**: not deduplicated. Readings are absolute values at a timestamp, so re-posting repeats samples rather than adding to them; the link tick is counted again.\n\n**Limits**: one body ≤ AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB). No rate limit. An empty `tags` list is valid (a heartbeat, or a failed PLC read reported only through `link`).",
         "parameters": [
           {
             "$ref": "#/components/parameters/IngestGroup"
@@ -177,19 +177,13 @@
             }
           },
           "400": {
-            "description": "`payload too large` (over AGENT_INGEST_MAX_BODY_BYTES), `cannot read body`, `empty body`, or `undecodable envelope` (malformed JSON, a tag with an empty `metric`, or a non-scalar `value`). Nothing is fed to the pipeline. Note: on a multi-tenant agent, malformed JSON without an `X-Ingest-Group` header is a 403 `missing group (...)` instead, because routing runs before decoding.",
+            "description": "`cannot read body`, `empty body`, or `undecodable envelope` (malformed JSON, a tag with an empty `metric`, or a non-scalar `value`). Nothing is fed to the pipeline. Note: on a multi-tenant agent, malformed JSON without an `X-Ingest-Group` header is a 403 `missing group (...)` instead, because routing runs before decoding.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
                 "examples": {
-                  "tooLarge": {
-                    "summary": "Body over the cap",
-                    "value": {
-                      "error": "payload too large"
-                    }
-                  },
                   "empty": {
                     "summary": "Empty body",
                     "value": {
@@ -214,6 +208,24 @@
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "description": "`payload too large`: the body exceeds AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB). Nothing is fed to the pipeline.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over AGENT_INGEST_MAX_BODY_BYTES",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -225,7 +237,7 @@
         ],
         "operationId": "postCounters",
         "summary": "Ingest a legacy numeric counter envelope",
-        "description": "Single-tenant agents with AGENT_NUMERIC_INGEST_ENABLED=true only; otherwise this path is not mounted (404). Not proxied by any public host.\n\nAccepts the legacy `counterData: [{id, value}]` shape (flat, or nested per endpoint under `counters`; both are flattened into one list), translates each numeric count index to a canonical tag through the tenant's count-index table, and feeds the same pipeline as `POST /v1/tags` (ADR-0045 option B).\n\n**Order of checks**: `X-Ingest-Key` (401) → body read under the cap (400) → scope check (403 when a declared `group`/`group_id`/`tenant` differs from the agent's scope; an absent group is accepted) → envelope decode (400) → translate → 202.\n\n**Side effects**: translated tags are applied to the tag store and published upstream as SparkPlug B, exactly like `/v1/tags`. Count ids with no canonical metric are counted (`unmapped_index` and a Prometheus counter used as an onboarding data-quality signal), not rejected. No `link` reporting on this route.\n\n**Timestamps**: per-counter `ts`, else the envelope `timestamp`, else `scan_ts`. Always send one of them; with none, the reading carries timestamp 0.\n\n**Endpoint**: every counter is attributed to the envelope `endpoint` (or `gateway`); the per-group `counters[].endpoint` is accepted but not used for translation.\n\n**Idempotency**: not deduplicated; counter values are absolute, so a retry repeats samples.\n\n**Limits**: same body cap as `/v1/tags` (default 1 MiB). No rate limit.",
+        "description": "Single-tenant agents with AGENT_NUMERIC_INGEST_ENABLED=true only; otherwise this path is not mounted (404). Not proxied by any public host.\n\nAccepts the legacy `counterData: [{id, value}]` shape (flat, or nested per endpoint under `counters`; both are flattened into one list), translates each numeric count index to a canonical tag through the tenant's count-index table, and feeds the same pipeline as `POST /v1/tags` (ADR-0045 option B).\n\n**Order of checks**: `X-Ingest-Key` (401) → body read under the cap (413 over it, 400 unreadable or empty) → scope check (403 when a declared `group`/`group_id`/`tenant` differs from the agent's scope; an absent group is accepted) → envelope decode (400) → translate → 202.\n\n**Side effects**: translated tags are applied to the tag store and published upstream as SparkPlug B, exactly like `/v1/tags`. Count ids with no canonical metric are counted (`unmapped_index` and a Prometheus counter used as an onboarding data-quality signal), not rejected. No `link` reporting on this route.\n\n**Timestamps**: per-counter `ts`, else the envelope `timestamp`, else `scan_ts`. Always send one of them; with none, the reading carries timestamp 0.\n\n**Endpoint**: every counter is attributed to the envelope `endpoint` (or `gateway`); the per-group `counters[].endpoint` is accepted but not used for translation.\n\n**Idempotency**: not deduplicated; counter values are absolute, so a retry repeats samples.\n\n**Limits**: same body cap as `/v1/tags` (default 1 MiB). No rate limit.",
         "requestBody": {
           "required": true,
           "content": {
@@ -355,19 +367,13 @@
             }
           },
           "400": {
-            "description": "`payload too large`, `cannot read body`, `empty body`, or `undecodable counter envelope` (malformed JSON or a field of the wrong JSON type).",
+            "description": "`cannot read body`, `empty body`, or `undecodable counter envelope` (malformed JSON or a field of the wrong JSON type).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
                 "examples": {
-                  "tooLarge": {
-                    "summary": "Body over the cap",
-                    "value": {
-                      "error": "payload too large"
-                    }
-                  },
                   "undecodable": {
                     "summary": "Bad JSON or wrong field types",
                     "value": {
@@ -408,6 +414,24 @@
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "description": "`payload too large`: the body exceeds AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB). Nothing is fed to the pipeline.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over AGENT_INGEST_MAX_BODY_BYTES",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
