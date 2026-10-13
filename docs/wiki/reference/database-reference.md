@@ -9,7 +9,7 @@ last_verified: 2026-09-28
 > **Layer 4 · Reference** — one line per table: grain, writer, main reader, retention.
 > Staging `packiot_analytics` and the historian gateway, read from the live catalog on
 > 2026-09-28. For lookups; explanations are in the linked pages.
-> Up: [Analytics DB](../subsystems/analytics-db.md)
+> Up: [Analytics DB](../understand/subsystems/analytics-db.md)
 
 Abbreviations: **SE** = `stream-engine` (oeecloud-worker), **EA** = `edge-api`,
 **RA** = `read-api`, **AS** = `analytics-sync` / `legacy-replicator`, **BS** =
@@ -141,6 +141,6 @@ Abbreviations: **SE** = `stream-engine` (oeecloud-worker), **EA** = `edge-api`,
 | Superset | `bi.staging.packiot.app` |
 | Nightly dump bucket | `packiot-staging-db-backups-<account>` |
 
-See also: [Analytics DB schemas](../components/analytics-db-schemas.md) ·
-[Timescale jobs & retention](../components/timescale-jobs-and-retention.md) ·
-[Historian gateway](../components/historian-gateway.md) · [DBA guide](../operations/dba-guide.md)
+See also: [Analytics DB schemas](../understand/components/analytics-db-schemas.md) ·
+[Timescale jobs & retention](../understand/components/timescale-jobs-and-retention.md) ·
+[Historian gateway](../understand/components/historian-gateway.md) · [DBA guide](../build/operate/dba-guide.md)

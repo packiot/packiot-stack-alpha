@@ -9,14 +9,14 @@ last_verified: 2026-09-28
 > **Layer 4 · Reference** — every environment variable set in `compose.staging.yml`, grouped
 > by service, with its staging value (secrets shown only as "from `.env`") and a one-line
 > meaning. For looking up a knob; follow the links for how it behaves.
-> Up: [Platform & operations](../subsystems/platform.md) · Detail: [Compose topology](../components/compose-topology.md)
+> Up: [Platform & operations](../understand/subsystems/platform.md) · Detail: [Compose topology](../understand/components/compose-topology.md)
 
 How values arrive: `${VAR}` is substituted from `/opt/packiot/.env` (symlinked as `.env`);
 services with `env_file: [.env]` also receive **every** key in that file. "from `.env`" means
 the value is a secret or host-specific and lives only there (sourced from Secrets Manager, see
-[Platform § secrets](../subsystems/platform.md#secrets-path)). "Default" is the code default
+[Platform § secrets](../understand/subsystems/platform.md#secrets-path)). "Default" is the code default
 when it differs from staging and was verified in source. Changing a value takes a recreate:
-[runbooks](../operations/runbooks.md#recreate-a-single-service).
+[runbooks](../build/operate/runbooks.md#recreate-a-single-service).
 
 ## Host-level keys in `/opt/packiot/.env`
 
@@ -32,7 +32,7 @@ when it differs from staging and was verified in source. Changing a value takes 
 
 ## Edge ingress and decoding
 
-Detail: [Ingestion](../subsystems/ingestion.md), [Edge](../subsystems/edge.md).
+Detail: [Ingestion](../understand/subsystems/ingestion.md), [Edge](../understand/subsystems/edge.md).
 
 ### sparkplug-decoder
 
@@ -117,7 +117,7 @@ Detail: [Ingestion](../subsystems/ingestion.md), [Edge](../subsystems/edge.md).
 
 ### stream-engine
 
-Detail: [stream-engine](../components/stream-engine.md), [Compute](../subsystems/compute.md).
+Detail: [stream-engine](../understand/components/stream-engine.md), [Compute](../understand/subsystems/compute.md).
 
 | Variable | Staging | Default | Meaning |
 |---|---|---|---|
@@ -165,7 +165,7 @@ Detail: [stream-engine](../components/stream-engine.md), [Compute](../subsystems
 
 ## Legacy bridge
 
-Detail: [Legacy bridge](../subsystems/legacy-bridge.md), [analytics-sync](../components/analytics-sync.md).
+Detail: [Legacy bridge](../understand/subsystems/legacy-bridge.md), [analytics-sync](../understand/components/analytics-sync.md).
 
 | Service | Variable | Staging | Meaning |
 |---|---|---|---|
@@ -189,7 +189,7 @@ Detail: [Legacy bridge](../subsystems/legacy-bridge.md), [analytics-sync](../com
 
 ### edge-api
 
-Detail: [edge-api](../components/edge-api.md). Also receives all of `.env`.
+Detail: [edge-api](../understand/components/edge-api.md). Also receives all of `.env`.
 
 | Variable | Staging | Meaning |
 |---|---|---|
@@ -215,7 +215,7 @@ Detail: [edge-api](../components/edge-api.md). Also receives all of `.env`.
 
 ### read-api
 
-Detail: [read-api](../components/read-api.md).
+Detail: [read-api](../understand/components/read-api.md).
 
 | Variable | Staging | Meaning |
 |---|---|---|
@@ -253,7 +253,7 @@ Detail: [read-api](../components/read-api.md).
 
 ## Identity
 
-Detail: [oauth2-proxy and Cognito](../components/oauth2-proxy-and-cognito.md).
+Detail: [oauth2-proxy and Cognito](../understand/components/oauth2-proxy-and-cognito.md).
 
 | Variable (`oauth2-proxy`) | Staging | Meaning |
 |---|---|---|
@@ -267,7 +267,7 @@ Detail: [oauth2-proxy and Cognito](../components/oauth2-proxy-and-cognito.md).
 
 ## Observability and tooling
 
-Detail: [Observability](../components/observability.md).
+Detail: [Observability](../understand/components/observability.md).
 
 | Service | Variable | Staging | Meaning |
 |---|---|---|---|
@@ -290,6 +290,6 @@ files.
 
 | File / service | Key variables | Meaning |
 |---|---|---|
-| `compose.historian-gateway.yml` / `historian-gateway` | `POSTGRES_PASSWORD` (`HIST_GW_PASSWORD`), `POSTGRES_DB=packiot_historian`, `FDW_HOST/PORT/DB/USER/PASS`, `HISTORIAN_BUCKET`, `HIST_AWS_KEY`, `HIST_AWS_SECRET`, `CLOUDBEAVER_HISTRO_PASSWORD`, `HISTGW_RO_PASS`, `HIST_GW_SVC_PASSWORD` | gateway superuser, hot FDW source, cold S3 bucket + scoped key, least-privilege roles — see [historian gateway](../components/historian-gateway.md) |
+| `compose.historian-gateway.yml` / `historian-gateway` | `POSTGRES_PASSWORD` (`HIST_GW_PASSWORD`), `POSTGRES_DB=packiot_historian`, `FDW_HOST/PORT/DB/USER/PASS`, `HISTORIAN_BUCKET`, `HIST_AWS_KEY`, `HIST_AWS_SECRET`, `CLOUDBEAVER_HISTRO_PASSWORD`, `HISTGW_RO_PASS`, `HIST_GW_SVC_PASSWORD` | gateway superuser, hot FDW source, cold S3 bucket + scoped key, least-privilege roles — see [historian gateway](../understand/components/historian-gateway.md) |
 | `compose.superset.yml` | `SUPERSET_SECRET_KEY`, `SUPERSET_GUEST_TOKEN_JWT_SECRET`, `SUPERSET_DB_PASSWORD`, `POSTGRES_HOST_UPSTREAM`, `SUPERSET_COGNITO_*`, `SUPERSET_ADMIN_*`, `SUPERSET_FRAME_ANCESTOR`, `SUPERSET_OEE_DASHBOARD_UUID`, `SUPERSET_EMBED_TARGET_DASHBOARD`, `SUPERSET_REDIS_HOST` | Superset secrets, metadata DB, OIDC, embed origin and dashboard |
 | `compose.onprem-edge.yml` (`.env.onprem`) | `TENANT`, `AGENT_INGEST_API_KEY`, `DASHBOARD_PORT` | on-prem box identity, local ingest key, dashboard port |
