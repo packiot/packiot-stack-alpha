@@ -2,7 +2,7 @@
 title: Ingestion
 layer: 2
 owner_area: ingestion
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Ingestion
 
@@ -21,9 +21,10 @@ immutable raw row (Bronze) and one merged row per equipment-second (Silver). It 
 accepted message and never count a unit twice. Everything downstream (OEE, dashboards, historian)
 reads what this subsystem writes.
 
-This page describes the **new stack on staging**. Most production clients still run on the legacy
-platform (edge Node-RED → Google Pub/Sub → oeecloud Node-RED → legacy DB); `compose.production.yml`
-defines the same services for the new-stack production host.
+This page describes the **new stack on staging**. Every production client still runs on the legacy
+platform (edge Node-RED → Google Pub/Sub → oeecloud Node-RED → legacy DB). `compose.production.yml`
+defines the decoder and ingest-shim (profile `client-ingest`) and stream-engine for the new-stack
+production host, which is not promoted (draft PR #1653).
 
 ## Boundaries
 
@@ -51,10 +52,10 @@ defines the same services for the new-stack production host.
 ```text
  edge publishers on staging                           cloud (staging app host)
  ┌───────────────────────────────┐
- │ sparkplug-agent-shared (HTTP  │  Sparkplug B
- │  front-door ← factory tees)   │  spBv1.0/<GROUP>/…     ┌───────────────────────────┐
- │ sparkplug-agent-cpack, plc-sim│ ─────────────────────▶ │ Mosquitto :1883           │
- │ bispharma-twin, s7-reader     │                        └────────────┬──────────────┘
+ │ sparkplug-agent-shared (HTTPS │  Sparkplug B
+ │  front doors ← factory tees)  │  spBv1.0/<GROUP>/…     ┌───────────────────────────┐
+ │ optional simulators: plc-sim, │ ─────────────────────▶ │ Mosquitto :1883           │
+ │ bispharma-twin, s7 profile    │                        └────────────┬──────────────┘
  └───────────────────────────────┘                                     │ spBv1.0/#  QoS 0
                                                                        ▼
                                           ┌──────────────────────────────────────────────┐
@@ -78,20 +79,29 @@ defines the same services for the new-stack production host.
 ```
 
 1. **Publish.** An edge publisher sends Sparkplug B (NBIRTH once with aliases, then NDATA with values)
-   under its group, for example `CPACK`. Real client data reaches the cloud through the sparkplug
-   agents' HTTP front-door; `plc-sim` and the twins are staging simulators.
+   under its group, for example `CPACK`. Real client data reaches the cloud through the shared
+   agent's HTTPS front doors (see [Edge](edge.md#how-it-works)); `plc-sim`, `bispharma-twin`
+   (`BISPHARMA_TWIN_ENABLED`, default off) and the `s7` profile are staging simulators.
 2. **Decode.** The decoder resolves aliases, and for every `Prod{Processed,Consumed,Defective}Count`
-   runs Calc: first sample after a restart only seeds the baseline, resets reseed, 16-bit wraps count
-   through, impossible jumps are clamped to a per-client margin, and a speed guard drops glitches.
-   It emits `value` = increment and `counter` = absolute.
-3. **Store and forward.** The envelope is written to a local SQLite outbox, then published to `oee`
-   with routing key `sparkplug.data.<tenant>` and a broker confirm; the row is deleted on confirm.
-4. **Route.** RabbitMQ delivers to `stream-engine-q-<tenant>`. The fan-out also copies CPACK to the
-   sandbox tenant. Unroutable messages go to `oee-unroutable-q`.
-5. **Write.** stream-engine resolves each metric's topic to an equipment, applies the increment sanity
-   clamp, and in one batch appends Bronze and upserts Silver. Unregistered topics are skipped and
-   counted. On a DB error the message is retried (30 s, up to 5 times) and then parked in a
-   `-failed` queue.
+   runs Calc: the first sample of a new counter seeds the baseline, a counter reset re-seeds
+   (reset heal), and a rate guard drops glitches (machines with no speed sensor fall back to
+   counts-only). It emits `value` = increment and `counter` = absolute. The per-counter spike
+   clamp (`CALC_COUNTER_SPIKE_MARGIN`) is **inert on staging** since 2026-09-30 (margin `0`,
+   "no clamps distorting data"); a client can still set a margin in its OEE profile.
+3. **Store and forward.** The envelope and the counter baselines it was computed from are written
+   to the SQLite outbox in one transaction (`CALC_STATE_DURABLE`, default on since 2026-10-09,
+   #1671/#1672), so a decoder restart neither loses nor double-counts a delta. The envelope is then
+   published to exchange `oee` with routing key `sparkplug.data.<tenant>` and a broker confirm; the
+   row is deleted on confirm.
+4. **Route.** RabbitMQ delivers to `stream-engine-q-<tenant>`; stream-engine declares one queue
+   triple per tenant (`stream-engine-q-<t>`, `…-retry-30s`, `…-failed`) for tenants discovered from
+   `packml_register` and listed in `WORKER_TENANT_ALLOWLIST`, re-discovered every 60 s. When
+   `FANOUT_CPACK_TO_SBXCPACK_ENABLED=true`, `oeecloud-fanout` copies CPACK envelopes to the sandbox
+   group. Messages no queue binds go to `oee-unroutable-q`.
+5. **Write.** stream-engine resolves each metric's topic to an equipment, rejects phantom increments
+   (increment sanity check; each rejection is a `data_quality_event`), and in one batch appends
+   Bronze and upserts Silver. Unregistered topics are skipped and counted. On a DB error the message
+   goes to the retry queue (30 s TTL, up to 5 times) and then to `stream-engine-q-<t>-failed`.
 
 After this, TimescaleDB continuous aggregates roll Silver into minute and hour buckets (analytics DB)
 and the [compute](compute.md) jobs build OEE.
@@ -105,23 +115,28 @@ Typical latency on staging: 4–7 s from PLC to Silver (see
 |---|---|---|---|
 | in | MQTT 3.1.1, QoS 0 | `spBv1.0/<GROUP>/{N,D}{BIRTH,DATA,DEATH}/<node>[/<device>]` | agents, simulators → sparkplug-decoder |
 | in | HTTPS | `POST /ingest/sparkplug` on ingest-shim `:8444` (`X-Ingest-Key`) | Incoplast tee → ingest-shim |
-| internal | AMQP 0.9.1 | exchange `oee`, keys `sparkplug.data.<tenant>` / `sparkplug.data` | decoder, shim, fan-out → stream-engine |
-| out | MQTT | `spBv1.0/<GROUP>/NCMD/<node>` Rebirth (off on staging) | decoder → edge node |
+| internal | AMQP 0.9.1 | exchange `oee`, keys `sparkplug.data.<tenant>` (and the legacy shared key `sparkplug.data`, bound to `stream-engine-q`) | decoder, shim, fan-out → stream-engine |
+| out | MQTT | `spBv1.0/<GROUP>/NCMD/<node>` Rebirth (`ET_REQUEST_REBIRTH_ENABLED`, default off) | decoder → edge node |
+| out | HTTP | `GET` read-api internal device resolver (`BIRTH_BOUND_RESOLVER=refdata`; only used when `BIRTH_BOUND_ROUTING` is on, which it is not on staging) | decoder → read-api |
 | out | SQL | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | stream-engine → analytics DB |
 | out | SQL | `silver.equipment_values`, `silver.equipment_events`, `silver.equipment_live_metrics`, `silver.data_quality_event` | stream-engine → analytics DB |
 | out | SQL | `core.production_orders`, `gold.production_orders_runtime`, `silver.equipment_live_job`, `identity.user_logs` (PO lifecycle parameters) | stream-engine → analytics DB |
-| lookup | SQL | `packml_register` (view over `core.topic_routing`), `equipments`, `areas`, `sites`, `shift_hours`, `client_descriptors` | analytics DB → decoder / stream-engine |
+| lookup | SQL | `packml_register` (view over `core.topic_routing`), `equipments`, `areas`, `sites`, `shift_hours`, `client_descriptors` (OEE profile) | analytics DB → decoder / stream-engine |
+
+ingest-shim publishes its OpenAPI document at `GET /openapi.json`; see the generated
+[ingest-shim](../../reference/api/ingest-shim.md) page.
 
 ## Data it owns
 
 | Data | Where | Lifecycle |
 |---|---|---|
 | Retained Sparkplug births | Mosquitto volume `mosquitto-data` | until replaced; clients expire after 1 h offline |
-| Per-counter baselines, alias tables | decoder memory | lost on restart; reseeded by the first sample / next birth |
-| Undelivered envelopes | decoder SQLite outbox, volume `edge_transformer_outbox` | deleted on broker confirm; capped at 100 000 rows (oldest dropped) |
+| Per-counter baselines | decoder memory, checkpointed in the outbox DB (`calc_state`) | restored at boot (`calc_state_restored_entries` gauge) |
+| Alias tables | decoder memory | rebuilt from the next birth |
+| Undelivered envelopes | decoder SQLite outbox `/var/lib/edge-transformer/outbox.db`, volume `edge_transformer_outbox` | deleted on broker confirm; capped at 100 000 rows (oldest dropped) |
 | In-flight messages | RabbitMQ queues (durable, persistent) | until acked; `-failed` and `oee-unroutable-q` until purged |
-| Raw samples | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | append-only (no-mutate trigger); retention set in the analytics DB |
-| Clean facts | `silver.equipment_values` (unique `(ts_value, id_equipment)`) | raw telemetry is cut after ~90 days; history moves to the [historian](historian.md) |
+| Raw samples | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | append-only (no-mutate trigger); 90 days |
+| Clean facts | `silver.equipment_values` (unique `(ts_value, id_equipment)`) | 90 days; a daily cold copy goes to the [historian](historian.md) |
 
 Retention and compression policies are owned by the analytics DB; see
 [Timescale jobs & retention](../components/timescale-jobs-and-retention.md).
@@ -130,16 +145,17 @@ Retention and compression policies are owned by the analytics DB; see
 
 | Knob | Service | Staging | Why it matters |
 |---|---|---|---|
-| `WORKER_TENANT_ALLOWLIST` | stream-engine | `cpack,sbxcpack,bispharmastaging` | a tenant not listed has no queue; its data goes to `oee-unroutable-q` |
+| `WORKER_TENANT_ALLOWLIST` | stream-engine | `cpack,sbxcpack,bispharmastaging,incoplast` (compose default; `.env` may override) | a tenant not listed has no queue; its data goes to `oee-unroutable-q` |
 | `packml_register` active rows | analytics DB | per tenant | a topic with no active row is skipped at write |
-| `F3_PER_TENANT_ROUTING` | decoder | `true` | per-tenant routing keys (needs `LEGACY_INGEST_ENABLED=true` on stream-engine to consume them) |
+| `F3_PER_TENANT_ROUTING` | decoder | `true` | per-tenant routing keys (stream-engine consumes them only with `LEGACY_INGEST_ENABLED=true`, the default) |
 | `CALC_CUTOVER_REFACTORED`, `USE_GO_PORT` | decoder | `true` | emit increments, not raw totalizers |
-| `CALC_COUNTER_SPIKE_MARGIN`, `OEE_PROFILE_FROM_DB` | decoder | `10`, `true` | spike clamp; per-client override from the OEE profile |
+| `CALC_STATE_DURABLE` | decoder | default `true` | checkpoint counter baselines with the outbox; `false` = in-memory only (a restart loses one delta per counter) |
+| `CALC_COUNTER_SPIKE_MARGIN`, `OEE_PROFILE_FROM_DB` | decoder | `0`, `true` | global spike clamp inert; a client's OEE profile can still set a per-equipment margin |
 | `CALC_NO_SPEED_GUARD_FALLBACK`, `COUNTERS_ONLY_*` | decoder | on | machines without a speed sensor still produce counts |
 | `PHASE9_LINE_AGG_ENABLED` | decoder | `true` | line-level counts derived from members (only with no other line writer) |
-| `INCREMENT_SANITY_CLAMP_*` | stream-engine | on, fraction 0.5 | last guard before Silver |
+| `INCREMENT_SANITY_CLAMP_*` | stream-engine | on, spike fraction 0.5 | rejects phantom increments before Silver and records each as a data-quality event |
 | `BRONZE_RAW_APPEND` | stream-engine | `true` | Bronze landing zone |
-| `COMPOSE_PROFILES` | host `.env` | not in git | which edge publishers run (`plc-sim` vs `cpack-tee` must never both run) |
+| `COMPOSE_PROFILES` | host `.env` | not in git; the deploy always adds `shared-tee` | which publishers run; a simulator must never publish under a real client's group |
 
 ## Failure modes & signals
 
@@ -151,7 +167,8 @@ Retention and compression policies are owned by the analytics DB; see
 | Tenant not allowlisted | `OeeUnroutableMessages` | `WORKER_TENANT_ALLOWLIST` |
 | DB write errors | `BatchWriteErrors`, messages in `stream-engine-q-<t>-failed` | stream-engine logs `handler error, nacked to retry` |
 | Double source (two publishers, same group) | production ~2× or huge spikes; `INVARIANT_CLAMPED_INCREMENT` events | active compose profiles, Sparkplug edge node ids in decoder logs |
-| Counter spikes after restarts / resets | `incr == val` rows; clamp events | decoder reset-heal / first-observation seed, stream-engine clamp |
+| Counter spikes after restarts / resets | `incr == val` rows; `INVARIANT_CLAMPED_INCREMENT` events | decoder reset-heal / first-observation seed, stream-engine sanity check |
+| Lost delta after a decoder restart | per-stream gap of one reading after each deploy | `CALC_STATE_DURABLE` must stay on (fixed 2026-10-09) |
 | Sequence gaps | `SparkplugSeqGapStream` | network between agent and broker |
 
 ## History & decisions
@@ -171,12 +188,15 @@ Retention and compression policies are owned by the analytics DB; see
 | 2026-08-19, 2026-09-14 | Queue sprawl → `WORKER_TENANT_ALLOWLIST` |
 | 2026-09-25 | Definitions file lost on reboot; decoder silent after starting before RabbitMQ (#1447) |
 | 2026-09-25/27 | Synthetic writers on real CPACK L5 topics (#1460); spike-guard window bug (#1462) |
+| 2026-09-30 | Decoder spike clamp retired (margin 0): it fabricated values; the ingest sanity check rejects phantoms instead |
+| 2026-10-09 | Every decoder restart lost one delta per counter stream (baselines in memory) → baselines checkpointed in the outbox transaction (#1671/#1672) |
 
 ## Go deeper
 
 - [Brokers](../components/brokers.md) — Mosquitto and RabbitMQ topology, users, retry loop
 - [sparkplug-decoder](../components/sparkplug-decoder.md) — Calc decision tree, outbox, env
-- [ingest-shim and oeecloud-fanout](../components/ingest-shim-and-fanout.md)
+- [ingest-shim and oeecloud-fanout](../components/ingest-shim-and-fanout.md) · API: [ingest-shim](../../reference/api/ingest-shim.md)
 - [stream-engine](../components/stream-engine.md) — consumer, writers, clamp
 - [Analytics DB](analytics-db.md) and [analytics DB schemas](../components/analytics-db-schemas.md) — where Bronze and Silver live
 - [Compute](compute.md) — what happens after Silver
+- [Service catalog](../../reference/service-catalog.md) — README, dashboard and API page per service
