@@ -14,16 +14,20 @@ on:
       - 'docs/wiki/**'
       - 'docs/WIKI-STYLE.md'
       - 'docs/adr/**'
-      - 'wiki/**'
+      - 'docs/api/openapi/**'
       - 'scripts/build-wiki.sh'
+      - 'scripts/wiki-openapi-to-md.py'
+      - 'wiki/**'
       - '.github/workflows/build-wiki.yml'
   pull_request:
     paths:
       - 'docs/wiki/**'
       - 'docs/WIKI-STYLE.md'
       - 'docs/adr/**'
-      - 'wiki/**'
+      - 'docs/api/openapi/**'
       - 'scripts/build-wiki.sh'
+      - 'scripts/wiki-openapi-to-md.py'
+      - 'wiki/**'
       - '.github/workflows/build-wiki.yml'
   workflow_dispatch: {}
 

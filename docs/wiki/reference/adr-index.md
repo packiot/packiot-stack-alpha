@@ -8,7 +8,7 @@ last_verified: 2026-09-28
 
 > **Layer 4 · Reference** — every Architecture Decision Record in `docs/adr/`: number, title,
 > status as written in the file, and the decision in one line. For finding why something is
-> the way it is. Up: [Architecture overview](../architecture/overview.md)
+> the way it is. Up: [Architecture overview](../understand/architecture/overview.md)
 
 How to read this table:
 
@@ -93,4 +93,4 @@ Execution plans and runbooks that belong to ADRs (not ADRs themselves), e.g.
 `adr-0047-packml-is-internal-wire-contract.md`, `production-buildout-roadmap.md`,
 `production-recut-runbook.md`, `production-w1-db-tier-rewire.md`,
 `production-w3-readplane-repoint.md`, `naming-ledger.md`. Runbooks among them are indexed in
-[Runbooks](../operations/runbooks.md).
+[Runbooks](../build/operate/runbooks.md).

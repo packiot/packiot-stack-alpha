@@ -164,3 +164,11 @@ openapi:
 	done
 	@cd services/read-api && go run ./cmd/refdata-api --dump-openapi > ../../$(OPENAPI_DIR)/read-api.openapi.json.tmp
 	@mv $(OPENAPI_DIR)/read-api.openapi.json.tmp $(OPENAPI_DIR)/read-api.openapi.json && echo "  $(OPENAPI_DIR)/read-api.openapi.json"
+	@# edge-api's spec lives in its own repo (npm run openapi:export there). Copy it from the
+	@# PINNED submodule commit when the submodule is checked out; CI without private
+	@# submodules keeps the committed copy, so the drift check stays green there.
+	@if git -C edge-api rev-parse --verify -q "$$(git ls-tree HEAD edge-api | awk '{print $$3}')^{commit}" >/dev/null 2>&1 \
+	   && git -C edge-api cat-file -e "$$(git ls-tree HEAD edge-api | awk '{print $$3}'):openapi/edge-api.openapi.json" 2>/dev/null; then \
+		git -C edge-api show "$$(git ls-tree HEAD edge-api | awk '{print $$3}'):openapi/edge-api.openapi.json" > $(OPENAPI_DIR)/edge-api.openapi.json \
+		&& echo "  $(OPENAPI_DIR)/edge-api.openapi.json (edge-api @ pinned submodule)"; \
+	else echo "  edge-api submodule not available — keeping committed $(OPENAPI_DIR)/edge-api.openapi.json"; fi

@@ -3,3 +3,5 @@
 # time, so the rendered site under dist/wiki/ has NO external-CDN runtime deps
 # (see mkdocs.yml `theme.font: false`, which disables the Google Fonts fetch).
 mkdocs-material==9.5.44
+# Static redirects for pages moved in the 2026-10 restructure (meta-refresh HTML, no JS).
+mkdocs-redirects==1.2.2
