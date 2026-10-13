@@ -82,7 +82,7 @@ var internalRoutes = []mountedRoute{
 // fail-closed state: the handler 401s every request, so the endpoint ships inert
 // until an operator sets INTERNAL_API_KEY (additive — a default deploy is
 // unchanged).
-func registerInternalAPI(mux *http.ServeMux, pool *pgxpool.Pool, logger *slog.Logger) {
+func registerInternalAPI(mux routeMux, pool *pgxpool.Pool, logger *slog.Logger) {
 	key := strings.TrimSpace(os.Getenv("INTERNAL_API_KEY"))
 	mux.HandleFunc("/internal/resolve-device", resolveDeviceHandler(pool, key, logger))
 	if key == "" {

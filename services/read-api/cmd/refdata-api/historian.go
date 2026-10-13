@@ -174,7 +174,7 @@ const histDowntimeSeriesSQL = `
 // the routes are discoverable); each returns 503 when histPool is nil.
 //   POST /v1/historian/production-series — daily gross/net per equipment (EV, silver.equipment_values)
 //   POST /v1/historian/downtime-series   — daily downtime per equipment (EE, silver.equipment_events)
-func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
+func registerHistorianAPI(mux routeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
 	mux.HandleFunc("/v1/historian/production-series", func(w http.ResponseWriter, r *http.Request) {
 		serveHistWindowSeries(w, r, histPool, logger, histProductionSeriesSQL, histKindProduction)
 	})
