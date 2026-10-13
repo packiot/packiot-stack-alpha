@@ -29,6 +29,7 @@ on:
       - 'services/read-api/**'
       - 'services/analytics-sync/**'
       - 'services/barcode-service/**'
+      - 'services/oeecloud-fanout/**'
       - '.github/workflows/go-services.yml'
   workflow_dispatch:
 
@@ -40,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [mirror-worker-go, stream-engine, ingest-shim, operator-gateway, sparkplug-decoder, read-api, analytics-sync, barcode-service]
+        service: [mirror-worker-go, stream-engine, ingest-shim, operator-gateway, sparkplug-decoder, read-api, analytics-sync, barcode-service, oeecloud-fanout]
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
