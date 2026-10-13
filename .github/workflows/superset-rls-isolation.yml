@@ -50,6 +50,9 @@ jobs:
     name: compose.superset.yml merges + stays profile-gated
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # compose.staging.yml fails closed on this (${VAR:?}); non-secret CI placeholder.
+      EDGE_SESSION_BROKER_TOKEN: ci-placeholder-not-a-secret-0000000000
     steps:
       - name: Checkout (no submodules)
         uses: actions/checkout@v4

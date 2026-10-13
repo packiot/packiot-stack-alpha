@@ -83,6 +83,10 @@ resource "aws_secretsmanager_secret_version" "hasura" {
 }
 
 # ── Application secrets ───────────────────────────────────────────────────────
+# packiot/staging/app also carries out-of-band keys Terraform never generates
+# (values stay out of state/plan), e.g. REQUIRED `edge_session_broker_token`
+# (≥32 chars, `openssl rand -hex 32`): edge-api <-> edge-session-broker shared
+# secret (ADR-0057); deploy-staging.yml fails without it.
 
 resource "aws_secretsmanager_secret" "app" {
   name                    = "packiot/staging/app"

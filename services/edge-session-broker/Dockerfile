@@ -23,8 +23,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     session-manager-plugin --version
 
-COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 COPY server.mjs ./
 
 EXPOSE 8090

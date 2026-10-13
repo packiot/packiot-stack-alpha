@@ -1159,7 +1159,7 @@ DEST — WRITE:
 |---|---|---|
 | BROKER_PORT | 8090 (`services/edge-session-broker/server.mjs:20`) | `8090` (`compose.staging.yml:717`) |
 | BROKER_HTTP_PORT | 8091 (`services/edge-session-broker/server.mjs:21`) | not set |
-| BROKER_TOKEN | `""` (`services/edge-session-broker/server.mjs:22`) → all WS rejected (`:195`) | `${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}` (`:718`) |
+| BROKER_TOKEN | none — process exits unless ≥32 chars (`services/edge-session-broker/server.mjs` `requireToken`) | `${EDGE_SESSION_BROKER_TOKEN:?}` from Secrets Manager `packiot/staging/app.edge_session_broker_token` |
 | AWS_REGION | `us-east-1` (`services/edge-session-broker/server.mjs:23`) | `us-east-1` (`:716`) |
 | SSM_ENDPOINT | `https://ssm.<region>.amazonaws.com` (`services/edge-session-broker/server.mjs:24`) | not set **AWS SSM** |
 | BROKER_FORWARD_IDLE_MS | 600000 (`services/edge-session-broker/server.mjs:56`) | not set |

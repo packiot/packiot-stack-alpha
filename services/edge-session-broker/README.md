@@ -44,7 +44,7 @@ The sidecar holds no AWS credentials and is never exposed beyond the compose net
 |---|---|---|---|
 | WS | `:8090/shell?token=<broker token>` | shared token (query) | First text frame = JSON handle `{SessionId, StreamUrl, TokenValue, Target, region}`; later frames = terminal input to the plugin's stdin; plugin stdout goes back as frames. Close codes: 1008 unauthorized, 1003 bad/incomplete handle |
 | POST | `:8091/forward` | header `x-broker-token` | Body `{sessionId, response, target, boxPort, localPort}`: start an `AWS-StartPortForwardingSession` to `boxPort`, bound to `127.0.0.1:<localPort>`; 200 when the port accepts connections, 502 if not up within ~10 s |
-| any | `:8091/p/<sessionId>/<path>` | none (in-network only) | Reverse-proxy to that session's forward; strips `X-Frame-Options` and `Content-Security-Policy` so csadmin can embed the UI; 404 `no active forward` |
+| any | `:8091/p/<sessionId>/<path>` | header `x-broker-token` (every `:8091` route; 401 otherwise) | Reverse-proxy to that session's forward. Replaces the box's `X-Frame-Options`/CSP with `Content-Security-Policy: frame-ancestors <BROKER_FRAME_ANCESTORS>` (customize/csadmin embed the UI; nobody else may frame it). Never forwards `x-broker-token`, platform cookies (`_oauth2_proxy*`, `pk_webui_*`) or oauth2-proxy/ALB identity headers to the box. 404 `no active forward` |
 
 No OpenAPI spec (internal, edge-api is the only caller). edge-api's environment points at it with
 `EDGE_SESSION_BROKER_WS_URL`, `EDGE_SESSION_BROKER_HTTP_URL` and `EDGE_SESSION_BROKER_TOKEN`.
@@ -61,7 +61,8 @@ N/A: no database. Session registry, authorization and audit live in edge-api.
 
 | Name | Default | Required | Effect |
 |---|---|---|---|
-| `BROKER_TOKEN` | `""` | yes | Shared secret with edge-api. Empty rejects every WebSocket. Staging: `EDGE_SESSION_BROKER_TOKEN` from `.env` (compose has a fixed fallback if unset) |
+| `BROKER_TOKEN` | none | yes | Shared secret with edge-api, checked (constant-time) on the WebSocket and on every HTTP route. Shorter than 32 chars or unset → the process exits at startup. Staging: Secrets Manager `packiot/staging/app` key `edge_session_broker_token` → `.env` `EDGE_SESSION_BROKER_TOKEN` (deploy step), no compose fallback |
+| `BROKER_FRAME_ANCESTORS` | `'self'` | no | CSP `frame-ancestors` source list sent on proxied box UIs (staging: `'self'` + the customize and csadmin origins) |
 | `BROKER_PORT` | `8090` | no | WebSocket listener (`/shell`) |
 | `BROKER_HTTP_PORT` | `8091` | no | HTTP listener (`/forward`, `/p/…`) |
 | `BROKER_FORWARD_IDLE_MS` | `600000` (10 min) | no | Idle port-forwards are killed (checked every minute) |
@@ -78,10 +79,10 @@ No dev slice (ADR-0060 D3 keeps SSM out of dev). To try the process alone:
 ```sh
 cd services/edge-session-broker
 npm install
-BROKER_TOKEN=x node server.mjs      # needs session-manager-plugin on PATH to do anything useful
+BROKER_TOKEN=$(openssl rand -hex 32) node server.mjs   # needs session-manager-plugin on PATH to do anything useful
 ```
 
-There are no tests and no CI workflow for this service.
+Tests: `npm test` (`node:test`, `server.test.mjs`: token enforcement on WS and HTTP, framing and request-header handling; no plugin or AWS needed). CI: `.github/workflows/node-services.yml`.
 
 ## Operating it
 
@@ -91,7 +92,8 @@ There are no tests and no CI workflow for this service.
   `rejected unauthenticated connection`, `forward failed: …`, `reaping idle forward …`.
 - **Metrics/dashboards/alerts:** none.
 - **Failure modes:**
-  - Terminal closes at once with 1008 → edge-api and the broker disagree on the token.
+  - Container exits at start with `FATAL BROKER_TOKEN must be set…` → the token is missing/short in `.env`.
+  - Terminal closes at once with 1008, or web UI 401 → edge-api and the broker disagree on the token (or edge-api predates sending `x-broker-token` on `/p/`).
   - `plugin exited 255` (or similar) → the SSM handle expired or the box's SSM agent is offline.
   - Web UI 404 `no active forward` → the forward was reaped (idle) or its plugin exited; open it again.
   - `port-forward did not come up` (502) → the box port is closed or SSM could not open the forward.
@@ -101,9 +103,10 @@ There are no tests and no CI workflow for this service.
 
 | Path | What |
 |---|---|
-| `server.mjs` | WebSocket shell bridge, port-forward control, HTTP reverse proxy, idle reaper |
+| `server.mjs` | WebSocket shell bridge, port-forward control, HTTP reverse proxy, idle reaper (`createBroker` exported for tests) |
+| `server.test.mjs` | `node:test` suite |
 | `Dockerfile` | debian-slim Node 18 image with the arch-matched `session-manager-plugin` |
-| `package.json` | single dependency `ws` |
+| `package.json`, `package-lock.json` | single dependency `ws` (locked; image uses `npm ci`) |
 
 ## Related docs
 

@@ -701,11 +701,13 @@ services:
       # ── ADR-0057: platform-mediated box shells (session-broker sidecar) ───────
       # edge-api relays a browser ws → the internal broker (which runs the
       # session-manager-plugin edge-api's alpine image can't). Reached by
-      # service-name DNS on packiot-net; the shared token is internal-only
-      # (broker is NOT exposed past this network) — move to Secrets Manager for prod.
+      # service-name DNS on packiot-net. The shared token gates a shell / web UI on
+      # every client box: Secrets Manager packiot/staging/app key
+      # `edge_session_broker_token` → .env (deploy step "Materialize
+      # edge-session-broker token"). No fallback — fail-closed.
       EDGE_SESSION_BROKER_WS_URL: ws://edge-session-broker:8090/shell
       EDGE_SESSION_BROKER_HTTP_URL: http://edge-session-broker:8091
-      EDGE_SESSION_BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}
+      EDGE_SESSION_BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:?EDGE_SESSION_BROKER_TOKEN unset - set packiot/staging/app edge_session_broker_token}
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -735,7 +737,13 @@ services:
     environment:
       AWS_REGION: "us-east-1"
       BROKER_PORT: "8090"
-      BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}
+      # Required on every route (WS ?token=, HTTP x-broker-token incl. /p/*); the
+      # broker refuses to start without ≥32 chars. Same value edge-api holds.
+      BROKER_TOKEN: ${EDGE_SESSION_BROKER_TOKEN:?EDGE_SESSION_BROKER_TOKEN unset - set packiot/staging/app edge_session_broker_token}
+      # Box web UIs are iframed by customize/csadmin (same-origin /api/edge-ssm/webui);
+      # the broker replaces the box's X-Frame-Options/CSP with this frame-ancestors
+      # list so nobody else can frame a live box session (clickjacking).
+      BROKER_FRAME_ANCESTORS: "'self' https://customize.staging.packiot.app https://csadmin.staging.packiot.app"
     networks:
       packiot-net:
     healthcheck:

@@ -1,0 +1,43 @@
+name: Node Services CI
+
+# Tests for the Node services under services/ (go-services.yml is Go-only).
+# edge-session-broker gates a shell / web UI on every client box (ADR-0057), so
+# its token enforcement + header handling are tested here (node:test, no plugin
+# or AWS needed). Matrix so the next Node service is one line.
+# Not a required check yet — that needs a branch-protection rule naming it.
+
+on:
+  pull_request:
+    branches: [staging, development]
+    paths:
+      - 'services/edge-session-broker/**'
+      - '.github/workflows/node-services.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.service }} — test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [edge-session-broker]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-node@v4
+        with:
+          # match the runtime image (Dockerfile FROM node:18-bookworm-slim)
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test

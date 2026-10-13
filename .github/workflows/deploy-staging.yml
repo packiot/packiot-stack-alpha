@@ -103,6 +103,30 @@ jobs:
             echo "ALLOY_GATEWAY_BIND already set: $(grep -E '^ALLOY_GATEWAY_BIND=' /opt/packiot/.env | cut -d= -f2)"
           fi
 
+      - name: Materialize edge-session-broker token (REQUIRED — fails the deploy if absent)
+        # edge-api ↔ edge-session-broker shared secret (ADR-0057): whoever holds it can
+        # open a shell / web UI on any client box from inside packiot-net. It used to
+        # fall back to a guessable literal in compose.staging.yml; now it comes ONLY
+        # from Secrets Manager packiot/staging/app key `edge_session_broker_token`
+        # (≥32 chars, e.g. `openssl rand -hex 32`), rewritten into .env on every deploy
+        # so rotation = update the secret + redeploy (edge-api and the broker are
+        # recreated together). compose interpolates it with ${VAR:?}. Never echoed.
+        run: |
+          set -euo pipefail
+          T=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app --region us-east-1 --query SecretString --output text | jq -r '.edge_session_broker_token // ""')
+          if [ "${#T}" -lt 32 ]; then
+            echo "::error::packiot/staging/app key 'edge_session_broker_token' is missing or shorter than 32 chars — set it (openssl rand -hex 32) and redeploy"
+            exit 1
+          fi
+          case "$T" in *[!A-Za-z0-9._~-]*) echo "::error::edge_session_broker_token must be [A-Za-z0-9._~-] only"; exit 1 ;; esac
+          ENVF=$(readlink -f /opt/packiot/.env)
+          TMP=$(mktemp "$(dirname "$ENVF")/.env.XXXXXX")
+          grep -v -E '^EDGE_SESSION_BROKER_TOKEN=' "$ENVF" > "$TMP" || true
+          printf 'EDGE_SESSION_BROKER_TOKEN=%s\n' "$T" >> "$TMP"
+          chmod --reference="$ENVF" "$TMP"; chown --reference="$ENVF" "$TMP"
+          mv -f "$TMP" "$ENVF"
+          echo "EDGE_SESSION_BROKER_TOKEN materialized (len ${#T})"
+
       - name: Ensure HIST_GW_SVC_PASSWORD (historian least-privilege service login)
         # T3: read-api + Superset reach the historian gateway as the NOSUPERUSER
         # historian_svc. Source of truth = Secrets Manager packiot/staging/historian-svc;
