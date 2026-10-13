@@ -322,3 +322,5 @@ planned window with the database transplant runbook and an explicit go. See
 | `scripts/ops/repair-line-scrap-and-unbacked.sh` | reference implementation of a safe data repair |
 | `scripts/ci/packml-ratchet.sh` | the PackML ratchet |
 | `CONTRIBUTING.md` | the short version of this page |
+
+Decision record: [ADR-0060](../../adr/0060-local-development-environment-and-cpack-dev-seed.md).

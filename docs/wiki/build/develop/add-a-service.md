@@ -202,3 +202,5 @@ You should see the container `Up … (healthy)`, created after your merge. In Gr
 - [Add an API endpoint](add-an-api-endpoint.md)
 - [Add a migration](add-a-migration.md), if the service needs new tables
 - [Deploy](../operate/deploy.md)
+
+Decision record: [ADR-0061](../../adr/0061-remove-packml-from-the-cloud.md).

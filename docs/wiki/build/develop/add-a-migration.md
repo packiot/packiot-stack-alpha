@@ -223,3 +223,5 @@ snapshots, not migrations: see [Branches and merging → data repairs](branches-
   [Analytics DB schemas](../../understand/components/analytics-db-schemas.md) — where things belong.
 - [Backups & restore](../operate/backups-and-restore.md) — what to do if a change goes badly wrong.
 - [Add a service](add-a-service.md) — if the migration comes with a new service.
+
+Decision record: [ADR-0061](../../adr/0061-remove-packml-from-the-cloud.md).

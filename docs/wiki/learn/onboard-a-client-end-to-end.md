@@ -41,7 +41,7 @@ The mechanism is `scripts/sandbox-session.sh` (migration `db/migrations/t-sandbo
 ## Before you start
 
 - A CS Admin login in the Cognito group `cs-admin` (an existing CS admin creates it in CS Admin →
-  Access → Login Users, type `cs`).
+  Access → Login accounts, type `cs`).
 - Access to Grafana on staging (same SSO).
 - Read the plain-language guide once: [Setting up a new client](../use/setting-up-a-client.md). This
   tutorial follows its eight steps.
