@@ -164,6 +164,9 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   -t <registry>/sparkplug-agent:<semver> --push ../../../services/sparkplug-decoder
 #    …then set AGENT_IMAGE=<registry>/sparkplug-agent:<semver> in .env.
 #    (Or leave AGENT_IMAGE=…:local to `docker compose build` on the edge box.)
+#    Reader profile: the readers use READER_IMAGE, which must be the FULL build
+#    (main Dockerfile: agent + s7/modbus/opcua readers), never the agent-only
+#    image above. Pin it the same way, or leave READER_IMAGE=…:local to build.
 
 # 3. Validate the composition, then bring it up:
 docker compose -f compose.edge.yml --env-file .env config     # must exit 0
