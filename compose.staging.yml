@@ -1903,6 +1903,13 @@ services:
       AWS_REGION: us-east-1
       PG_SECRET_ID: packiot/staging/db
       CREDS_SOURCE: env
+      # CREDS_SOURCE=env above is for the DB only. Without this override the
+      # AMQP side would also read RABBITMQ_USER/RABBITMQ_PASSWORD from .env —
+      # the broker ADMIN (same value as RABBITMQ_DEFAULT_USER). Pin AMQP to the
+      # least-privilege `stream-engine` user in RABBITMQ_SECRET_ID (permissions:
+      # monitoring/rabbitmq/definitions.template.json). Guarded in CI by
+      # scripts/ci/check-amqp-least-priv.py.
+      AMQP_CREDS_SOURCE: aws
       # DIRECT to the DB EC2 (NOT via the `pgbouncer` service) — deliberate.
       # The analytics/rollup pool (db.NewForDatabase → `oeecloud-worker-analytics`,
       # POSTGRES_ANALYTICS_MAX_CONNS) is the heavy consumer and it REQUIRES a

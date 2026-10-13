@@ -49,6 +49,26 @@ import (
 // surface — this fallback is dev-only ergonomics.
 const credsSourceEnv = "env"
 
+// amqpCredsSourceVar overrides $CREDS_SOURCE for the AMQP creds ONLY.
+// Staging sets CREDS_SOURCE=env for the DATABASE (direct DB_HOST, see
+// compose.staging.yml), and because one switch used to drive both, the
+// AMQP side silently fell through to RABBITMQ_USER/RABBITMQ_PASSWORD from
+// .env — which on staging is the broker ADMIN (it is also
+// RABBITMQ_DEFAULT_USER). AMQP_CREDS_SOURCE=aws pins the AMQP creds to the
+// least-privilege Secrets Manager user while the DB keeps its env creds.
+// Unset ⇒ follow $CREDS_SOURCE (dev/ keeps working unchanged).
+const amqpCredsSourceVar = "AMQP_CREDS_SOURCE"
+
+// amqpCredsFromEnv reports whether FetchAMQPCreds should read env vars
+// instead of Secrets Manager. Any value other than "env" means Secrets
+// Manager — the safe direction for a typo.
+func amqpCredsFromEnv() bool {
+	if v := os.Getenv(amqpCredsSourceVar); v != "" {
+		return v == credsSourceEnv
+	}
+	return os.Getenv("CREDS_SOURCE") == credsSourceEnv
+}
+
 type DBCreds struct {
 	Host     string
 	Port     int
@@ -166,8 +186,9 @@ func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error
 // vars: RABBITMQ_USER, RABBITMQ_PASSWORD, RABBITMQ_HOST (optional —
 // falls back to the host arg), RABBITMQ_PORT (optional — falls back
 // to the port arg). Used only in dev/ (ADR-0060, formerly compose.development.yml).
+// $AMQP_CREDS_SOURCE, when set, takes precedence over $CREDS_SOURCE here.
 func FetchAMQPCreds(ctx context.Context, region, secretID, host string, port int) (*AMQPCreds, error) {
-	if os.Getenv("CREDS_SOURCE") == credsSourceEnv {
+	if amqpCredsFromEnv() {
 		return fetchAMQPCredsFromEnv(host, port)
 	}
 	raw, err := getSecretJSON(ctx, region, secretID)
