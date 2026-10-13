@@ -7,7 +7,7 @@ package main
 // scrolls back past the hot boundary needs the COLD S3 archive too. The
 // historian-gateway (compose.historian-gateway.yml, container `hist-gateway`)
 // already unions HOT (postgres_fdw → the live timescaledb) with COLD (S3 Parquet
-// via pg_duckdb) behind silver.equipment_values / ev_between, with per-partition pruning. This
+// via pg_duckdb) behind the silver.* union views (ev_between was dropped in t269), with per-partition pruning. This
 // endpoint is the read-api door to it.
 //
 // DESIGN — deliberately ISOLATED + ADDITIVE (nothing here touches the existing
