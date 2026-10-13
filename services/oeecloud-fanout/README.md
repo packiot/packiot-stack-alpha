@@ -1,126 +1,140 @@
-# oeecloud-fanout — re-tenant twin fan-out
+# oeecloud-fanout
 
-Roadmap **P1 / task #17**. Makes the STAGING sandbox tenant **SBXCPACK**
-(enterprise 2000003) a faithful ALL-LINES twin of the real **CPACK** tenant
-(enterprise 3) by fanning out staging's live CPACK decoded SparkPlug stream,
-re-tenanting it, and republishing it so the sandbox's `oeecloud-worker` queue
-writes SBXCPACK analytics rows.
+Clones one tenant's decoded SparkPlug stream into a sandbox tenant (staging: CPACK → SBXCPACK,
+enterprise 2000003).
 
-```
-edge-transformer ──sparkplug.data──▶  oee (topic exchange)
-                                        │  (a COPY to every bound queue)
-              ┌─────────────────────────┼──────────────────────────────┐
-              ▼                          ▼                              ▼
-  oeecloud-worker-q            oeecloud-fanout-cpack-to-sbxcpack   (other tenants…)
-  (CPACK → ent 3, unchanged)   (THIS service)
-                                        │  retenant CPACK/… → SBXCPACK/…
-                                        │  clear inherited equipment ids
-                                        ▼  publish sparkplug.data.sbxcpack
-                                     oee (topic exchange)
-                                        ▼
-                             oeecloud-worker-q-sbxcpack  → SBXCPACK analytics (ent 2000003)
-```
+## What it does
 
-## Envelope shape (what it rewrites)
+oeecloud-fanout consumes the decoder's envelopes from the `oee` topic exchange, keeps only those whose
+SparkPlug group is the source group (`CPACK`), rewrites the first segment of every metric name to the
+target group (`SBXCPACK`), and republishes the envelope on `sparkplug.data.sbxcpack`. stream-engine
+then writes the copy into the sandbox twin's analytics rows, so the twin sees CPACK's live counters.
+The tenant is not a field in the envelope: consumers derive it from the first metric name's first
+segment, so rewriting that segment re-tenants the whole message. Timestamps, values, counters and
+`source_type` are kept exactly (decoded with `json.Number`); only equipment-id fields
+(`id_equipment`, `equipment_id`, absent on today's wire) are removed. The per-metric `id` (a PackML
+parameter id) is kept. Nothing in the code is CPACK-specific: source, target, queue and keys are env.
 
-The sparkplug-decoder publishes the oeecloud-compatible envelope
-(`analyticspub.Envelope`):
+## Where it fits
 
-```json
-{ "timestamp": 1782161858551, "gateway": "edge-transformer:outbox",
-  "source_type": "refactored",
-  "metrics": [ { "name": "CPACK/SC/LINHAS/L5/BREYER/Admin/ProdConsumedCount/61/Unit",
-                 "timestamp": 1782161858551, "value": 12, "counter": 830123 } ] }
+```text
+sparkplug-decoder ──sparkplug.data.cpack (or sparkplug.data)──▶ oee (topic)
+                                                                 │ a copy per bound queue
+              ┌──────────────────────────────────────────────────┤
+              ▼                                                  ▼
+  stream-engine-q-cpack (ent 3)                  oeecloud-fanout-cpack-to-sbxcpack
+                                                                 │ group CPACK → SBXCPACK
+                                                                 ▼ publish sparkplug.data.sbxcpack
+                                                           oee (topic)
+                                                                 ▼
+                                    stream-engine-q-sbxcpack → sandbox twin (ent 2000003)
 ```
 
-**The tenant is not a field** — the worker derives it from the first metric
-name's first segment (the SparkPlug GroupID), lowercased. So rewriting that
-segment `CPACK → SBXCPACK` on every metric name re-tenants the whole envelope.
-The transform preserves timestamps/values/counters/source_type byte-for-byte
-(decoded with `json.Number` so large integers round-trip exactly).
+## Status and environments
 
-The per-metric `id` is the PackML **parameter** id (30700-30899) the worker needs
-for PO-control classification — it is deliberately **not** cleared. Only true
-equipment-id fields (`id_equipment`/`equipment_id`, absent on today's wire) are
-cleared, forward-safely, so the sandbox worker re-resolves against its own
-SBXCPACK `packml_register` rows.
+| Environment | Where | Image | Ports | Health |
+|---|---|---|---|---|
+| dev (ADR-0060) | `dev/services/oeecloud-fanout.yml` · `oeecloud-fanout`; source group = the seed's anonymized group `DEV_SEED_GROUP` | built from `services/oeecloud-fanout/Dockerfile` (Go 1.25 → distroless) | 9102 in-network only | `GET /health` |
+| staging | `compose.staging.yml` · `oeecloud-fanout` (no profile); enabled by `FANOUT_CPACK_TO_SBXCPACK_ENABLED` in `/opt/packiot/.env` | same, built on deploy | 9102 in-network only | `GET /health`; healthcheck `oeecloud-fanout --healthcheck` |
+| production | not in `compose.production.yml` (staging only; the generated `configs/fanout/sbxcpack.yml` says so too) | — | — | — |
 
-## Routing-key assumption
+While disabled it serves a healthy `/health` and binds no queue.
 
-The staging sparkplug-decoder publishes the **2-segment `sparkplug.data`** key
-by default (tenant inside the envelope — see `services/sparkplug-decoder/cmd/
-edge-transformer/main.go`). Setting the decoder's **`F3_PER_TENANT_ROUTING=true`**
-flag switches it to `sparkplug.data.<tenant>`. The fan-out queue binds BOTH
-`sparkplug.data` and `sparkplug.data.cpack`, so it keeps working across that flip.
-Because `sparkplug.data` carries **every** tenant, the transform gates on
-`group == CPACK` and acks non-CPACK messages without republishing.
+## Interfaces
 
-## Why it can't double-count or loop
+### HTTP
 
-- **No double-count:** the clone is published ONLY to `sparkplug.data.sbxcpack`.
-  CPACK's own worker queue is a separate queue that receives its own COPY from
-  the exchange and keeps writing ent-3 rows exactly once. Source (ent 3) and
-  target (ent 2000003) have disjoint equipment ids and analytics rows. This is why a
-  CROSS-tenant fan-out is safe where the retired SAME-tenant `mirror-worker-go`
-  had to be the sole writer.
-- **No self-feedback:** the target key `sparkplug.data.sbxcpack` matches neither
-  of this consumer's exact bindings (`sparkplug.data`, `sparkplug.data.cpack`),
-  so a clone is never redelivered here. The transform's group check is a second
-  guard (a target-group message is reported not-ours).
+No OpenAPI spec (no API beyond health).
 
-## Delivery semantics
+| Method | Path | Auth | What |
+|---|---|---|---|
+| GET | `/health` | none | JSON snapshot; 503 when unhealthy |
 
-At-least-once, idempotent: republish uses broker publish-confirms; the source is
-acked only after a confirmed republish. A broker nack/timeout requeues the
-source for retry. A crash between confirm and ack redelivers → a duplicate
-clone, which is safe because the target worker's writes are UPSERTs.
+### Messaging
 
-## Enable on staging
+| Direction | Exchange | Queue / routing key |
+|---|---|---|
+| in | `oee` (topic) | durable queue `FANOUT_QUEUE` (`oeecloud-fanout-cpack-to-sbxcpack`), declared by the service, bound to `sparkplug.data` and `sparkplug.data.cpack` |
+| out | `oee` | `sparkplug.data.sbxcpack`, with publisher confirms |
 
-Off by default. In staging `.env`:
+- **Delivery:** at least once. The source is acked only after a confirmed republish; a nack or confirm
+  timeout requeues it (250 ms back-off). A crash between confirm and ack produces a duplicate clone;
+  downstream writes are upserts.
+- **Other tenants:** the plain `sparkplug.data` binding carries every tenant, so a message whose group is
+  not the source is acked without republishing. An undecodable envelope is acked and dropped (warning
+  sampled 1 in 64).
+- **No loop:** the target key matches neither binding, and the group check rejects target-group messages.
+- Staging's decoder publishes per-tenant keys (`F3_PER_TENANT_ROUTING: "true"` in `compose.staging.yml`),
+  so traffic arrives on `sparkplug.data.cpack`; the plain binding keeps the fan-out working if that flag
+  is turned off.
 
+### Database
+
+N/A: it does not touch a database.
+
+## Configuration
+
+| Name | Default | Required | Effect |
+|---|---|---|---|
+| `FANOUT_ENABLED` | falls back to `FANOUT_CPACK_TO_SBXCPACK_ENABLED`, then `false` | no | master switch (`true` to consume) |
+| `FANOUT_CPACK_TO_SBXCPACK_ENABLED` | `false` | no | older name of the switch; staging sets this one from `.env` |
+| `FANOUT_SOURCE_GROUP` | `CPACK` | no | source SparkPlug group (case-insensitive match) |
+| `FANOUT_TARGET_GROUP` | `SBXCPACK` | no | target group written into metric names |
+| `FANOUT_QUEUE` | `oeecloud-fanout-cpack-to-sbxcpack` | no | durable queue name |
+| `FANOUT_SOURCE_ROUTING_KEYS` | `sparkplug.data,sparkplug.data.<source lower>` | no | CSV of bindings |
+| `FANOUT_TARGET_ROUTING_KEY` | `sparkplug.data.<target lower>` | no | republish key |
+| `SOURCE_EXCHANGE` | `oee` | no | exchange to bind and publish on |
+| `PREFETCH` | `50` | no | consumer prefetch |
+| `PUBLISH_CONFIRM_TIMEOUT_MS` | `5000` | no | confirm deadline before requeue |
+| `HEALTH_PORT` | `9102` | no | `/health` listener |
+| `LOG_LEVEL` | `info` | no | slog level |
+| `AWS_REGION` | `us-east-1` | no | Secrets Manager region |
+| `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-oeecloud-creds` | no | AMQP credentials secret; **staging sets `packiot/staging/rabbitmq-stream-engine-creds`** (the stream-engine broker user) |
+| `RABBITMQ_HOST` | `rabbitmq` | no | broker host |
+| `RABBITMQ_PORT` | `5672` | no | broker port |
+| `CREDS_SOURCE` | unset | no | `env` = take `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from env (dev only); fails closed if either is empty |
+| `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | — | yes with `CREDS_SOURCE=env` | broker login (dev: user `stream-engine`) |
+
+## Run locally
+
+```sh
+make dev SVC="oeecloud-fanout"          # Tier 0 + the fan-out
+make dev-smoke SVC="oeecloud-fanout"    # a message seen on the target key through a tap queue
+cd services/oeecloud-fanout && go test ./...
 ```
-FANOUT_CPACK_TO_SBXCPACK_ENABLED=true
-```
 
-then restart the `oeecloud-fanout` service. While disabled it serves `/health`
-(healthy) and idles — binds no queue, consumes nothing.
+It is part of the `ingest` slice in `.github/workflows/dev-slices.yml`. It is **not** in the
+`go-services.yml` matrix, so CI does not run its `go test`/`go vet` (only the dev slice).
+In dev nothing consumes `stream-engine-q-sbxcpack` (stream-engine runs `LEGACY_INGEST_ENABLED=false`), so
+clones accumulate there.
 
-## Config (env)
+## Operating it
 
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `FANOUT_ENABLED` | `false` | Master gate (generic name — set this for any NEW twin) |
-| `FANOUT_CPACK_TO_SBXCPACK_ENABLED` | `false` | Legacy alias for `FANOUT_ENABLED`, kept as a fallback so this instance's already-deployed `.env` flag keeps working unchanged |
-| `FANOUT_SOURCE_GROUP` | `CPACK` | Source SparkPlug GroupID |
-| `FANOUT_TARGET_GROUP` | `SBXCPACK` | Target GroupID |
-| `FANOUT_QUEUE` | `oeecloud-fanout-cpack-to-sbxcpack` | Durable queue |
-| `FANOUT_SOURCE_ROUTING_KEYS` | `sparkplug.data,sparkplug.data.cpack` | Bindings (CSV) |
-| `FANOUT_TARGET_ROUTING_KEY` | `sparkplug.data.sbxcpack` | Republish key |
-| `SOURCE_EXCHANGE` | `oee` | Topic exchange |
-| `PREFETCH` | `50` | Consumer prefetch |
-| `PUBLISH_CONFIRM_TIMEOUT_MS` | `5000` | Publish-confirm deadline |
-| `HEALTH_PORT` | `9102` | /health port |
-| `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-oeecloud-creds` | AMQP creds (reuses the worker's least-priv user) |
+- **Deploy:** merge to `staging` → "Deploy to Staging" (`.github/workflows/deploy-staging.yml`) rebuilds
+  and recreates it. Enable/disable with `FANOUT_CPACK_TO_SBXCPACK_ENABLED` in `/opt/packiot/.env` and a
+  recreate.
+- **Signals:** no Prometheus metrics. Watch the queue depth of `oeecloud-fanout-cpack-to-sbxcpack`
+  (RabbitMQ dashboard `grafana/dashboards/library/13-rabbitmq.json`) and its "republish failed" log line.
+  The SRE board's `rabbitmq_connections` panel expects one connection from it.
+- **A new twin:** `scripts/emit-fanout-config.sh SOURCE_GROUP TARGET_GROUP [HEALTH_PORT] [IP_LAST_OCTET]`
+  writes `configs/fanout/<target>.yml` (called by `scripts/provision-sandbox-tenant.sh`). Splicing it
+  into compose, picking a free IP/port and setting the `.env` flag are manual.
 
-## Templatable per twin (#22) — DONE
+## Code layout
 
-Source/target groups, queue, routing keys, and now the master-gate name are all
-env-driven, so a single image serves any (source tenant → target tenant) pair —
-nothing in this service is CPACK/SBXCPACK-specific.
+| Path | What |
+|---|---|
+| `cmd/oeecloud-fanout/main.go` | boot, `--healthcheck` |
+| `internal/amqp/fanout.go` | declare/bind, consume, confirm-then-ack republish |
+| `internal/retenant/` | pure envelope rewrite + ownership check (tests) |
+| `internal/config/` | env parsing |
+| `internal/secrets/` | Secrets Manager or `CREDS_SOURCE=env` broker credentials |
+| `internal/health/`, `internal/log/` | `/health`, slog |
 
-The generator that emits a new twin's compose-service block + `.env` flag now
-exists: `scripts/emit-fanout-config.sh SOURCE_GROUP TARGET_GROUP [HEALTH_PORT]
-[IP_LAST_OCTET]`. `scripts/provision-sandbox-tenant.sh` (the twin's DB-side
-clone) calls it automatically on `--create`/`--reset`, writing
-`configs/fanout/<target_group_lower>.yml`. Both are idempotent (pure template,
-deterministic overwrite) — re-provisioning a twin re-emits the same fan-out
-config, and provisioning a brand-new twin (different `SOURCE_GROUP`/
-`TARGET_GROUP` env vars) emits its own file with no code change.
+## Related docs
 
-What's still manual: splicing the emitted `services:` block into
-`compose.staging.yml` (or loading it via a second `-f`), picking an unused
-`packiot-net` IP/health-port for a brand-new pair, and flipping the emitted
-`.env` flag — see the generated file's header comment. There is no CSAdmin UI
-trigger for this yet; today it is a CS/eng step run alongside twin
-provisioning, not a button in CSAdmin's onboarding wizard.
+- [Sandbox twin runbook](../../docs/runbooks/sandbox-twin.md)
+- [ADR-0021 multitenancy model](../../docs/adr/0021-multitenancy-model.md)
+- [ADR-0060 dev environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
+
+<!-- wiki-links: added in cross-reference pass -->

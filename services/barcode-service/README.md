@@ -1,95 +1,147 @@
-# barcode-service (Phase 0)
+# barcode-service
 
-Durable box-scan ingest with a **server-authoritative, gapless per-production-order
-label sequence**. The Bronze-tier foundation of the North-star pharma/serialization
-pillar — Phase 0 ships the durable gapless-ingest skeleton only. No EPCIS, no GS1
-serialization, no Part-11 e-sig, no genealogy. Those slot in at the `// PHASE-2:`
-markers.
+Durable box-scan ingest with a server-authoritative, gapless per-production-order label sequence
+(ADR-0040, Phase 0).
 
-Modelled on `services/refdata-api`: one lean Go binary, config from env, `pgx`
-over pgbouncer (simple protocol for transaction pooling), structured `slog`,
-and an **issuer-agnostic dual Firebase/Cognito JWT verifier** that derives the
-tenant (`id_enterprise`) server-side and fails closed. The client never names a
-tenant.
+## What it does
 
-## Endpoints
+A scanner client posts one box scan at a time to `POST /v1/scans`. The service derives the tenant
+(`id_enterprise`) from the caller's JWT, never from the request, and writes the scan inside one
+Postgres transaction under a per-PO advisory lock, so the `production` label sequence is dense
+(1, 2, 3, …) even with concurrent scanners and client retries. `scan_uuid` is a client-generated
+idempotency key: a replay of an accepted scan returns the original row with `replayed: true` and
+writes nothing. Accepted scans are also pushed to live subscribers of `GET /v1/scans/stream` (SSE).
+Phase 0 is the durable ingest only: no GS1 parsing, EPCIS, e-signatures or genealogy (the
+`// PHASE-2:` markers in the code show where they go).
 
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| `POST` | `/v1/scans` | Bearer JWT | Durable gapless scan write (assign/validate) |
-| `GET`  | `/v1/scans/stream?id_production_order=` | Bearer JWT | SSE feed of accepted scans for a PO (tenant-scoped) |
-| `GET`  | `/healthz` | none | 503 when the DB is unreachable (ADR-0011 rule 4) |
-| `GET`  | `/metrics` | none | Phase-0 placeholder (PHASE-2: Prometheus RED) |
+## Where it fits
 
-### `POST /v1/scans`
-
-```json
-{
-  "scan_uuid": "b1f2…",          // client-generated, UNIQUE → idempotency key
-  "raw_barcode": "(01)0761…",    // PHASE-2: parsed into GS1 element strings
-  "id_production_order": 4242,
-  "id_equipment": 55,
-  "qty": 1,
-  "scan_type": "production",      // production|sample|void|reprint|rework
-  "mode": "assign",               // assign | validate
-  "label_seq": 7                  // required only in validate mode
-}
+```text
+ scanner clients
+        │ HTTPS  Authorization: Bearer <Cognito ID token>
+        ▼
+ nginx  scan.staging.packiot.app  (exact paths /v1/scans, /v1/scans/stream, /healthz)
+        ▼
+ barcode-service :8446 ──▶ pgbouncer ──▶ analytics DB packiot_analytics
+        │                                 bronze.box_scans, gold.po_box_counter,
+        │                                 serving.v_po_box_totals
+        └── SSE fan-out (in-process) ──▶ live subscribers of the same PO and tenant
 ```
 
-- **assign** → server allocates `label_seq = last + 1`, writes the row, bumps the
-  counter. Returns `{ box_scan_id, label_seq, total, scan_uuid, replayed:false }`.
-- **validate** → server asserts `label_seq == last + 1`, else returns
-  `409 { "error":"label_seq_gap", "expected":N, "got":M }`.
-- **idempotent replay** → a repeat `scan_uuid` returns the original row
-  (`replayed:true`, HTTP 200) and writes nothing.
-- **tenant fence** → the PO and equipment must belong to the JWT's
-  `id_enterprise`, checked inside the tx, else `403 tenant_mismatch`.
+## Status and environments
 
-The gapless authority is one Postgres transaction:
+| Environment | Where (compose file · service · profile) | Image | Ports | Health |
+|---|---|---|---|---|
+| dev | `dev/services/barcode-service.yml` · `barcode-service` · slice `barcode` | built from `Dockerfile` | `127.0.0.1:8446` | `--healthcheck` → `/healthz` |
+| staging | `compose.staging.yml` · `barcode-service` · no profile | built from `Dockerfile` | in-network 8446 (no host publish); public via the `scan.` vhost | `--healthcheck` → `/healthz` (503 when the DB is unreachable) |
+| production | not in `compose.production.yml` | — | — | — |
 
+Image: Go 1.25 Alpine builder → `gcr.io/distroless/static-debian12:nonroot`.
+The `barcode-app` compose service (`barcode-app:staging`, `127.0.0.1:8092`) is a separate SPA, not this
+service.
+
+## Interfaces
+
+### HTTP
+
+| Method | Path | Auth | What |
+|---|---|---|---|
+| POST | `/v1/scans` | Bearer JWT (Cognito, or Firebase when enabled) | Durable scan write, `mode` = `assign` (server allocates `last + 1`) or `validate` (asserts the client's `label_seq == last + 1`) |
+| GET | `/v1/scans/stream?id_production_order=` | Bearer JWT | SSE feed of accepted scans for one PO, tenant-scoped; 25 s heartbeat; best-effort (slow clients drop) |
+| GET | `/healthz` | none | 200, or 503 when the DB is unreachable (ADR-0011 rule 4) |
+| GET | `/metrics` | none | Phase-0 placeholder text: `barcode_scans_served_total`, `barcode_scans_failed_total` |
+| GET | `/openapi.json` | none | The OpenAPI document (in-network only; not proxied by the vhost) |
+
+Spec: [`docs/api/openapi/barcode-service.openapi.json`](../../docs/api/openapi/barcode-service.openapi.json)
+(source `cmd/barcode-service/openapi.json`); browse it in the API portal at
+https://api.staging.packiot.app/docs/ (SSO).
+
+Error codes (JSON `{"error": "<code>"}`): `scan_uuid_required`, `id_production_order_required`,
+`id_equipment_required`, `qty_invalid`, `scan_type_invalid`, `mode_invalid`, `label_seq_required`
+(400); `tenant_mismatch` (403: PO or equipment not owned by the token's tenant); `label_seq_gap` (409,
+with `expected`/`got`); `scan_uuid_conflict` (409: the `scan_uuid` belongs to another tenant). Every
+auth failure is the same 401. Request bodies are capped at 64 KiB.
+
+### Messaging
+
+N/A: no broker. The SSE fan-out is an in-memory, single-process broker (`sse.go`).
+
+### Database
+
+Analytics DB `packiot_analytics` through pgbouncer, simple query protocol, max 5 connections.
+Table names are unqualified and resolve through the DB `search_path`
+(`db/migrations/t241-barcode-fold/` moved them out of the old `barcode` schema).
+
+| Object | Access |
+|---|---|
+| `bronze.box_scans` | INSERT (append-only; a no-mutate trigger rejects UPDATE/DELETE); SELECT for replays |
+| `gold.po_box_counter` | SELECT + UPSERT `last_label_seq`, `total_qty` |
+| `production_orders`, `equipments` | SELECT: tenant fence; `id_site`, `id_area`, `id_order` filled server-side |
+| `users` | SELECT `id_enterprise` for a Firebase uid (Firebase path only) |
+
+`serving.v_po_box_totals` is the per-PO totals view over these tables.
+
+## Configuration
+
+| Name | Default | Required | Effect |
+|---|---|---|---|
+| `HTTP_PORT` | `8446` | no | Listener for the API, `/healthz`, `/metrics`, SSE; also used by `--healthcheck` |
+| `DB_HOST` / `DB_PORT` | `pgbouncer` / `5432` | no | Database endpoint (dev: `postgres`) |
+| `DB_USER` | `postgres` | no | Staging: `POSTGRES_USER` from `.env` |
+| `DB_PASSWORD` | — | yes | Staging: `POSTGRES_PASSWORD` from `.env` |
+| `DB_NAME` | `packiot_analytics` | no | Target DB |
+| `FIREBASE_PROJECT_ID` | `fbpackiot` when **unset** | no | Set to `""` to turn the Firebase path off (staging and dev do). Read with `LookupEnv`, so an explicit empty value is honoured (#159) |
+| `COGNITO_ISSUER` | — | no | `https://cognito-idp.<region>.amazonaws.com/<poolId>`; empty turns the Cognito path off. Staging: the staging pool; dev: the dev pool |
+| `COGNITO_CLIENT_ID` | — | no | Expected `aud`; empty skips the audience check (Phase-0 lenient) |
+| `LOG_LEVEL` | `info` | no | Read into config but **not applied**: the logger is fixed at info |
+
+With both auth paths off every request is 401 (fail closed).
+
+## Run locally
+
+```sh
+make dev SVC="barcode-service"        # Tier 0 + barcode-service on 127.0.0.1:8446 (dev Cognito pool, Firebase off)
+make dev-smoke SVC="barcode-service"  # fail-closed 401 + the write-path tables exist
+cd services/barcode-service && go test ./...   # CI: .github/workflows/go-services.yml
 ```
-BEGIN;
-  SELECT pg_advisory_xact_lock(id_production_order);   -- serialize writers for this PO
-  -- idempotent-replay check by scan_uuid
-  -- tenant fence (PO + equipment belong to id_enterprise)
-  -- read po_box_counter.last_label_seq → decide next / validate
-  -- INSERT box_scans (label_seq = next)
-  -- UPSERT po_box_counter (last_label_seq, total_qty)
-COMMIT;                                                 -- releases the advisory lock
-```
 
-## Config (env)
+Unit tests use an in-memory transaction fake (`scans_test.go`) and offline JWT verification
+(`auth_test.go`); `openapi_*_test.go` keep the embedded spec in step with the routes.
+After changing `openapi.json`, run `make openapi` and commit the exported copy
+(`.github/workflows/openapi-export.yml` fails on drift).
 
-| Var | Default | Notes |
-|-----|---------|-------|
-| `HTTP_PORT` | `8446` | serves API + `/healthz` + `/metrics` + SSE |
-| `DB_HOST` / `DB_PORT` | `pgbouncer` / `5432` | |
-| `DB_USER` / `DB_PASSWORD` | `postgres` / — | password from env/secret |
-| `DB_NAME` | `packiot_analytics` | writes to the analytics plane (go-forward) |
-| `FIREBASE_PROJECT_ID` | `fbpackiot` | `""` disables the Firebase path |
-| `COGNITO_ISSUER` | — | `https://cognito-idp.<region>.amazonaws.com/<poolId>`; `""` disables Cognito |
-| `COGNITO_CLIENT_ID` | — | Cognito app-client id (aud); `""` skips the audience check (Phase-0 lenient). Same var refdata-api uses. |
-| `LOG_LEVEL` | `info` | |
+## Operating it
 
-## Data model
+- **Deploy:** merge to `staging` → "Deploy to Staging" (`.github/workflows/deploy-staging.yml`)
+  rebuilds the image from source.
+- **Public entry:** the `scan.` vhost in `terraform/staging/user_data/nginx_setup.sh` (DNS in
+  `terraform/staging/dns.tf`) proxies only the exact API paths; barcode-service is the only auth
+  layer. The docs portal fetches `/openapi.json` in-network.
+- **Metrics:** only the placeholder counters above; there is no Prometheus scrape job, alert rule or
+  Grafana dashboard for this service.
+- **Failure modes:**
+  - DB unreachable → `/healthz` 503, container unhealthy, writes rejected (by design).
+  - `409 label_seq_gap` in `validate` mode → the client's counter is out of step; it should re-read
+    `expected` instead of retrying the same number.
+  - SSE clients miss scans under load or after a restart: the feed is advisory; `bronze.box_scans`
+    is the record.
+  - Every request 401 → check `COGNITO_ISSUER`/`COGNITO_CLIENT_ID` match the token's pool and app client.
 
-Migration `edge-node-red/db/36-box-scans.sql` creates:
-- `box_scans` — the append-only Bronze table (identity PK, `scan_uuid` UNIQUE,
-  partial-unique `(id_production_order, label_seq) WHERE scan_type='production'`,
-  `BEFORE UPDATE OR DELETE` trigger that RAISEs + `REVOKE UPDATE,DELETE`).
-- `po_box_counter` — per-PO `last_label_seq` + `total_qty` (the advisory-lock anchor).
-- `v_po_box_totals` — the authoritative per-PO totals view.
+## Code layout
 
-FK note: the hierarchy PKs (`enterprises/sites/areas/equipments.id_*`,
-`production_orders.id_order`) are `INTEGER` in `packiot_analytics`; only
-`production_orders.id_production_order` is `BIGINT`. The FK columns are
-type-matched accordingly; `id_site/id_area/id_order` are nullable and populated
-server-side from the tenant's own rows.
+| Path | What |
+|---|---|
+| `cmd/barcode-service/main.go` | config, pgx pool, routes, `/healthz`, `/metrics`, `--healthcheck` |
+| `cmd/barcode-service/scans.go` | `POST /v1/scans`: validation, advisory lock, tenant fence, gapless assign/validate |
+| `cmd/barcode-service/sse.go` | per-PO, per-tenant in-memory SSE broker |
+| `cmd/barcode-service/auth.go`, `auth_cognito.go`, `auth_firebase.go` | issuer-routed JWT verification; tenant from `custom:id_enterprise` or the users table |
+| `cmd/barcode-service/openapi.json`, `openapi.go` | embedded OpenAPI document and handler |
 
-## Tests
+## Related docs
 
-`go test ./...` — unit-tests the gapless assign/validate logic against an
-in-memory `scanTx` fake (assign returns last+1; validate rejects a gap with 409;
-idempotent replay returns the original row with no second insert; tenant mismatch
-rejected) plus the dual-verifier auth path (issuer routing, fail-closed tenant,
-full offline Firebase RS256 verify, Cognito claim-tenant).
+- [ADR-0040 — barcode traceability service](../../docs/adr/0040-barcode-traceability-service.md)
+- [ADR-0011 — durability boundary and store-and-forward](../../docs/adr/0011-durability-boundary-and-store-and-forward.md)
+- [ADR-0034 — adopt Cognito/Amplify auth](../../docs/adr/0034-adopt-cognito-amplify-auth.md)
+- [ADR-0060 — local development environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
+
+<!-- wiki-links: added in cross-reference pass -->
