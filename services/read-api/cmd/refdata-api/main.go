@@ -233,6 +233,17 @@ func main() {
 		os.Exit(0)
 	}
 
+	// --dump-openapi: print the OpenAPI 3.1 document (the bytes GET /openapi.json
+	// serves) and exit. Built from the route tables alone — no DB, no network —
+	// so `make openapi` can export it for the wiki without a running stack.
+	if len(os.Args) > 1 && os.Args[1] == "--dump-openapi" {
+		if err := dumpOpenAPI(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "dump-openapi:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
 	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.
 	shutdownTracing, terr := tracing.Init(context.Background(), "read-api")

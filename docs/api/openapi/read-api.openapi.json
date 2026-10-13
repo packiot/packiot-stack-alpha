@@ -1,0 +1,3749 @@
+{
+  "components": {
+    "responses": {
+      "Unauthorized": {
+        "content": {
+          "text/plain": {
+            "example": "{\"error\":\"missing or invalid credentials\"}",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorText"
+            }
+          }
+        },
+        "description": "No credential, an unknown X-Api-Key, or an invalid/expired Bearer token (or one whose user maps to no active tenant). The message never says which."
+      }
+    },
+    "schemas": {
+      "ComposerQuery": {
+        "description": "Metric × dimension composition over one continuous aggregate.",
+        "properties": {
+          "dimensions": {
+            "description": "Group-by dimensions, returned as columns of the same name.",
+            "items": {
+              "enum": [
+                "area",
+                "equipment",
+                "shift",
+                "site"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "filters": {
+            "additionalProperties": false,
+            "description": "Dimension → allowed ids.",
+            "properties": {
+              "area": {
+                "description": "Allowed area ids (`id_area = ANY(...)`).",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "equipment": {
+                "description": "Allowed equipment ids (`id_equipment = ANY(...)`).",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "shift": {
+                "description": "Allowed shift ids (`id_shift = ANY(...)`).",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "site": {
+                "description": "Allowed site ids (`id_site = ANY(...)`).",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "from": {
+            "description": "Window start, RFC 3339 (inclusive).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "grain": {
+            "description": "Bucket size; picks the aggregate and its max window (1min: 7 days, 1hour: 90 days).",
+            "enum": [
+              "1hour",
+              "1min"
+            ],
+            "type": "string"
+          },
+          "metrics": {
+            "description": "Metrics to aggregate (sums of increments; avg_speed is an average).",
+            "items": {
+              "enum": [
+                "avg_speed",
+                "gross_production",
+                "net_production",
+                "scrap"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "to": {
+            "description": "Window end, RFC 3339 (exclusive); must be after `from`.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metrics",
+          "grain",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "DatasetQuery": {
+        "description": "Named-dataset request. The set of names and each one's filters are listed by GET /v1/catalog.",
+        "properties": {
+          "dataset": {
+            "description": "Dataset name.",
+            "enum": [
+              "current-shift",
+              "custom-target-day",
+              "custom-target-month",
+              "custom-target-week",
+              "data-quality-events",
+              "downtimes-events",
+              "downtimes-events-legacy",
+              "downtimes-per-category",
+              "downtimes-summary",
+              "enterprise-config",
+              "entities-per-user-role",
+              "equipment-downtime-reasons",
+              "equipment-downtime-reasons-dim",
+              "equipment-info",
+              "equipment-runtime-1day",
+              "equipments-events-column-flag",
+              "equipments-list",
+              "events-timeline-from-po",
+              "events-timeline-full",
+              "home-uns",
+              "live-equipment-day",
+              "live-equipment-job",
+              "live-equipment-metrics",
+              "live-equipment-month",
+              "live-equipment-shift",
+              "machine-speed",
+              "menu-per-user-role",
+              "mission-control",
+              "mission-control-area",
+              "mission-control-timeline",
+              "oee-by-month",
+              "oee-progress",
+              "oee-score-full",
+              "oee-score-teams",
+              "oee-targets",
+              "oee-targets-by-equipment",
+              "overview-downtimes-by-category",
+              "overview-events",
+              "overview-events-legacy",
+              "overview-job-info",
+              "overview-production-chart",
+              "overview-production-chart-base",
+              "overview-production-chart-legacy",
+              "overview-production-health",
+              "overview-scrap-rate",
+              "overview-takt",
+              "production-flow",
+              "production-orders-by-equipment",
+              "production-orders-rich",
+              "production-orders-runtimes",
+              "production-orders-with-runtimes",
+              "production-targets",
+              "production-targets-by-equipment",
+              "report-downtimes",
+              "sap-report",
+              "sap-report-lines",
+              "scrap-capability",
+              "scrap-targets",
+              "scrap-targets-by-equipment",
+              "shifts",
+              "single-period",
+              "single-period-legacy",
+              "site-by-equipment",
+              "suzano-analogs",
+              "targets",
+              "total-production",
+              "user-roles",
+              "users"
+            ],
+            "type": "string"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "description": "Per-dataset filters (GET /v1/catalog → datasets[name].filters): id lists as integer arrays, single ids as integers, enums as lower-case strings, booleans, dates as strings.",
+            "type": "object"
+          },
+          "window": {
+            "description": "Required for windowed datasets, rejected otherwise. Bounds accept YYYY-MM-DD, YYYY-MM-DD HH:mm, YYYY-MM-DD HH:mm:ss or RFC 3339; the span must fit the dataset's max_window.",
+            "properties": {
+              "from": {
+                "description": "Window start (inclusive).",
+                "type": "string"
+              },
+              "to": {
+                "description": "Window end; must be after `from`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "dataset"
+        ],
+        "type": "object"
+      },
+      "ErrorText": {
+        "description": "http.Error body: a one-line JSON object followed by a newline, served as `text/plain; charset=utf-8`.",
+        "examples": [
+          "{\"error\":\"query failed\"}"
+        ],
+        "type": "string"
+      },
+      "HistorianWindow": {
+        "description": "Historian window request.",
+        "properties": {
+          "equipment": {
+            "description": "Optional id_equipment filter; empty ⇒ all of the tenant's equipment.",
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "from": {
+            "description": "Window start, RFC 3339 (inclusive).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "to": {
+            "description": "Window end, RFC 3339 (exclusive); at most ~5 years after `from`.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "Rows": {
+        "description": "Result rows as JSON objects; the columns are whatever the backing view/function returns.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "securitySchemes": {
+      "ApiKey": {
+        "description": "Operator/service key (QUERY_API_KEYS key:customer_id map, auth.go). Authoritative when present: a bad key 401s, no Bearer fallback.",
+        "in": "header",
+        "name": "X-Api-Key",
+        "type": "apiKey"
+      },
+      "CognitoBearer": {
+        "bearerFormat": "JWT",
+        "description": "Cognito ID token (COGNITO_ISSUER / COGNITO_CLIENT_ID). The tenant and user role come from the users row linked to the token (auth_firebase.go, auth_cognito.go). Used when no X-Api-Key is sent.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "ExternalApiKeyHeader": {
+        "description": "Foreign-contract shims (external.go headerAPIKeyAuth): same QUERY_API_KEYS map, but the key must resolve to the shim's bound owner. Missing → 400, unknown/other tenant → 401, text/html.",
+        "in": "header",
+        "name": "x-api-key",
+        "type": "apiKey"
+      },
+      "ExternalApiKeyQuery": {
+        "description": "Foreign-contract shims that take the key as a query param (queryAPIKeyAuth, /integration/* ladders). Same map, owner-bound.",
+        "in": "query",
+        "name": "api_key",
+        "type": "apiKey"
+      },
+      "InternalKey": {
+        "description": "Shared service secret (INTERNAL_API_KEY, internal.go). Unset ⇒ every request 401s.",
+        "in": "header",
+        "name": "X-Internal-Key",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Packiot read plane: the Hasura-replacement operator reads, the composable query API (named datasets + metric × dimension composer), per-user layouts, the historian (hot + cold archive) reach, a service-to-service resolver, and frozen foreign-contract shims for ERP/BI integrations. Everything here is read-only except the per-user screen layout (`PUT /v1/screen-config`).\n\n## How to call this API\n\n- **Auth** — tenant routes take `X-Api-Key: <api-key>` (service/operator keys) **or** `Authorization: Bearer <cognito-id-token>` (front4 users). The tenant is always derived from the credential, never from the request. When both are sent, `X-Api-Key` wins and a bad key is a 401 (no Bearer fallback). The `/ext/*` and `/integration/*` shims authenticate themselves with an integration key (`x-api-key` header or `api_key` query parameter, per operation) bound to one tenant; `/internal/*` takes `X-Internal-Key`.\n- **Operator super-admin (dark unless OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED)** — a verified super-admin may read another tenant by sending `x-operator-superadmin-token: <cognito-id-token>` plus `?idEnterprise=<target>` alongside the normal credential; any failed check silently keeps the home tenant.\n- **Base URLs** — see `servers`: `https://refdata.staging.packiot.app` (staging), `https://refdata.prod.packiot.app` (production, behind CloudFront), `http://localhost:9104` (local dev). `/openapi.json` and `/metrics` are not routed publicly; fetch the spec from the portal.\n- **Content types** — request bodies are `application/json` (≤ 64 KB; longer bodies are cut at 64 KB and then fail to parse). Successful responses are `application/json`; most are an array of row objects whose columns are the backing SQL object's (examples are abridged).\n- **Errors** — native routes answer `text/plain; charset=utf-8` whose body is a one-line JSON object plus a newline, e.g. `{\"error\":\"query failed\"}`. Parse it as JSON if you like, but do not rely on the Content-Type. The shims reproduce back4 byte-for-byte: plain-string bodies served as `text/html; charset=utf-8`. 401 messages never say which credential failed.\n- **Docs** — the read-only Swagger UI portal is https://api.staging.packiot.app/docs/ (cs-admin SSO). The same document is exported to `docs/api/openapi/read-api.openapi.json` in packiot-stack-alpha (`make openapi`; `refdata-api --dump-openapi`).",
+    "title": "read-api (refdata-api)",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/ext/incoplast/events": {
+      "get": {
+        "description": "Downtime events of the bound tenant between `startTime` and `endTime`, newest first, in back4's frozen `{newData}` envelope (`pack_id` = id_equipment_event, as a string). `ts_event`, `ts_end` and `last_update` are second-precision UTC with a literal `Z`.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"incoplast\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_INCOPLAST_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_ext_incoplast_events",
+        "parameters": [
+          {
+            "description": "The integration key (also declared as this operation's security scheme). Missing, empty or the literal string `undefined` count as absent.",
+            "example": "<api-key>",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Window start, `YYYY-MM-DDTHH:mm:ss` (default: now − 1 month).",
+            "example": "2026-10-01T00:00:00",
+            "in": "query",
+            "name": "startTime",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Window end, `YYYY-MM-DDTHH:mm:ss` (default: now).",
+            "example": "2026-10-13T00:00:00",
+            "in": "query",
+            "name": "endTime",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Row limit (default 200).",
+            "example": 200,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "newData": [
+                    {
+                      "cd_shift": "T1",
+                      "custom_field": {
+                        "priority": 10
+                      },
+                      "id_order": 5501,
+                      "last_update": "2026-10-12T08:20:01Z",
+                      "nm_equipment": "Extruder 2",
+                      "nm_site": "PLANT 1",
+                      "order_number": "5501",
+                      "pack_id": "884213",
+                      "ts_end": "2026-10-12T08:19:40Z",
+                      "ts_event": "2026-10-12T08:12:05Z"
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "newData": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Downtime event rows."
+                    }
+                  },
+                  "required": [
+                    "newData"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "api_key is required!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`api_key is required!` — `api_key` is absent, empty or `undefined`."
+          },
+          "401": {
+            "content": {
+              "text/html": {
+                "example": "Unauthorized access",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Unauthorized access` — the key is unknown, or belongs to a tenant other than this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyQuery": []
+          }
+        ],
+        "summary": "Downtime events in a time window",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/ext/incoplast/jobs": {
+      "get": {
+        "description": "Production orders with status 2 (running), 3 (finished) or 4 (paused) since `ts_start`, in back4's frozen `{jobs_filtered}` envelope. `ts_start`, `ts_end` and `last_update` are second-precision UTC with a literal `Z`.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"incoplast\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_INCOPLAST_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_ext_incoplast_jobs",
+        "parameters": [
+          {
+            "description": "The integration key (also declared as this operation's security scheme). Missing, empty or the literal string `undefined` count as absent.",
+            "example": "<api-key>",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lower bound, `YYYY-MM-DD HH:mm:ss` UTC (default: now − 20 days; `undefined` = absent).",
+            "example": "2026-10-01 00:00:00",
+            "in": "query",
+            "name": "ts_start",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Row limit (default 100; `undefined` = absent).",
+            "example": 100,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "jobs_filtered": [
+                    {
+                      "custom_field": {
+                        "priority": 10
+                      },
+                      "gross_production": 1300,
+                      "id_equipment": 101,
+                      "id_order": 778,
+                      "id_production_order": "9001",
+                      "last_update": "2026-10-12T14:00:05Z",
+                      "net_production": 1234.5,
+                      "order_number": "OP-778",
+                      "status": 3,
+                      "ts_end": "2026-10-12T14:00:00Z",
+                      "ts_start": "2026-10-12T06:00:00Z"
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "jobs_filtered": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Production-order rows."
+                    }
+                  },
+                  "required": [
+                    "jobs_filtered"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "api_key is required!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`api_key is required!` — `api_key` is absent, empty or `undefined`."
+          },
+          "401": {
+            "content": {
+              "text/html": {
+                "example": "Unauthorized access",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Unauthorized access` — the key is unknown, or belongs to a tenant other than this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyQuery": []
+          }
+        ],
+        "summary": "Production orders started since a timestamp",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/ext/montebello/data-sync": {
+      "get": {
+        "description": "Pages through `serving.production_data_sync(tenant)` (optionally one site) in back4's frozen `{page, results, data}` envelope.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"montebello\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_MONTEBELLO_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_ext_montebello_data_sync",
+        "parameters": [
+          {
+            "description": "Optional site filter (upper-cased before matching).",
+            "example": "PLANT1",
+            "in": "query",
+            "name": "site",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number, 1-based (default 1). Echoed back RAW (as the string sent) in `page`.",
+            "example": "2",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 600).",
+            "example": 600,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": [
+                    {
+                      "dtimehrsplannedinmin": "0.00",
+                      "nm_equipment": "Line 3",
+                      "site": "PLANT1",
+                      "totalavailablehrsinmin": "480.00",
+                      "ts_start": "2026-10-12T06:00:00.000Z",
+                      "uniqueid": "71662"
+                    }
+                  ],
+                  "page": "2",
+                  "results": 1
+                },
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Rows of this page."
+                    },
+                    "page": {
+                      "description": "The raw `page` query string, or the integer 1 when absent.",
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    },
+                    "results": {
+                      "description": "Number of rows in `data`.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "page",
+                    "results",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "x-api-key is required!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`x-api-key is required!` — the `x-api-key` header is absent or empty."
+          },
+          "401": {
+            "content": {
+              "text/html": {
+                "example": "Unauthorized access",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Unauthorized access` — the key is unknown, or belongs to a tenant other than this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyHeader": []
+          }
+        ],
+        "summary": "Production data sync, paginated",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/ext/montebello/events": {
+      "get": {
+        "description": "Downtime events from `serving.downtime_sync(tenant)`, optionally one site, in back4's frozen `{newData}` envelope. `ts_event`, `ts_end` and `last_update` are second-precision UTC with a literal `Z` (no milliseconds), as back4's moment format emitted.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"montebello\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_MONTEBELLO_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_ext_montebello_events",
+        "parameters": [
+          {
+            "description": "The integration key (also declared as this operation's security scheme). Missing, empty or the literal string `undefined` count as absent.",
+            "example": "<api-key>",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional nm_site filter (trimmed, upper-cased).",
+            "example": "PLANT 1",
+            "in": "query",
+            "name": "site_name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "newData": [
+                    {
+                      "last_update": "2026-10-12T08:20:01Z",
+                      "nm_equipment": "Line 3",
+                      "nm_site": "PLANT 1",
+                      "pack_id": "88",
+                      "ts_end": "2026-10-12T08:19:40Z",
+                      "ts_event": "2026-10-12T08:12:05Z"
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "newData": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Downtime event rows."
+                    }
+                  },
+                  "required": [
+                    "newData"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "api_key is required!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`api_key is required!` — `api_key` is absent, empty or `undefined`."
+          },
+          "401": {
+            "content": {
+              "text/html": {
+                "example": "Not authorized!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Not authorized!` — the key is unknown, or belongs to a tenant other than this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyQuery": []
+          }
+        ],
+        "summary": "Downtime events sync",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/ext/neopac/sap-report": {
+      "get": {
+        "description": "Resolves `lineCode` to the line's id_equipment within the bound tenant, then returns `serving.sap_site_report(tenant, id_equipment)` in back4's frozen `{data}` envelope.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"neopac\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_NEOPAC_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_ext_neopac_sap_report",
+        "parameters": [
+          {
+            "description": "Line code (cd_equipment), upper-cased before matching, within the bound tenant. Absent or unknown ⇒ 404.",
+            "example": "L01",
+            "in": "query",
+            "name": "lineCode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": [
+                    {
+                      "bezeichnung": "Bucket 10 l",
+                      "erstellt": "2026-10-12T06:00:00.000Z",
+                      "gyartasi_ido": "12.34",
+                      "id_equipment": 101,
+                      "job": "4711",
+                      "material": "MAT-1",
+                      "menge_soll": 1000,
+                      "total_dt": "0.00",
+                      "werk": "1300"
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Report rows, columns in the backing function's order."
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "x-api-key is required!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`x-api-key is required!` — the `x-api-key` header is absent or empty."
+          },
+          "401": {
+            "content": {
+              "text/html": {
+                "example": "Unauthorized access",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Unauthorized access` — the key is unknown, or belongs to a tenant other than this shim's bound owner."
+          },
+          "404": {
+            "content": {
+              "text/html": {
+                "example": "Line code not found",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Line code not found` — no equipment with that cd_equipment in the bound tenant (also when the lookup itself fails)."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyHeader": []
+          }
+        ],
+        "summary": "SAP report rows for one line",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/ext/neopac/sap-report-sync": {
+      "get": {
+        "description": "Pages through `serving.sap_report_data_sync(tenant)` with optional exact filters, in back4's frozen `{page, limit, results, data}` envelope (`results` = rows in this page). Non-numeric `page`/`limit` fall back to the defaults.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"neopac\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_NEOPAC_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_ext_neopac_sap_report_sync",
+        "parameters": [
+          {
+            "description": "Page number, 1-based (default 1). OFFSET = (page − 1) × limit.",
+            "example": 1,
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size (default 1000).",
+            "example": 1000,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Exact order-number filter.",
+            "example": "4711",
+            "in": "query",
+            "name": "auftrag",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact line filter (upper-cased before matching).",
+            "example": "L01",
+            "in": "query",
+            "name": "linie",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact day filter, as stored by the backing function.",
+            "example": "2026-10-12",
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact shift-name filter.",
+            "example": "F",
+            "in": "query",
+            "name": "shicht",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact shift-number filter.",
+            "example": "1",
+            "in": "query",
+            "name": "shicht_nummer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": [
+                    {
+                      "auftrag": "4711",
+                      "geplante_ausfallzeit": "0.00",
+                      "gestartet": "2026-10-12T06:00:00.000Z",
+                      "linie": "L01",
+                      "produktionszeit": "480.00",
+                      "shicht": "F",
+                      "shicht_nummer": 1,
+                      "sum_labels": "128000",
+                      "tag": "2026-10-12"
+                    }
+                  ],
+                  "limit": 1000,
+                  "page": 1,
+                  "results": 1
+                },
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Rows of this page."
+                    },
+                    "limit": {
+                      "description": "The page size that was applied.",
+                      "type": "integer"
+                    },
+                    "page": {
+                      "description": "The page that was served.",
+                      "type": "integer"
+                    },
+                    "results": {
+                      "description": "Number of rows in `data`.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "page",
+                    "limit",
+                    "results",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "example": "x-api-key is required!",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`x-api-key is required!` — the `x-api-key` header is absent or empty."
+          },
+          "401": {
+            "content": {
+              "text/html": {
+                "example": "Unauthorized access",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Unauthorized access` — the key is unknown, or belongs to a tenant other than this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyHeader": []
+          }
+        ],
+        "summary": "SAP data sync, paginated",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/integration/get-shift-validation/{id_enterprise}": {
+      "get": {
+        "description": "Per-shift validation rows for the last `days_interval` days, in back4's frozen `{shift_data}` envelope (`ts_value_production` is a date-only string). Every failure, authentication included, is a 500 with a text/html message: this reproduces back4 exactly.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"montebello\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_MONTEBELLO_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_integration_get_shift_validation_id_enterprise",
+        "parameters": [
+          {
+            "description": "The tenant id. Must equal the api_key's own enterprise and the shim's bound owner.",
+            "example": 42,
+            "in": "path",
+            "name": "id_enterprise",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The integration key (also declared as this operation's security scheme). Missing, empty or the literal string `undefined` count as absent.",
+            "example": "<api-key>",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Days back, 1–41. Validated AFTER the site lookup, so a bad site wins.",
+            "example": 7,
+            "in": "query",
+            "name": "days_interval",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Optional site suffix used to find the site's topic within the tenant.",
+            "example": "PLANT1",
+            "in": "query",
+            "name": "site",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "shift_data": [
+                    {
+                      "cd_shift": "T1",
+                      "id_order": "5000000001",
+                      "id_site": 14,
+                      "index1": "7",
+                      "order_number": null,
+                      "to_delete": false,
+                      "ts_value_production": "2026-10-12",
+                      "txt_validation_notes": {
+                        "LastConfirm": {
+                          "approved": true,
+                          "note": "checked"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "shift_data": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Shift validation rows."
+                    }
+                  },
+                  "required": [
+                    "shift_data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "500": {
+            "content": {
+              "text/html": {
+                "examples": {
+                  "case1": {
+                    "summary": "Not authorized!",
+                    "value": "Not authorized!"
+                  },
+                  "case2": {
+                    "summary": "Site does not exist!",
+                    "value": "Site does not exist!"
+                  },
+                  "case3": {
+                    "summary": "Enterprise topic not found!",
+                    "value": "Enterprise topic not found!"
+                  },
+                  "case4": {
+                    "summary": "Days interval must be between 1 and 41",
+                    "value": "Days interval must be between 1 and 41"
+                  }
+                },
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "`Not authorized!` — `api_key` missing/unknown, path id not numeric, or the key's enterprise is not the path id / bound owner; `Site does not exist!` — `site` given but no topic of the tenant ends with it; `Enterprise topic not found!` — no `site` and the tenant has no topic at all; `Days interval must be between 1 and 41` — `days_interval` absent, not a number or outside 1–41; text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyQuery": []
+          }
+        ],
+        "summary": "Shift validation rows for the last N days",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/integration/job_data_integration/{id_enterprise}": {
+      "get": {
+        "description": "Job/production data from `serving.data_sync(tenant, days_interval)`, optionally one site, in back4's frozen `{data_integration}` envelope.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"montebello\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_MONTEBELLO_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_integration_job_data_integration_id_enterprise",
+        "parameters": [
+          {
+            "description": "The tenant id. Must equal the api_key's own enterprise and the shim's bound owner.",
+            "example": 42,
+            "in": "path",
+            "name": "id_enterprise",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The integration key (also declared as this operation's security scheme). Missing, empty or the literal string `undefined` count as absent.",
+            "example": "<api-key>",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Days back, 1–41. Absent or non-numeric counts as 0 (rejected).",
+            "example": 7,
+            "in": "query",
+            "name": "days_interval",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Optional site filter (upper-cased before matching).",
+            "example": "PLANT1",
+            "in": "query",
+            "name": "site",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data_integration": [
+                    {
+                      "job": "8801",
+                      "nm_equipment": "Extruder 1",
+                      "presscnt": "12345",
+                      "setuphoursinmin": "0.00",
+                      "site": "PLANT1",
+                      "supervisornotes": {
+                        "approved": true,
+                        "note": "setup ok"
+                      },
+                      "totalavailablehrsinmin": "480.00",
+                      "ts_start": "2026-10-12T06:00:00.000Z"
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "data_integration": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Job data rows."
+                    }
+                  },
+                  "required": [
+                    "data_integration"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "examples": {
+                  "case1": {
+                    "summary": "id is required!",
+                    "value": "id is required!"
+                  },
+                  "case2": {
+                    "summary": "days interval must be between 1 and 41",
+                    "value": "days interval must be between 1 and 41"
+                  }
+                },
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`id is required!` — `api_key` is missing or unknown; `days interval must be between 1 and 41` — `days_interval` is absent, not a number, or outside 1–41."
+          },
+          "422": {
+            "content": {
+              "text/html": {
+                "example": "Invalid id",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Invalid id` — the key's enterprise differs from the path `id_enterprise`, or is not this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyQuery": []
+          }
+        ],
+        "summary": "Job data for the last N days",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/integration/job_report/{id_enterprise}": {
+      "get": {
+        "description": "Job report rows (press counts per production order and shift) for the listed equipment of the bound tenant, in back4's frozen `{job_report}` envelope.\n\nAnti-corruption shim (ADR-0031) reproducing a frozen back4 contract for consumer \"incoplast\". Self-authenticating: the key must resolve to the shim's bound owner tenant (EXTERNAL_INCOPLAST_CUSTOMER_ID; unset ⇒ every call is rejected). Error bodies are back4's exact strings as `text/html; charset=utf-8`. A database error is swallowed like back4 did: the envelope comes back with no rows (or, for lookups, the not-found error). Read-only; 15 s timeout; any HTTP method behaves like GET.",
+        "operationId": "get_integration_job_report_id_enterprise",
+        "parameters": [
+          {
+            "description": "The tenant id. Must equal the api_key's own enterprise and the shim's bound owner.",
+            "example": 42,
+            "in": "path",
+            "name": "id_enterprise",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The integration key (also declared as this operation's security scheme). Missing, empty or the literal string `undefined` count as absent.",
+            "example": "<api-key>",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Equipment id list in any of the forms `1,2`, `[1,2]` or `{1,2}`; non-numeric items are ignored. `undefined` counts as absent.",
+            "example": "[101,102]",
+            "in": "query",
+            "name": "id_equipment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "job_report": [
+                    {
+                      "cd_shift": "T1",
+                      "id_equipment": 101,
+                      "id_order": 901,
+                      "order_number": "OP-901",
+                      "presscount": 4200.5,
+                      "ts_start": "2026-10-12T06:00:00.000Z",
+                      "ts_value_production": "2026-10-12T06:00:00.000Z"
+                    }
+                  ]
+                },
+                "schema": {
+                  "properties": {
+                    "job_report": {
+                      "$ref": "#/components/schemas/Rows",
+                      "description": "Job report rows."
+                    }
+                  },
+                  "required": [
+                    "job_report"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "back4's frozen envelope (`application/json; charset=utf-8`, no HTML escaping). Row columns and their order are the backing object's; the example is abridged (most rows also carry the equipment's legacy SparkPlug topic string). Other timestamps are `YYYY-MM-DDTHH:mm:ss.000Z`."
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "examples": {
+                  "case1": {
+                    "summary": "id_enterprise is required!",
+                    "value": "id_enterprise is required!"
+                  },
+                  "case2": {
+                    "summary": "id_equipment is required!",
+                    "value": "id_equipment is required!"
+                  }
+                },
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`id_enterprise is required!` — `api_key` is missing or unknown; `id_equipment is required!` — `id_equipment` is absent, empty or `undefined`."
+          },
+          "422": {
+            "content": {
+              "text/html": {
+                "example": "Invalid id",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`Invalid id` — the key's enterprise differs from the path `id_enterprise`, or is not this shim's bound owner."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"encode failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "text/plain `{\"error\":\"encode failed\"}` — the envelope could not be encoded (not expected in practice)."
+          }
+        },
+        "security": [
+          {
+            "ExternalApiKeyQuery": []
+          }
+        ],
+        "summary": "Job report (press counts) for given equipment",
+        "tags": [
+          "external"
+        ]
+      }
+    },
+    "/internal/resolve-device": {
+      "get": {
+        "description": "Used by the edge transformer at SparkPlug birth (ADR-0046): returns the active `core.device_bindings` row for an opaque device key. A 404 is the normal \"not bound (yet)\" answer, not a fault. Not tenant-scoped by credential: the key is a shared service secret and `enterprise` is an optional belt-and-braces filter. 5 s timeout. A non-GET method returns 405 `{\"error\":\"method not allowed\"}` with `Allow: GET`. Inert (every call 401) until INTERNAL_API_KEY is set.",
+        "operationId": "get_internal_resolve_device",
+        "parameters": [
+          {
+            "description": "Opaque device key: `dk_` + 32 lowercase hex characters.",
+            "example": "dk_3f9c2a7e5b1d48c6a0e4f7b2c9d1e8a5",
+            "in": "query",
+            "name": "device_key",
+            "required": true,
+            "schema": {
+              "pattern": "^dk_[0-9a-f]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional positive id_enterprise; when given, the binding must belong to it.",
+            "example": 42,
+            "in": "query",
+            "name": "enterprise",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "id_enterprise": 42,
+                  "id_equipment": 101
+                },
+                "schema": {
+                  "properties": {
+                    "id_enterprise": {
+                      "description": "That equipment's tenant.",
+                      "type": "integer"
+                    },
+                    "id_equipment": {
+                      "description": "The equipment the key is bound to.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id_equipment",
+                    "id_enterprise"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The binding."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"device_key is required\"}",
+                    "value": "{\"error\":\"device_key is required\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"device_key must be an opaque dk_<32 hex> key (ADR-0061)\"}",
+                    "value": "{\"error\":\"device_key must be an opaque dk_<32 hex> key (ADR-0061)\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"enterprise, when given, must be a positive integer\"}",
+                    "value": "{\"error\":\"enterprise, when given, must be a positive integer\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "`device_key` missing or not a `dk_` key, or `enterprise` not a positive integer."
+          },
+          "401": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing or invalid internal credentials\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or wrong `X-Internal-Key`, or INTERNAL_API_KEY unset (endpoint inert)."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"device_key not mapped to an active id_equipment\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "No active binding for the key (within `enterprise`, when given)."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out."
+          }
+        },
+        "security": [
+          {
+            "InternalKey": []
+          }
+        ],
+        "summary": "Resolve a device_key to its active id_equipment",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/v1/catalog": {
+      "get": {
+        "description": "Schema metadata for POST /v1/query: the composer's metrics, dimensions and grains (grain → max window), the row cap, and every named dataset with its group, description, whether it takes a window (and the max), and its filters. `requires_user_context: true` marks datasets that only work with a Bearer token (403 with X-Api-Key). Tenant-independent; a valid credential is still required. Any HTTP method behaves like GET.",
+        "operationId": "get_v1_catalog",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "datasets": {
+                    "overview-job-info": {
+                      "description": "Current job info for one equipment",
+                      "filters": {
+                        "equipment": "id (required)"
+                      },
+                      "group": "overview-detail",
+                      "windowed": false
+                    },
+                    "production-flow": {
+                      "description": "Production flow series",
+                      "filters": {
+                        "areas": "ids",
+                        "equipments": "ids",
+                        "shifts": "ids",
+                        "sites": "ids",
+                        "teams": "ids",
+                        "time_grain": "enum: day|hour|week|month (default day)"
+                      },
+                      "group": "production-flow",
+                      "max_window": "2160h0m0s",
+                      "windowed": true
+                    }
+                  },
+                  "dimensions": [
+                    "area",
+                    "equipment",
+                    "shift",
+                    "site"
+                  ],
+                  "grains": {
+                    "1hour": "2160h0m0s",
+                    "1min": "168h0m0s"
+                  },
+                  "metrics": [
+                    "avg_speed",
+                    "gross_production",
+                    "net_production",
+                    "scrap"
+                  ],
+                  "row_limit": 10000
+                },
+                "schema": {
+                  "properties": {
+                    "datasets": {
+                      "additionalProperties": {
+                        "type": "object"
+                      },
+                      "description": "Dataset name → {group, description, windowed, filters, max_window?, requires_user_context?}. Filter values: `ids` (array of integer ids), `id (required)`, `enum: a|b (default a)`, `bool (default false)`, `date YYYY-MM-DD or datetime (required)`.",
+                      "type": "object"
+                    },
+                    "dimensions": {
+                      "description": "Composer dimension names (unordered).",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "grains": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Grain → maximum window (Go duration string).",
+                      "type": "object"
+                    },
+                    "metrics": {
+                      "description": "Composer metric names (unordered).",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "row_limit": {
+                      "description": "Row cap applied to every composer query.",
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The catalog (example abridged to two datasets)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "List composer vocabulary and every named dataset",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/v1/dashboard-config": {
+      "get": {
+        "description": "Resolves the dashboard document front4 renders: the tenant's latest `dashboard_config` baseline for `dashboard_id`, shallow-merged (`baseline || override`, override keys win) with the user's `identity.user_screen_config` row for screen = `dashboard_id`. `status` is `ok`, `not_found` (no baseline for this tenant) or `invalid` (the stored config is not a JSON object). 10 s timeout. A non-GET method returns 405 `{\"error\":\"GET only\"}`.\n\n**Tenant scoping:** both reads are fenced to the caller's tenant; `user` only selects a row within it.",
+        "operationId": "get_v1_dashboard_config",
+        "parameters": [
+          {
+            "description": "Dashboard id.",
+            "example": "overview",
+            "in": "query",
+            "name": "dashboard_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional user id whose override to merge; absent ⇒ baseline only.",
+            "example": "1234",
+            "in": "query",
+            "name": "user",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "invalid": {
+                    "summary": "Stored config is not an object",
+                    "value": {
+                      "issues": [
+                        {
+                          "message": "stored config is not a JSON object",
+                          "path": "(root)"
+                        }
+                      ],
+                      "status": "invalid"
+                    }
+                  },
+                  "notFound": {
+                    "summary": "No baseline for this tenant",
+                    "value": {
+                      "status": "not_found"
+                    }
+                  },
+                  "ok": {
+                    "summary": "Resolved",
+                    "value": {
+                      "config": {
+                        "layout": "grid",
+                        "widgets": [
+                          "oee-gauge"
+                        ]
+                      },
+                      "status": "ok",
+                      "version": 3
+                    }
+                  }
+                },
+                "schema": {
+                  "properties": {
+                    "config": {
+                      "description": "The merged config (status ok only).",
+                      "type": "object"
+                    },
+                    "issues": {
+                      "description": "Why the config is invalid (status invalid only).",
+                      "items": {
+                        "properties": {
+                          "message": {
+                            "description": "Human-readable problem.",
+                            "type": "string"
+                          },
+                          "path": {
+                            "description": "Where the problem is (`(root)` for the whole document).",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "status": {
+                      "description": "Resolution outcome.",
+                      "enum": [
+                        "ok",
+                        "not_found",
+                        "invalid"
+                      ],
+                      "type": "string"
+                    },
+                    "version": {
+                      "description": "Baseline version that was served (status ok only).",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resolution envelope (always 200, even when nothing is found)."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"dashboard_id query param required\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "`dashboard_id` is missing."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Resolve a dashboard config (baseline plus user override)",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/v1/day-week-begin": {
+      "get": {
+        "description": "The site's day-begin and week-begin offsets (seconds; week_begin is relative to Monday 00:00 and may be negative) for the equipment named by `topic`. Each row also carries the equipment's legacy topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_day_week_begin",
+        "parameters": [
+          {
+            "description": "One equipment topic (within the caller's tenant).",
+            "example": "ACME/Plant1/Packaging/Line1",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "day_begin": 21600,
+                    "id_enterprise": 42,
+                    "week_begin": -3000
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing required query param: topic\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Day and week begin offsets for one topic",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/downtime-reasons": {
+      "get": {
+        "deprecated": true,
+        "description": "**Superseded by `GET /v2/downtime-reasons`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nReason trees for the equipment named by `topics` (same line-only reasons rule as /v2). Rows carry id_equipment, downtime_reasons, scrap_reasons and the matched legacy topic string; there is no id_enterprise column on this route.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_downtime_reasons",
+        "parameters": [
+          {
+            "description": "Comma-separated equipment topics (`Enterprise/Site/Area/Line[/Machine]`). Narrows WITHIN the caller's tenant; it never selects a tenant. Topics of another tenant simply match nothing.",
+            "example": "ACME/Plant1/Packaging/Line1,ACME/Plant1/Packaging/Line1/Filler",
+            "in": "query",
+            "name": "topics",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "downtime_reasons": [
+                      {
+                        "children": [
+                          {
+                            "id": 11,
+                            "name": "Jam at infeed"
+                          },
+                          {
+                            "id": 12,
+                            "name": "Belt failure"
+                          }
+                        ],
+                        "id": 1,
+                        "name": "Mechanical"
+                      }
+                    ],
+                    "id_equipment": 101,
+                    "scrap_reasons": [
+                      {
+                        "id": 1,
+                        "name": "Seal defect"
+                      }
+                    ]
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing required query param: topics\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Downtime and scrap reason trees by topic",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/entities-per-user-role": {
+      "get": {
+        "description": "The operator's entity tree per user role (`v_entities_per_user_role_operator`): enterprise, sites, areas and equipment arrays, enriched with each entity's legacy topic prefix.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_entities_per_user_role",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "enterprise": [
+                      {
+                        "id": 42,
+                        "name": "ACME"
+                      }
+                    ],
+                    "id_enterprise": 42,
+                    "id_user_role": 42,
+                    "nm_user_role": "ACME",
+                    "sites": [
+                      {
+                        "id": 7,
+                        "name": "Plant 1"
+                      }
+                    ]
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Entity tree per user role (operator view)",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/events-timeline": {
+      "get": {
+        "deprecated": true,
+        "description": "**Superseded by `GET /v2/events-timeline`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nRecent machine events (downtimes, setups, production-order changes) for the equipment named by `topics`, from `serving.events_timeline`. Each row also carries the equipment's legacy SparkPlug topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_events_timeline",
+        "parameters": [
+          {
+            "description": "Comma-separated equipment topics (`Enterprise/Site/Area/Line[/Machine]`). Narrows WITHIN the caller's tenant; it never selects a tenant. Topics of another tenant simply match nothing.",
+            "example": "ACME/Plant1/Packaging/Line1,ACME/Plant1/Packaging/Line1/Filler",
+            "in": "query",
+            "name": "topics",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "cd_category": "MECH",
+                    "cd_machine": "FILLER-01",
+                    "cd_subcategory": "JAM",
+                    "change_over": false,
+                    "custom_field": null,
+                    "desc_category": "Mechanical",
+                    "desc_subcategory": "Jam at infeed",
+                    "duration": 455,
+                    "event_type": "downtime",
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_equipment_event": 884213,
+                    "id_order_text": "PO-2026-0815",
+                    "id_production_order": 55120,
+                    "production_programmed": 12000,
+                    "ts_end": "2026-10-13T08:19:40Z",
+                    "ts_event": "2026-10-13T08:12:05Z",
+                    "txt_downtime_notes": "Film roll change"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing required query param: topics\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Event timeline for the given equipment topics",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/historian/downtime-series": {
+      "post": {
+        "description": "Daily downtime per equipment over the hot + cold archive, split by `planned_downtime`. Rows: `day, id_equipment, planned_downtime, event_count, downtime_seconds`. For windows older than the hot tier (the composer and datasets return 422 / X-Data-Truncated there).\n\n`from`/`to` must be RFC 3339; the window is [from, to), at most ~5 years, at most 100000 rows. Body ≤ 64 KB. 60 s timeout. Validation runs before the gateway check, so a bad window is 400 even when the historian is down. A non-POST method returns 405 `{\"error\":\"POST only\"}`.\n\n**Tenant scoping:** rows are always the caller's tenant; `equipment` only narrows.",
+        "operationId": "post_v1_historian_downtime_series",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "equipment": [
+                  101,
+                  102
+                ],
+                "from": "2024-01-01T00:00:00Z",
+                "to": "2024-04-01T00:00:00Z"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/HistorianWindow"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "day": "2024-03-01",
+                    "downtime_seconds": 5320,
+                    "event_count": 14,
+                    "id_equipment": 101,
+                    "planned_downtime": false
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Daily rows, ordered by day and equipment."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"bad request body\"}",
+                    "value": "{\"error\":\"bad request body\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"invalid window: require from < to (RFC3339)\"}",
+                    "value": "{\"error\":\"invalid window: require from < to (RFC3339)\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"window exceeds 43800h0m0s historian budget\"}",
+                    "value": "{\"error\":\"window exceeds 43800h0m0s historian budget\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Malformed body (including a non-RFC 3339 bound), from ≥ to, or the window exceeds the budget."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"historian query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The historian query failed or timed out (60 s)."
+          },
+          "503": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"historian gateway not configured\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The historian gateway is not configured on this deployment."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Daily downtime per equipment, planned versus unplanned",
+        "tags": [
+          "historian"
+        ]
+      }
+    },
+    "/v1/historian/production-series": {
+      "post": {
+        "description": "Daily gross/net production per equipment over the hot + cold archive (cold daily rollup + hot hourly rollup, whole UTC days). Rows: `day, id_equipment, gross_production, net_production`. For windows older than the hot tier (the composer and datasets return 422 / X-Data-Truncated there).\n\n`from`/`to` must be RFC 3339; the window is [from, to), at most ~5 years, at most 100000 rows. Body ≤ 64 KB. 60 s timeout. Validation runs before the gateway check, so a bad window is 400 even when the historian is down. A non-POST method returns 405 `{\"error\":\"POST only\"}`.\n\n**Tenant scoping:** rows are always the caller's tenant; `equipment` only narrows.",
+        "operationId": "post_v1_historian_production_series",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "equipment": [
+                  101,
+                  102
+                ],
+                "from": "2024-01-01T00:00:00Z",
+                "to": "2024-04-01T00:00:00Z"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/HistorianWindow"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "day": "2024-03-01",
+                    "gross_production": 25820,
+                    "id_equipment": 101,
+                    "net_production": 25410
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Daily rows, ordered by day and equipment."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"bad request body\"}",
+                    "value": "{\"error\":\"bad request body\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"invalid window: require from < to (RFC3339)\"}",
+                    "value": "{\"error\":\"invalid window: require from < to (RFC3339)\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"window exceeds 43800h0m0s historian budget\"}",
+                    "value": "{\"error\":\"window exceeds 43800h0m0s historian budget\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Malformed body (including a non-RFC 3339 bound), from ≥ to, or the window exceeds the budget."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"historian query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The historian query failed or timed out (60 s)."
+          },
+          "503": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"historian gateway not configured\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The historian gateway is not configured on this deployment."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Daily gross and net production per equipment",
+        "tags": [
+          "historian"
+        ]
+      }
+    },
+    "/v1/language-packs": {
+      "get": {
+        "description": "Every row of `language_packs`: one per language tag, with the desktop, mobile, operator and overview string bundles.\n\n**Scoping:** global reference data — a valid credential is required, but rows are not tenant-filtered. Read-only; 15 s query timeout; any HTTP method behaves like GET.",
+        "operationId": "get_v1_language_packs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "id_language_pack": 1,
+                    "language_pack_desktop": {},
+                    "language_pack_mobile": {},
+                    "language_pack_operator": {
+                      "start": "Start"
+                    },
+                    "language_pack_operator40": null,
+                    "language_pack_overview": {},
+                    "language_tag": "en-US"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"query failed\"}",
+                    "value": "{\"error\":\"query failed\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"row scan failed\"}",
+                    "value": "{\"error\":\"row scan failed\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"rows error\"}",
+                    "value": "{\"error\":\"rows error\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query or row decoding failed."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Global i18n language packs",
+        "tags": [
+          "reference"
+        ]
+      }
+    },
+    "/v1/operator-entities": {
+      "get": {
+        "description": "One row per tenant with the enterprise, sites, areas, lines (tp_equipment 3), sectors (2) and machines (1) as `{id, name[, position]}` arrays (`v_operator_entities_2`).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_operator_entities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "areas": [
+                      {
+                        "id": 12,
+                        "name": "Packaging"
+                      }
+                    ],
+                    "enterprise": [
+                      {
+                        "id": 42,
+                        "name": "ACME"
+                      }
+                    ],
+                    "id_enterprise": 42,
+                    "lines": [
+                      {
+                        "id": 100,
+                        "name": "Line 1",
+                        "position": 1
+                      }
+                    ],
+                    "machines": [
+                      {
+                        "id": 101,
+                        "name": "Filler",
+                        "position": 1
+                      }
+                    ],
+                    "sectors": [],
+                    "sites": [
+                      {
+                        "id": 7,
+                        "name": "Plant 1"
+                      }
+                    ]
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Operator entity tree for the tenant",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/operator-po-details": {
+      "get": {
+        "description": "Per-order runtime detail for the operator app: net production, scrap, running time, downtime and derived rates (`v_operator_po_details_3`). Rows are keyed by id_production_order; filter client-side.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_operator_po_details",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "downtime": 1260,
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_production_order": 55120,
+                    "net_production": 8450,
+                    "running_time": 14400,
+                    "scrap": 37
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Operator production-order details (whole tenant)",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/operator-po-list": {
+      "get": {
+        "deprecated": true,
+        "description": "**Superseded by `GET /v2/operator-po-list`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nEvery production order the operator app can set up or select, for the whole tenant (`v_operator_po_list_setup_4`). Filter client-side, or use GET /v2/operator-po-list to narrow by equipment.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_operator_po_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "conversion_factor": 1,
+                    "custom_field": null,
+                    "equipment_setup": {
+                      "ideal_speed": 120
+                    },
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_order": 815,
+                    "id_order_text": "PO-2026-0815",
+                    "id_production_order": 55120,
+                    "nm_client": "ACME Retail",
+                    "nm_product": "Water 500 ml",
+                    "nm_product_family": "Bottles",
+                    "priority": null,
+                    "production_programmed": 12000,
+                    "status": 1,
+                    "ts_start": null,
+                    "txt_product": "WATER-500"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Operator production-order list (whole tenant)",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/pending-downtime": {
+      "get": {
+        "deprecated": true,
+        "description": "**Superseded by `GET /v2/pending-downtime`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nDowntime events that the operator has not classified yet, from `serving.pending_downtime`. Each row also carries the equipment's legacy SparkPlug topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_pending_downtime",
+        "parameters": [
+          {
+            "description": "Comma-separated equipment topics (`Enterprise/Site/Area/Line[/Machine]`). Narrows WITHIN the caller's tenant; it never selects a tenant. Topics of another tenant simply match nothing.",
+            "example": "ACME/Plant1/Packaging/Line1,ACME/Plant1/Packaging/Line1/Filler",
+            "in": "query",
+            "name": "topics",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "duration": 455,
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_equipment_event": 884213,
+                    "ts_end": "2026-10-13T08:19:40Z",
+                    "ts_event": "2026-10-13T08:12:05Z"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing required query param: topics\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Downtimes still waiting for a reason (by topic)",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/query": {
+      "post": {
+        "description": "Two body shapes share the route.\n\n- **Named dataset** — a body with `dataset` runs one allowlisted query from the registry (GET /v1/catalog lists names, windows and filters). Unknown filters or out-of-enum values are rejected; the shared row cap is applied. Results are cached per tenant + query for a short TTL (Redis cache-aside, fail-open), so identical polls within the TTL return the same bytes. Coverage headers say how far back the dataset's hot data reaches.\n- **Composer** — `metrics` × `dimensions` over a continuous aggregate at `grain` for [`from`, `to`), at most 10000 rows; never cached. A window older than the aggregate's retention is a 422 pointing at /v1/historian/*.\n\nBody ≤ 64 KB. 40 s query timeout. Tenant-scoped like every native route (the tenant is never read from the body). Datasets flagged `requires_user_context` need a Bearer token. Any HTTP method is accepted; POST is the contract.",
+        "operationId": "post_v1_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "composer": {
+                  "summary": "Composer: hourly net production per equipment",
+                  "value": {
+                    "dimensions": [
+                      "equipment"
+                    ],
+                    "filters": {
+                      "equipment": [
+                        101,
+                        102
+                      ]
+                    },
+                    "from": "2026-10-12T00:00:00Z",
+                    "grain": "1hour",
+                    "metrics": [
+                      "net_production",
+                      "scrap"
+                    ],
+                    "to": "2026-10-13T00:00:00Z"
+                  }
+                },
+                "singleEquipmentDataset": {
+                  "summary": "Dataset that requires one equipment id",
+                  "value": {
+                    "dataset": "overview-job-info",
+                    "filters": {
+                      "equipment": 101
+                    }
+                  }
+                },
+                "windowedDataset": {
+                  "summary": "Windowed dataset with id filters",
+                  "value": {
+                    "dataset": "production-flow",
+                    "filters": {
+                      "equipments": [
+                        101,
+                        102
+                      ],
+                      "sites": [
+                        7
+                      ],
+                      "time_grain": "day"
+                    },
+                    "window": {
+                      "from": "2026-10-01",
+                      "to": "2026-10-08"
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DatasetQuery"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComposerQuery"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "composer": {
+                    "summary": "Composer result",
+                    "value": [
+                      {
+                        "equipment": 101,
+                        "net_production": 1180,
+                        "scrap": 6,
+                        "ts_value": "2026-10-12T08:00:00Z"
+                      }
+                    ]
+                  },
+                  "dataset": {
+                    "summary": "Dataset result (abridged)",
+                    "value": [
+                      {
+                        "gross_production": 25820,
+                        "id_equipment": 101,
+                        "net_production": 25410,
+                        "ts_value": "2026-10-01"
+                      }
+                    ]
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (an empty array when nothing matches). Dataset columns are the backing object's; composer columns are `ts_value`, the requested dimensions, then the metrics.",
+            "headers": {
+              "Warning": {
+                "description": "Dataset path only: a 299 warning accompanying X-Data-Truncated, naming the floor and where deep history lives.",
+                "example": "299 read-api \"window starts before 2026-07-15T00:00:00Z: silver.equipment_values keeps 90 days; older rows are not in this dataset (deep history: /v1/historian/*)\"",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Data-Hot-Floor": {
+                "description": "Dataset path only: the oldest timestamp the dataset still holds (RFC 3339, UTC).",
+                "example": "2026-07-15T00:00:00Z",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Data-Truncated": {
+                "description": "Dataset path only: `true` when the window starts before the hot floor (older rows are missing).",
+                "example": "true",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"bad request body\"}",
+                    "value": "{\"error\":\"bad request body\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"unknown dataset \\\"production-flw\\\"\"}",
+                    "value": "{\"error\":\"unknown dataset \\\"production-flw\\\"\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"dataset \\\"production-flow\\\" requires window {from,to} with to > from\"}",
+                    "value": "{\"error\":\"dataset \\\"production-flow\\\" requires window {from,to} with to > from\"}"
+                  },
+                  "case4": {
+                    "summary": "{\"error\":\"window exceeds 2160h0m0s budget for dataset \\\"production-flow\\\"\"}",
+                    "value": "{\"error\":\"window exceeds 2160h0m0s budget for dataset \\\"production-flow\\\"\"}"
+                  },
+                  "case5": {
+                    "summary": "{\"error\":\"dataset \\\"overview-job-info\\\" does not accept filter \\\"sites\\\"\"}",
+                    "value": "{\"error\":\"dataset \\\"overview-job-info\\\" does not accept filter \\\"sites\\\"\"}"
+                  },
+                  "case6": {
+                    "summary": "{\"error\":\"filter \\\"time_grain\\\" must be one of day|hour|week|month\"}",
+                    "value": "{\"error\":\"filter \\\"time_grain\\\" must be one of day|hour|week|month\"}"
+                  },
+                  "case7": {
+                    "summary": "{\"error\":\"unknown metric \\\"oee\\\"\"}",
+                    "value": "{\"error\":\"unknown metric \\\"oee\\\"\"}"
+                  },
+                  "case8": {
+                    "summary": "{\"error\":\"window exceeds 168h0m0s budget for grain 1min\"}",
+                    "value": "{\"error\":\"window exceeds 168h0m0s budget for grain 1min\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Malformed body, or the request fails validation (unknown dataset/metric/dimension/grain/filter, bad window, window over budget)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"dataset requires user context (front4 Firebase JWT); not available via X-Api-Key\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "A per-user-role dataset (`requires_user_context`) was called without a user identity (X-Api-Key, or a user without a role)."
+          },
+          "422": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"window starts before 2026-07-15T00:00:00Z: agg_equipment_values_1hour keeps 90 days; for older data use /v1/historian/production-series\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Composer only: the window starts before the aggregate's retention floor."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (40 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Run a named dataset or a metric × dimension query",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/v1/screen-config": {
+      "get": {
+        "description": "Returns the stored layout JSON for (tenant, user, screen) from `identity.user_screen_config`, or `{}` when none is stored. Note: any database error is also answered with 200 `{}`. A non-GET/PUT method returns 405 `{\"error\":\"GET or PUT\"}` (after the user/screen check).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_screen_config",
+        "parameters": [
+          {
+            "description": "User id whose layout to read/write. Selects a row WITHIN the caller's tenant; it is not an authorization check.",
+            "example": "1234",
+            "in": "query",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Screen key (for dashboards: the dashboard_id).",
+            "example": "mission-control",
+            "in": "query",
+            "name": "screen",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "columns": 3,
+                  "widgets": [
+                    {
+                      "h": 1,
+                      "id": "oee-gauge",
+                      "w": 1,
+                      "x": 0,
+                      "y": 0
+                    }
+                  ]
+                },
+                "schema": {
+                  "description": "Any JSON value the client saved."
+                }
+              }
+            },
+            "description": "The stored layout JSON exactly as saved, or `{}`."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"user and screen query params required\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "`user` or `screen` is missing."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Read a saved per-user screen layout",
+        "tags": [
+          "query"
+        ]
+      },
+      "put": {
+        "description": "Upserts the request body as the layout for (tenant, user, screen) in `identity.user_screen_config` (last write wins; idempotent for the same body). The body may be any valid JSON up to 64 KB. Also used as the per-user override of GET /v1/dashboard-config (screen = dashboard_id). Tenant-scoped: the tenant comes from the credential.",
+        "operationId": "put_v1_screen_config",
+        "parameters": [
+          {
+            "description": "User id whose layout to read/write. Selects a row WITHIN the caller's tenant; it is not an authorization check.",
+            "example": "1234",
+            "in": "query",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Screen key (for dashboards: the dashboard_id).",
+            "example": "mission-control",
+            "in": "query",
+            "name": "screen",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "columns": 3,
+                "widgets": [
+                  {
+                    "h": 1,
+                    "id": "oee-gauge",
+                    "w": 1,
+                    "x": 0,
+                    "y": 0
+                  }
+                ]
+              },
+              "schema": {
+                "description": "Any valid JSON, ≤ 64 KB. A JSON object is recommended (dashboard overrides merge only objects)."
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "{\"ok\":true}",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Stored. The body `{\"ok\":true}` is written without a Content-Type, so it is sniffed as `text/plain; charset=utf-8`."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"user and screen query params required\"}",
+                    "value": "{\"error\":\"user and screen query params required\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"config must be valid JSON <= 64KB\"}",
+                    "value": "{\"error\":\"config must be valid JSON <= 64KB\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "`user`/`screen` missing, or the body is not valid JSON ≤ 64 KB."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"store failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The upsert failed."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Save a per-user screen layout",
+        "tags": [
+          "query"
+        ]
+      }
+    },
+    "/v1/shift-hours": {
+      "get": {
+        "description": "The shift calendar (one `shift_hours` array per equipment) that applies to the equipment named by `topic`. `begin_time`/`end_time` inside each element are seconds from the week begin, not clock times. Each row also carries the equipment's legacy topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_shift_hours",
+        "parameters": [
+          {
+            "description": "One equipment topic (within the caller's tenant).",
+            "example": "ACME/Plant1/Packaging/Line1",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "id_enterprise": 42,
+                    "shift_hours": [
+                      {
+                        "begin_time": 21600,
+                        "cd_shift": "T1",
+                        "end_time": 50400,
+                        "weekday": 1
+                      }
+                    ]
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing required query param: topic\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Shift calendar for one equipment topic",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v1/shift-hours-by-enterprise": {
+      "get": {
+        "description": "Same rows as GET /v1/shift-hours. The historical `?enterprise=` parameter is gone (ADR-0027): the enterprise is always the caller's tenant; the path is kept because the operator app caches it by URL.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v1_shift_hours_by_enterprise",
+        "parameters": [
+          {
+            "description": "One equipment topic (within the caller's tenant).",
+            "example": "ACME/Plant1/Packaging/Line1",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "id_enterprise": 42,
+                    "shift_hours": [
+                      {
+                        "begin_time": 21600,
+                        "cd_shift": "T1",
+                        "end_time": 50400,
+                        "weekday": 1
+                      }
+                    ]
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"missing required query param: topic\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Shift calendar for one topic (enterprise variant)",
+        "tags": [
+          "operator-v1"
+        ]
+      }
+    },
+    "/v2/downtime-reasons": {
+      "get": {
+        "description": "One row per requested active machine or line (`serving.downtime_reasons_by_equipment`). Line-only reasons rule: a machine inside a line whose downtimes come from its lead machine gets the LINE's downtime tree; scrap reasons stay the machine's own.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v2_downtime_reasons",
+        "parameters": [
+          {
+            "description": "Comma-separated positive id_equipment values (at most 500). Identity is id_equipment, never a topic. Ids of another tenant simply match nothing.",
+            "example": "101,102",
+            "in": "query",
+            "name": "equipment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "display_path": "ACME / Plant 1 / Packaging / Line 1",
+                    "downtime_reasons": [
+                      {
+                        "children": [
+                          {
+                            "id": 11,
+                            "name": "Jam at infeed"
+                          },
+                          {
+                            "id": 12,
+                            "name": "Belt failure"
+                          }
+                        ],
+                        "id": 1,
+                        "name": "Mechanical"
+                      }
+                    ],
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "scrap_reasons": [
+                      {
+                        "id": 1,
+                        "name": "Seal defect"
+                      }
+                    ]
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"missing required query param: equipment\"}",
+                    "value": "{\"error\":\"missing required query param: equipment\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"equipment: at most 500 ids\"}",
+                    "value": "{\"error\":\"equipment: at most 500 ids\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}",
+                    "value": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Downtime and scrap reason trees by equipment id",
+        "tags": [
+          "operator-v2"
+        ]
+      }
+    },
+    "/v2/events-timeline": {
+      "get": {
+        "description": "Recent machine events for the given id_equipment values (ADR-0061 P3, `serving.events_timeline_by_equipment`; same rows and order as the v1 route).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v2_events_timeline",
+        "parameters": [
+          {
+            "description": "Comma-separated positive id_equipment values (at most 500). Identity is id_equipment, never a topic. Ids of another tenant simply match nothing.",
+            "example": "101,102",
+            "in": "query",
+            "name": "equipment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "cd_category": "MECH",
+                    "cd_machine": "FILLER-01",
+                    "cd_subcategory": "JAM",
+                    "change_over": false,
+                    "custom_field": null,
+                    "desc_category": "Mechanical",
+                    "desc_subcategory": "Jam at infeed",
+                    "display_path": "ACME / Plant 1 / Packaging / Line 1",
+                    "duration": 455,
+                    "event_type": "downtime",
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_equipment_event": 884213,
+                    "id_order_text": "PO-2026-0815",
+                    "id_production_order": 55120,
+                    "production_programmed": 12000,
+                    "ts_end": "2026-10-13T08:19:40Z",
+                    "ts_event": "2026-10-13T08:12:05Z",
+                    "txt_downtime_notes": "Film roll change"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"missing required query param: equipment\"}",
+                    "value": "{\"error\":\"missing required query param: equipment\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"equipment: at most 500 ids\"}",
+                    "value": "{\"error\":\"equipment: at most 500 ids\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}",
+                    "value": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Event timeline by equipment id",
+        "tags": [
+          "operator-v2"
+        ]
+      }
+    },
+    "/v2/operator-po-list": {
+      "get": {
+        "description": "Production orders for the selected lines/sectors and their parent, keyed by id_equipment (ADR-0061 P3, `serving.operator_po_list_by_equipment`). `display_path` is a human label for display only, never an identifier.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v2_operator_po_list",
+        "parameters": [
+          {
+            "description": "Comma-separated positive id_equipment values (at most 500). Identity is id_equipment, never a topic. Ids of another tenant simply match nothing.",
+            "example": "101,102",
+            "in": "query",
+            "name": "equipment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "conversion_factor": 1,
+                    "custom_field": null,
+                    "display_path": "ACME / Plant 1 / Packaging / Line 1",
+                    "equipment_setup": {
+                      "ideal_speed": 120
+                    },
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_order": 815,
+                    "id_order_text": "PO-2026-0815",
+                    "id_production_order": 55120,
+                    "nm_client": "ACME Retail",
+                    "nm_product": "Water 500 ml",
+                    "nm_product_family": "Bottles",
+                    "priority": null,
+                    "production_programmed": 12000,
+                    "status": 1,
+                    "ts_start": null,
+                    "txt_product": "WATER-500"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"missing required query param: equipment\"}",
+                    "value": "{\"error\":\"missing required query param: equipment\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"equipment: at most 500 ids\"}",
+                    "value": "{\"error\":\"equipment: at most 500 ids\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}",
+                    "value": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Operator production-order list by equipment id",
+        "tags": [
+          "operator-v2"
+        ]
+      }
+    },
+    "/v2/pending-downtime": {
+      "get": {
+        "description": "Unclassified downtime events for the given id_equipment values, newest first (`serving.pending_downtime_by_equipment`).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v2_pending_downtime",
+        "parameters": [
+          {
+            "description": "Comma-separated positive id_equipment values (at most 500). Identity is id_equipment, never a topic. Ids of another tenant simply match nothing.",
+            "example": "101,102",
+            "in": "query",
+            "name": "equipment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "display_path": "ACME / Plant 1 / Packaging / Line 1",
+                    "duration": 455,
+                    "id_enterprise": 42,
+                    "id_equipment": 101,
+                    "id_equipment_event": 884213,
+                    "ts_end": "2026-10-13T08:19:40Z",
+                    "ts_event": "2026-10-13T08:12:05Z"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"missing required query param: equipment\"}",
+                    "value": "{\"error\":\"missing required query param: equipment\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"equipment: at most 500 ids\"}",
+                    "value": "{\"error\":\"equipment: at most 500 ids\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}",
+                    "value": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Downtimes still waiting for a reason, by equipment id",
+        "tags": [
+          "operator-v2"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Staging",
+      "url": "https://refdata.staging.packiot.app"
+    },
+    {
+      "description": "Production (CloudFront → origin-verify)",
+      "url": "https://refdata.prod.packiot.app"
+    },
+    {
+      "description": "Local dev",
+      "url": "http://localhost:9104"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Operator-app reads keyed by equipment topic (Hasura replacement). The ones with a /v2 twin are deprecated.",
+      "name": "operator-v1"
+    },
+    {
+      "description": "Operator-app reads keyed by id_equipment (ADR-0061 P3).",
+      "name": "operator-v2"
+    },
+    {
+      "description": "Global reference data (authenticated, not tenant-filtered).",
+      "name": "reference"
+    },
+    {
+      "description": "Composable query API: catalog, named datasets, composer, per-user layouts and dashboard configs (ADR-0015, ADR-0029).",
+      "name": "query"
+    },
+    {
+      "description": "Long-range daily series over the hot + cold archive via the historian gateway.",
+      "name": "historian"
+    },
+    {
+      "description": "Service-to-service endpoints (shared secret; not for clients).",
+      "name": "internal"
+    },
+    {
+      "description": "Frozen back4 contracts consumed by client ERP/BI integrations (ADR-0031). Byte-compatible with the legacy API.",
+      "name": "external"
+    }
+  ]
+}

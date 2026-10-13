@@ -80,7 +80,6 @@
 3	services/oeecloud-fanout/internal/retenant/retenant_test.go
 1	services/operator-gateway/cmd/operator-adapter/main.go
 6	services/operator-gateway/internal/adapter/mapping.go
-5	services/operator-gateway/internal/adapter/openapi.json
 4	services/operator-gateway/internal/adapter/po_lifecycle.go
 17	services/operator-gateway/internal/adapter/po_lifecycle_test.go
 15	services/operator-gateway/internal/adapter/resolver.go
