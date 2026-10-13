@@ -1,0 +1,897 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "onboard API",
+    "version": "0.1.0",
+    "summary": "Config-as-data control plane: client descriptor in, onboarding artifacts out (ADR-0045 P1, ADR-0058).",
+    "description": "Turns one client descriptor (the CS-Admin source of truth) into the downstream onboarding artifacts, and previews a descriptor's derive/expression rules against sample tags. Generation uses the exact code path of the `onboard-gen` CLI, so both produce byte-identical artifacts.\n\nServed on its own plaintext listener (ONBOARD_API_PORT, default 9105) only when ONBOARD_API_ENABLED=true and ONBOARD_API_KEY is set (the process refuses to start when enabled without a key). Two binaries mount it: the cloud `sparkplug-decoder` container (edge-transformer binary) — the instance edge-api calls via ONBOARD_GENERATE_URL — and, optionally, `sparkplug-agent` on edge boxes (not enabled on the staging agents).\n\nPublic exposure: none. No nginx vhost routes to port 9105 on staging or production. In production `sparkplug-decoder` is behind the `client-ingest` compose profile, so it runs only when that profile is enabled.\n\n## How to call this API\n\n- **Auth**: send `Authorization: Bearer <onboard-api-key>` (the shared ONBOARD_API_KEY, not a JWT; the `Bearer` scheme is case-insensitive). A missing or wrong key is 401.\n- **Base URLs**: see `servers` — in-network only (`http://sparkplug-decoder:9105`; edge-api reaches it through ONBOARD_GENERATE_URL) and `http://localhost:9105` for local development. Nothing is reachable from the internet.\n- **Content types**: `POST /v1/onboard/generate` takes the descriptor as YAML or JSON (the body is parsed as YAML whatever the `Content-Type`); `POST /v1/onboard/simulate` takes JSON. Bodies are capped at ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). Responses are `application/json`.\n- **Errors**: handler errors are `application/json` bodies `{\"error\":\"<message>\"}` followed by a newline. Descriptor problems are 400 with the parser/validator message (`clientdescriptor: parse: ...` or `clientdescriptor: validate: ...`) so the author can fix them. A wrong HTTP method on a known path is a 405 from Go's router (`text/plain`, `Method Not Allowed`, with an `Allow` header), returned before authentication.\n- **Side effects**: none. Both operations are pure functions of the request: they write nothing and publish nothing; the caller stores and applies the returned artifacts. The same request always produces the same response, so retries are safe.\n- **Docs**: browse this spec in the API docs portal at https://api.staging.packiot.app/docs/ (behind the cs-admin SSO, read-only Swagger UI). It is also exported to `docs/api/openapi/onboard-api.openapi.json` in packiot-stack-alpha."
+  },
+  "servers": [
+    {
+      "url": "http://sparkplug-decoder:9105",
+      "description": "In-network on packiot-net (alias edge-transformer). Static IP 172.18.0.23:9105 on staging and production."
+    },
+    {
+      "url": "http://localhost:9105",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "onboard",
+      "description": "Client-descriptor tooling for onboarding: generate a tenant's configuration artifacts (`generate`) and preview its derived-metric rules against sample readings (`simulate`). Both are stateless."
+    }
+  ],
+  "security": [
+    {
+      "bearerKey": []
+    }
+  ],
+  "paths": {
+    "/v1/onboard/generate": {
+      "post": {
+        "tags": [
+          "onboard"
+        ],
+        "operationId": "generateOnboardArtifacts",
+        "summary": "Generate onboarding artifacts from a client descriptor",
+        "description": "Turns one client descriptor into the tenant's onboarding artifacts: the tenant conversion profile, the topic-registry SQL, the `equipments.position` backfill SQL, the sparkplug-agent config, the Node-RED tee node and, when the descriptor has a `plc` block, the PLC reader `client.yaml` and reader flow (with the descriptor's authored customizations).\n\n**Order of checks**: bearer key (401) → body read under the cap (400 `payload too large` / `cannot read body` / `empty body`) → descriptor parse + validation (400 with the reason) → generation (400 for an authoring error only detectable at render time, e.g. a customization id collision; 500 for any other generator fault) → unmapped-topic check (500 on failure) → 200.\n\n**Mode**: artifacts are always generated in draft/observe mode; cutover readiness is reported in `validation` (`cutover_eligible` is false while any count index is only inferred) instead of blocking generation.\n\n**Side effects**: none — nothing is written to the database or published. The caller (edge-api / CS Admin) stores or applies the artifacts verbatim. Uses the same code path as the `onboard-gen` CLI, so both produce byte-identical artifacts.\n\n**Idempotency**: deterministic; the same descriptor always yields the same response.\n\n**Tenant scoping**: the tenant is whatever the descriptor declares (`tenant`, `enterprise_id`); the shared key authorizes generation for any tenant, so only trusted internal callers hold it.\n\n**Limits**: body ≤ ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). No rate limit.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientDescriptor"
+              },
+              "examples": {
+                "yamlDescriptor": {
+                  "summary": "One machine with a derived scrap count (YAML)",
+                  "value": "tenant: ACME\nenterprise_id: 4200\ncanonical:\n  prefix: ACME/SP\nmapping:\n  count_index_default_mode: equipment_id\nmetric_templates:\n  member:\n    - {leaf: \"/Status/MachSpeed\", type: double}\nagent:\n  edge_node_id: acme-edge\n  internal_broker: tcp://mosquitto:1883\n  raw_topic: acme/raw\n  uplink_broker: ssl://ingest.example.invalid:8883\n  mtls:\n    cert_ref: secret://packiot/staging/acme/uplink-cert\n    key_ref: secret://packiot/staging/acme/uplink-key\n    ca_ref: secret://packiot/staging/acme/uplink-ca\ntee:\n  ingest_url: https://localhost:8444/v1/tags\n  tls_insecure: true\nequipment:\n  - topic: ACME/SP/L5/SCRAP\n    device_key: dk_047adcb102e15036d985437ae2c0bd12\n    id_equipment: 5003\n    tp_equipment: 1\n    id_unit: 5003\n    count_index: {value: 73, confidence: confirmed}\n    derived:\n      - type: double\n        emit:\n          - \"/Admin/ProdDefectiveCount/{idx}/Unit\"\n        expr:\n          expr: \"gross - net\"\n          vars:\n            gross: \"/Status/DW0\"\n            net: \"/Status/DW4\"\n"
+                }
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientDescriptor"
+              },
+              "examples": {
+                "jsonDescriptor": {
+                  "summary": "The same descriptor as a JSON object",
+                  "value": {
+                    "tenant": "ACME",
+                    "enterprise_id": 4200,
+                    "canonical": {
+                      "prefix": "ACME/SP"
+                    },
+                    "mapping": {
+                      "count_index_default_mode": "equipment_id"
+                    },
+                    "metric_templates": {
+                      "member": [
+                        {
+                          "leaf": "/Status/MachSpeed",
+                          "type": "double"
+                        }
+                      ]
+                    },
+                    "agent": {
+                      "edge_node_id": "acme-edge",
+                      "internal_broker": "tcp://mosquitto:1883",
+                      "raw_topic": "acme/raw",
+                      "uplink_broker": "ssl://ingest.example.invalid:8883",
+                      "mtls": {
+                        "cert_ref": "secret://packiot/staging/acme/uplink-cert",
+                        "key_ref": "secret://packiot/staging/acme/uplink-key",
+                        "ca_ref": "secret://packiot/staging/acme/uplink-ca"
+                      }
+                    },
+                    "tee": {
+                      "ingest_url": "https://localhost:8444/v1/tags",
+                      "tls_insecure": true
+                    },
+                    "equipment": [
+                      {
+                        "topic": "ACME/SP/L5/SCRAP",
+                        "device_key": "dk_047adcb102e15036d985437ae2c0bd12",
+                        "id_equipment": 5003,
+                        "tp_equipment": 1,
+                        "id_unit": 5003,
+                        "count_index": {
+                          "value": 73,
+                          "confidence": "confirmed"
+                        },
+                        "derived": [
+                          {
+                            "type": "double",
+                            "emit": [
+                              "/Admin/ProdDefectiveCount/{idx}/Unit"
+                            ],
+                            "expr": {
+                              "expr": "gross - net",
+                              "vars": {
+                                "gross": "/Status/DW0",
+                                "net": "/Status/DW4"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "description": "The client descriptor itself, as YAML or JSON (JSON is parsed as YAML)."
+        },
+        "responses": {
+          "200": {
+            "description": "Artifacts generated (string values; abridged with `…` in this example). `client_yaml` and `reader_flow` appear only for descriptors with a `plc` block.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateResponse"
+                },
+                "example": {
+                  "tenant": "ACME",
+                  "artifacts": {
+                    "profile_yaml": "tenant: ACME\nenterprise_id: 4200\ntenant_prefix: ACME/SP\nprefix_fixups: []\nmetric_aliases: []\nparameter_aliases: []\nparameter_decomposition:\n    source_leaf: \"\"\n    params: []\ncount_index:\n    mode: equipment_id\n    overrides:\n        /L5/SCRAP: 73\nmetric_templates:\n    line: []\n    member:\n        - leaf: /Status/MachSpeed\n          type: double\nderived:\n    - segment: /L5/SCRAP\n      emit:\n        - /L5/SCRAP/Admin/ProdDefectiveCount/73/Unit\n      type: double\n      expr:\n        expr: gross - net\n        vars:\n            gross: /L5/SCRAP/Status/DW0\n            net: /L5/SCRAP/Status/DW4\n",
+                    "register_sql": "-- (abridged) topic-registry rows for tenant ACME (enterprise 4200) — generated from the\n-- client descriptor (ADR-0045 P1). DO NOT hand-edit; edit the descriptor + regenerate.\nINSERT INTO … (id_enterprise, id_equipment, …, active, id_unit)\nVALUES\n    (4200, 5003, 'ACME/SP/L5/SCRAP', true, 5003)\nON CONFLICT … WHERE active DO NOTHING;\n…\n",
+                    "position_sql": "-- equipments.position (line flow order) for tenant ACME (enterprise 4200) —\n-- generated from the client descriptor (ADR-0045 Bronze). A line's member\n-- list order IS the physical infeed→outfeed sequence: first listed = position\n-- 1 (infeed), last = outfeed; single-machine cell → position 1. Idempotent.\n-- DO NOT hand-edit; edit the descriptor + regenerate.\nUPDATE equipments SET position = 1 WHERE id_equipment = 5003 AND tp_equipment = 1;\n",
+                    "agent_yaml": "sparkplug:\n    group_id: ACME\n    edge_node_id: acme-edge\n    internal_broker: tcp://mosquitto:1883\n    raw_topic: acme/raw\n    uplink_broker: ssl://ingest.example.invalid:8883\n    …\nraw_tag_map:\n    - metric_suffix: /L5/SCRAP/Status/MachSpeed\n      type: double\n      device_key: dk_047adcb102e15036d985437ae2c0bd12\n      role: speed.nominal\n    - metric_suffix: /L5/SCRAP/Admin/ProdDefectiveCount/73/Unit\n      type: double\n      device_key: dk_047adcb102e15036d985437ae2c0bd12\n      role: counter.scrap\n",
+                    "tee_node_json": "[\n  {\n    \"disabled\": false,\n    \"id\": \"acme_tab\",\n    \"label\": \"ACME ingest tee\",\n    \"type\": \"tab\"\n  },\n  …\n]\n"
+                  },
+                  "validation": {
+                    "inferred_count_indices": [],
+                    "cutover_eligible": true,
+                    "unmapped": []
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body problems (`payload too large`, `cannot read body`, `empty body`), a descriptor that does not parse or validate (`clientdescriptor: parse: ...`, `clientdescriptor: validate: ...`), or an authoring error found while rendering (for example a customization id collision). The message is the reason, meant for the descriptor author.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over the cap",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  },
+                  "empty": {
+                    "summary": "Empty body",
+                    "value": {
+                      "error": "empty body"
+                    }
+                  },
+                  "parse": {
+                    "summary": "YAML syntax error",
+                    "value": {
+                      "error": "clientdescriptor: parse: yaml: line 1: did not find expected ',' or ']'"
+                    }
+                  },
+                  "validate": {
+                    "summary": "Missing required field",
+                    "value": {
+                      "error": "clientdescriptor: validate: canonical.prefix (tenant_prefix) is required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "description": "`generation failed: ...` (a generator fault for a descriptor that passed validation) or `validation failed: ...` (the unmapped-topic check failed). Not the caller's fault; report it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "generation": {
+                    "summary": "Generator fault",
+                    "value": {
+                      "error": "generation failed: <generator error>"
+                    }
+                  },
+                  "validation": {
+                    "summary": "Unmapped-topic check failed",
+                    "value": {
+                      "error": "validation failed: <validator error>"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/v1/onboard/simulate": {
+      "post": {
+        "tags": [
+          "onboard"
+        ],
+        "operationId": "simulateDerivedRules",
+        "summary": "Preview derived-metric rules against sample readings",
+        "description": "Builds the tenant profile from `descriptor` and feeds `samples`, in order, through the same derive core the `derive-replay` CLI and the edge agent use; each sample is processed as its own one-tag envelope and treated as good quality. Returns the active derived rules (so a preview can show them before any sample) and every tag they synthesized. Used by the CS Admin / customize preview before deploying a descriptor change.\n\n**Order of checks**: bearer key (401) → body read under the cap (400) → JSON decode (400 `invalid JSON body: ...`) → `descriptor` present (400 `missing descriptor`) → descriptor parse + validation (400) → profile build (500 `cannot build profile: ...`) → 200.\n\n**Side effects**: none; nothing is stored or published. Deterministic for the same request.\n\n**Limits**: body ≤ ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). No rate limit; keep `samples` to a preview-sized list.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulateRequest"
+              },
+              "examples": {
+                "scrapExpr": {
+                  "summary": "Scrap = gross − net over three readings",
+                  "value": {
+                    "descriptor": {
+                      "tenant": "ACME",
+                      "enterprise_id": 4200,
+                      "canonical": {
+                        "prefix": "ACME/SP"
+                      },
+                      "mapping": {
+                        "count_index_default_mode": "equipment_id"
+                      },
+                      "metric_templates": {
+                        "member": [
+                          {
+                            "leaf": "/Status/MachSpeed",
+                            "type": "double"
+                          }
+                        ]
+                      },
+                      "agent": {
+                        "edge_node_id": "acme-edge",
+                        "internal_broker": "tcp://mosquitto:1883",
+                        "raw_topic": "acme/raw",
+                        "uplink_broker": "ssl://ingest.example.invalid:8883",
+                        "mtls": {
+                          "cert_ref": "secret://packiot/staging/acme/uplink-cert",
+                          "key_ref": "secret://packiot/staging/acme/uplink-key",
+                          "ca_ref": "secret://packiot/staging/acme/uplink-ca"
+                        }
+                      },
+                      "tee": {
+                        "ingest_url": "https://localhost:8444/v1/tags",
+                        "tls_insecure": true
+                      },
+                      "equipment": [
+                        {
+                          "topic": "ACME/SP/L5/SCRAP",
+                          "device_key": "dk_047adcb102e15036d985437ae2c0bd12",
+                          "id_equipment": 5003,
+                          "tp_equipment": 1,
+                          "id_unit": 5003,
+                          "count_index": {
+                            "value": 73,
+                            "confidence": "confirmed"
+                          },
+                          "derived": [
+                            {
+                              "type": "double",
+                              "emit": [
+                                "/Admin/ProdDefectiveCount/{idx}/Unit"
+                              ],
+                              "expr": {
+                                "expr": "gross - net",
+                                "vars": {
+                                  "gross": "/Status/DW0",
+                                  "net": "/Status/DW4"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "samples": [
+                      {
+                        "metric": "/L5/SCRAP/Status/DW0",
+                        "value": 1250,
+                        "ts_millis": 1760364000000
+                      },
+                      {
+                        "metric": "/L5/SCRAP/Status/DW4",
+                        "value": 1212,
+                        "ts_millis": 1760364000000
+                      },
+                      {
+                        "metric": "/L5/SCRAP/Status/DW0",
+                        "value": 1290,
+                        "ts_millis": 1760364060000
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "description": "A descriptor plus the raw readings to replay through its derived rules."
+        },
+        "responses": {
+          "200": {
+            "description": "Simulation result: the active rules and the tags they produced, in input order. `emitted` is `[]` when nothing fired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulateResponse"
+                },
+                "example": {
+                  "tenant": "ACME",
+                  "derived_rules": [
+                    {
+                      "segment": "/L5/SCRAP",
+                      "emit": [
+                        "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit"
+                      ],
+                      "kind": "expr",
+                      "expr": "gross - net"
+                    }
+                  ],
+                  "emitted": [
+                    {
+                      "metric": "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit",
+                      "value": 38,
+                      "ts_millis": 1760364000000,
+                      "after_input": "/L5/SCRAP/Status/DW4"
+                    },
+                    {
+                      "metric": "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit",
+                      "value": 78,
+                      "ts_millis": 1760364060000,
+                      "after_input": "/L5/SCRAP/Status/DW0"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`payload too large`, `cannot read body`, `empty body`, `invalid JSON body: ...`, `missing descriptor`, or the descriptor's parse/validation message (a descriptor sent as a JSON string instead of an object fails here with a parse error).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "badJSON": {
+                    "summary": "Truncated JSON",
+                    "value": {
+                      "error": "invalid JSON body: unexpected end of JSON input"
+                    }
+                  },
+                  "missingDescriptor": {
+                    "summary": "No descriptor field",
+                    "value": {
+                      "error": "missing descriptor"
+                    }
+                  },
+                  "descriptorString": {
+                    "summary": "Descriptor sent as a string",
+                    "value": {
+                      "error": "clientdescriptor: parse: yaml: unmarshal errors:\n  line 1: cannot unmarshal !!str `x` into clientdescriptor.Descriptor"
+                    }
+                  },
+                  "validate": {
+                    "summary": "Invalid descriptor",
+                    "value": {
+                      "error": "clientdescriptor: validate: tenant is required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "description": "`cannot build profile: ...`: the validated descriptor could not be turned into a tenant profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "cannot build profile: <profile error>"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`Authorization: Bearer <ONBOARD_API_KEY>` — a shared static key (not a JWT), compared in constant time. Scheme is case-insensitive."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or wrong bearer key.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "unauthorized"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "Wrong HTTP method for this path. Produced by Go's router before authentication; carries an `Allow` header.",
+        "headers": {
+          "Allow": {
+            "description": "The method this path accepts.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "POST"
+          }
+        },
+        "content": {
+          "text/plain": {
+            "schema": {
+              "type": "string",
+              "description": "Plain-text status line."
+            },
+            "example": "Method Not Allowed\n"
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Error message; for descriptor problems, the parser/validator reason.",
+            "examples": [
+              "clientdescriptor: validate: tenant is required"
+            ]
+          }
+        },
+        "description": "Handler error body (`application/json`, newline-terminated)."
+      },
+      "ClientDescriptor": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Client descriptor (services/sparkplug-decoder/internal/agent/clientdescriptor). Large and evolving, so only the top-level keys are listed; the authoritative shape and validation rules are in clientdescriptor.go.",
+        "properties": {
+          "tenant": {
+            "type": "string",
+            "description": "SparkPlug group_id / enterprise short name, e.g. `ACME`. Required.",
+            "examples": [
+              "ACME"
+            ]
+          },
+          "enterprise_id": {
+            "type": "integer",
+            "description": "id_enterprise the generated SQL targets.",
+            "examples": [
+              4200
+            ]
+          },
+          "canonical": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Canonical topic model (`prefix` is required).",
+            "examples": [
+              {
+                "prefix": "ACME/SP"
+              }
+            ]
+          },
+          "mapping": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Raw -> canonical quirk absorber, copied into the tenant profile.",
+            "examples": [
+              {
+                "count_index_default_mode": "equipment_id"
+              }
+            ]
+          },
+          "metric_templates": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Per-class canonical metric leaves.",
+            "examples": [
+              {
+                "member": [
+                  {
+                    "leaf": "/Status/MachSpeed",
+                    "type": "double"
+                  }
+                ]
+              }
+            ]
+          },
+          "equipment": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "description": "Tenant inventory: lines (tp=3) and members (tp=1).",
+            "examples": [
+              [
+                {
+                  "topic": "ACME/SP/L5/SCRAP",
+                  "device_key": "dk_047adcb102e15036d985437ae2c0bd12",
+                  "id_equipment": 5003,
+                  "tp_equipment": 1,
+                  "id_unit": 5003,
+                  "count_index": {
+                    "value": 73,
+                    "confidence": "confirmed"
+                  },
+                  "derived": [
+                    {
+                      "type": "double",
+                      "emit": [
+                        "/Admin/ProdDefectiveCount/{idx}/Unit"
+                      ],
+                      "expr": {
+                        "expr": "gross - net",
+                        "vars": {
+                          "gross": "/Status/DW0",
+                          "net": "/Status/DW4"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          "agent": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "sparkplug-agent wiring (client.yaml).",
+            "examples": [
+              {
+                "edge_node_id": "acme-edge",
+                "internal_broker": "tcp://mosquitto:1883",
+                "raw_topic": "acme/raw",
+                "uplink_broker": "ssl://ingest.example.invalid:8883",
+                "mtls": {
+                  "cert_ref": "secret://packiot/staging/acme/uplink-cert",
+                  "key_ref": "secret://packiot/staging/acme/uplink-key",
+                  "ca_ref": "secret://packiot/staging/acme/uplink-ca"
+                }
+              }
+            ]
+          },
+          "tee": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Node-RED tee snippet parameters.",
+            "examples": [
+              {
+                "ingest_url": "https://localhost:8444/v1/tags",
+                "tls_insecure": true
+              }
+            ]
+          },
+          "plc": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Optional PLC connectivity + tag map; enables `client_yaml` and `reader_flow`. Shape: see clientdescriptor.go.",
+            "examples": [
+              {}
+            ]
+          }
+        }
+      },
+      "GenerateResponse": {
+        "type": "object",
+        "required": [
+          "tenant",
+          "artifacts",
+          "validation"
+        ],
+        "properties": {
+          "tenant": {
+            "type": "string",
+            "description": "Tenant from the descriptor.",
+            "examples": [
+              "ACME"
+            ]
+          },
+          "artifacts": {
+            "type": "object",
+            "description": "Artifacts as strings, to be stored/applied verbatim.",
+            "required": [
+              "profile_yaml",
+              "register_sql",
+              "position_sql",
+              "agent_yaml",
+              "tee_node_json"
+            ],
+            "properties": {
+              "profile_yaml": {
+                "type": "string",
+                "description": "Tenant conversion profile (YAML)."
+              },
+              "register_sql": {
+                "type": "string",
+                "description": "SQL that registers the generated equipment topics (topic-routing table)."
+              },
+              "position_sql": {
+                "type": "string",
+                "description": "equipments.position backfill SQL (line flow order)."
+              },
+              "agent_yaml": {
+                "type": "string",
+                "description": "sparkplug-agent client config (YAML)."
+              },
+              "tee_node_json": {
+                "type": "string",
+                "description": "Node-RED tee node (JSON text)."
+              },
+              "client_yaml": {
+                "type": "string",
+                "description": "PLC reader client.yaml; present only when the descriptor has a `plc` block."
+              },
+              "reader_flow": {
+                "type": "string",
+                "description": "Node-RED PLC-reader flow including authored customizations; present only when the descriptor has a `plc` block."
+              }
+            }
+          },
+          "validation": {
+            "type": "object",
+            "required": [
+              "inferred_count_indices",
+              "cutover_eligible",
+              "unmapped"
+            ],
+            "properties": {
+              "inferred_count_indices": {
+                "type": "array",
+                "description": "Count indices not yet confirmed on a live tee.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "topic",
+                    "index"
+                  ],
+                  "properties": {
+                    "topic": {
+                      "type": "string",
+                      "description": "Canonical equipment topic.",
+                      "examples": [
+                        "ACME/SP/L5/FILLER"
+                      ]
+                    },
+                    "index": {
+                      "type": "integer",
+                      "description": "The unconfirmed count index.",
+                      "examples": [
+                        61
+                      ]
+                    }
+                  },
+                  "description": "A member whose count index is not yet confirmed on a live tee."
+                }
+              },
+              "cutover_eligible": {
+                "type": "boolean",
+                "description": "false when any count index is inferred.",
+                "examples": [
+                  true
+                ]
+              },
+              "unmapped": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Descriptor topics that synthesize no canonical metric.",
+                "examples": [
+                  [
+                    "ACME/SP/L5/LABELER"
+                  ]
+                ]
+              }
+            },
+            "description": "Cutover readiness (ADR-0045 §2.4b gate)."
+          }
+        },
+        "description": "Generated artifacts plus cutover-readiness."
+      },
+      "SimulateRequest": {
+        "type": "object",
+        "required": [
+          "descriptor"
+        ],
+        "properties": {
+          "descriptor": {
+            "$ref": "#/components/schemas/ClientDescriptor",
+            "description": "The client descriptor as a JSON object. (The handler comment mentions a YAML string, but the raw value is parsed as YAML into the descriptor struct, so a JSON string is rejected with 400.)"
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "description": "Segment-qualified raw metric suffix.",
+                  "examples": [
+                    "/L5/SCRAP/Status/DW0"
+                  ]
+                },
+                "value": {
+                  "type": "number",
+                  "description": "Numeric reading.",
+                  "examples": [
+                    1250
+                  ]
+                },
+                "ts_millis": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Reading time, unix milliseconds.",
+                  "examples": [
+                    1760364000000
+                  ]
+                }
+              },
+              "description": "One raw reading (tee/reader wire shape)."
+            },
+            "description": "Raw readings replayed in order; each is its own one-tag envelope with good quality."
+          }
+        },
+        "description": "Simulation input."
+      },
+      "SimulateResponse": {
+        "type": "object",
+        "required": [
+          "tenant",
+          "derived_rules",
+          "emitted"
+        ],
+        "properties": {
+          "tenant": {
+            "type": "string",
+            "description": "Tenant from the descriptor.",
+            "examples": [
+              "ACME"
+            ]
+          },
+          "derived_rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "segment",
+                "emit",
+                "kind"
+              ],
+              "properties": {
+                "segment": {
+                  "type": "string",
+                  "description": "Equipment segment the rule belongs to.",
+                  "examples": [
+                    "/L5/SCRAP"
+                  ]
+                },
+                "emit": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Canonical metrics the rule emits.",
+                  "examples": [
+                    [
+                      "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit"
+                    ]
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "integral",
+                    "sum",
+                    "expr"
+                  ],
+                  "description": "Rule shape: `integral` (rate integrated into a counter), `sum` (addends), `expr` (arithmetic expression).",
+                  "examples": [
+                    "expr"
+                  ]
+                },
+                "expr": {
+                  "type": "string",
+                  "description": "Present for `expr` rules.",
+                  "examples": [
+                    "gross - net"
+                  ]
+                }
+              },
+              "description": "Summary of one derived rule."
+            },
+            "description": "Every active derived rule of the profile."
+          },
+          "emitted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "metric",
+                "value",
+                "ts_millis",
+                "after_input"
+              ],
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "description": "Synthesized canonical metric.",
+                  "examples": [
+                    "/L5/SCRAP/Admin/ProdDefectiveCount/73/Unit"
+                  ]
+                },
+                "value": {
+                  "description": "Synthesized value (number, boolean or string).",
+                  "examples": [
+                    38
+                  ]
+                },
+                "ts_millis": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Timestamp of the triggering input, unix milliseconds.",
+                  "examples": [
+                    1760364000000
+                  ]
+                },
+                "after_input": {
+                  "type": "string",
+                  "description": "Input metric whose arrival produced this tag.",
+                  "examples": [
+                    "/L5/SCRAP/Status/DW4"
+                  ]
+                }
+              },
+              "description": "One synthesized tag."
+            },
+            "description": "Synthesized tags in production order."
+          }
+        },
+        "description": "Rules that ran and the tags they produced."
+      }
+    }
+  }
+}

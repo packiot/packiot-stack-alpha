@@ -79,9 +79,9 @@ func TestOpenAPIEnrichmentHasNoOrphans(t *testing.T) {
 	for _, ep := range endpoints {
 		eps[ep.path] = true
 	}
-	for p := range endpointSummaries {
+	for p := range endpointDocs {
 		if !eps[p] {
-			t.Errorf("endpointSummaries has %q, which is not in the endpoints table", p)
+			t.Errorf("endpointDocs has %q, which is not in the endpoints table", p)
 		}
 	}
 	shims := map[string]bool{}

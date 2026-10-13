@@ -1,0 +1,1983 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "operator-gateway",
+    "version": "0.1.0",
+    "summary": "Anti-corruption layer that turns a bespoke client's operator actions into edge-api calls.",
+    "description": "A client's Node-RED tee posts operator actions (downtime justification/edit, PO start/stop/setup/replace/status/time, event split) here. For every action the gateway: requires POST (405 otherwise), checks `X-Ingest-Key` (401), decodes the JSON body (400; unknown fields are allowed), checks the tenant scope (403), resolves `packml_topic` to the tenant's equipment via `packml_register` (422 when it does not resolve, 503 on DB failure), maps the request to the edge-api DTO (422 when a required field is missing), and forwards it to edge-api with the gateway's own edge-api key.\n\nTenant scope: one enterprise per instance (INCOPLAST_ENTERPRISE_ID, INCOPLAST_TOPIC_PREFIX). A request passes only if it positively matches: `enterprise` equals the configured id, or the topic starts with the configured prefix; a mismatch on either is rejected. The tenant is never chosen by the caller: edge-api is always called with the configured enterprise id.\n\nServer-side resolution: `id_equipment`, `id_site`, `id_area` and `cd_machine` always come from the resolved topic (active register rows of the configured enterprise only; exactly one match required); values supplied in the body are ignored. Resolutions are cached in-process for 5 minutes (misses for 30 seconds), so a newly activated topic can 422 for up to 30 s and a deactivated one keeps resolving for up to 5 min.\n\nResult translation: edge-api 2xx -> 202 `{\"status\":\"accepted\"}`; edge-api 4xx -> the same status and edge-api's body passed through; edge-api 5xx -> 502; edge-api unreachable or slower than 10 s -> 503.\n\nIdempotency: the gateway adds none. Creates (downtime justify/manual, PO create-and-start, setup with `should_create_po`) are not safe to replay blindly: a 503 `edge-api unreachable` caused by the 10 s timeout, or a 502, can follow a write edge-api already committed. 503 `topic resolver unavailable` is always safe to retry (nothing was sent).\n\nTransport: TLS-only listener (PORT default 8443; cert/key from TLS_CERT_FILE/TLS_KEY_FILE). Public exposure: none. No nginx vhost routes to this service (the `operator.<domain>` vhosts serve the operator SPA, a different container). Staging publishes 127.0.0.1:8445 -> 8443 on the host loopback only. Production defines it behind the `client-ingest` compose profile and publishes 8445 on all host interfaces, but the production security group does not admit 8445. The servers below are in-network addresses.\n\nOps routes not described here: `/healthz` (503 when the resolver DB pool is unreachable) and `/metrics` (Prometheus).\n\n## How to call this API\n\n- **Auth**: send the shared tee key in the `X-Ingest-Key` header on every request (no Bearer, no query-string key). The key is per deployment (server env OPERATOR_API_KEY); ask the platform team for it and keep it out of logs.\n- **Base URLs**: see `servers`. Both are in-network only (packiot-net or the host loopback); there is no public URL. TLS with the stack's internal certificate (`curl -k` from the host).\n- **Content types**: request `application/json` (UTF-8), one action object per request, at most 1 MiB. Every response is `application/json`. Method is always POST.\n- **Errors**: the gateway's own errors are `{\"error\":\"<message>\"}` (Go json.Encoder, trailing newline). edge-api 4xx responses are passed through with edge-api's own body (NestJS shape `{\"statusCode\":..,\"message\":..,\"error\":..}`), so check the shape before parsing. Statuses: 400 bad JSON, 401 bad key, 403 out of tenant scope, 405 not POST, 422 unresolvable topic or missing field (do not retry unchanged), 502/503 retryable with care (see Idempotency).\n- **Docs**: browse this spec in the API docs portal https://api.staging.packiot.app/docs/ (cs-admin SSO, read-only Swagger UI). The spec is also exported to `docs/api/openapi/operator-gateway.openapi.json` in packiot-stack-alpha."
+  },
+  "servers": [
+    {
+      "url": "https://operator-gateway:8443",
+      "description": "In-network on packiot-net (alias operator-adapter). Staging static IP 172.18.0.30:8443; production 172.18.0.31:8443."
+    },
+    {
+      "url": "https://localhost:8445",
+      "description": "Local development / staging host loopback publish (127.0.0.1:8445 -> 8443)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "downtime",
+      "description": "Stop reasons from the operator: justify a detected stop, register a manual event, edit/trim an event, or split it into re-categorised parts."
+    },
+    {
+      "name": "production-orders",
+      "description": "Production-order lifecycle from the operator: create+start, stop (pause/finish), setup (close + open next), replace, toggle status, edit runtime interval times."
+    }
+  ],
+  "security": [
+    {
+      "ingestKey": []
+    }
+  ],
+  "paths": {
+    "/operator/downtime": {
+      "post": {
+        "tags": [
+          "downtime"
+        ],
+        "operationId": "operatorDowntime",
+        "summary": "Justify, register or edit a downtime event",
+        "description": "Records the operator's reason for a stop. Routed on `id_param` (the SparkPlug Parameter id the client's flow assigns):\n\n| id_param | Meaning | edge-api call |\n|---|---|---|\n| 30810 | justify a detected stop | `POST /api/downtimes/create-manual-event` |\n| 30811 | new manual event | `POST /api/downtimes/create-manual-event` |\n| 30812 | change an existing event | `POST /api/downtimes/edit-manual-event` (needs `id_equipment_event`) |\n| 30813, 30814 | trim an existing event's end | `POST /api/downtimes/edit-manual-event` (needs `id_equipment_event`) |\n\n`category`, `category_desc`, `ts_event`, `ts_end` are always required. `planned_dwt`, `change_over` and `idle` are sent on the edit path only (the create DTO has no columns for them; they are ignored there). `cd_machine` and `id_equipment` come from the resolved topic (an equipment with a NULL `cd_equipment` yields 422 `cd_machine is required ...`).\n\nSide effects: edge-api writes the downtime event row (equipment_events) and an audit row in user_logs. Not idempotent at the gateway: retrying a create after a timeout can create a second event.\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DowntimeRequest"
+              },
+              "examples": {
+                "justify": {
+                  "$ref": "#/components/examples/DowntimeJustify"
+                },
+                "manual": {
+                  "$ref": "#/components/examples/DowntimeManual"
+                },
+                "edit": {
+                  "$ref": "#/components/examples/DowntimeEdit"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/downtimes/create-manual-event | /api/downtimes/edit-manual-event` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Dt422Category": {
+                    "$ref": "#/components/examples/Dt422Category"
+                  },
+                  "Dt422Param": {
+                    "$ref": "#/components/examples/Dt422Param"
+                  },
+                  "Dt422EditId": {
+                    "$ref": "#/components/examples/Dt422EditId"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOCreateAndStart",
+        "summary": "Create and start a production order",
+        "description": "Creates a production order for the resolved equipment and starts it (edge-api `POST /api/production-orders/create-and-start`). The order number (`id_order`) is the client's number, kept as text exactly as sent (ADR-0062) and forwarded in both `idOrder` and `orderNumber`; `id_site`, `id_area`, `id_equipment` come from the resolved topic. Required: `id_order`, `production_order_quantity`, `timestamp`.\n\nSide effects: edge-api inserts the production order and its first runtime interval and writes a user_logs audit row. Not idempotent at the gateway: a retry after a timeout may create a duplicate PO; check before retrying.\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PORequest"
+              },
+              "examples": {
+                "textNumber": {
+                  "$ref": "#/components/examples/POStart"
+                },
+                "numericNumber": {
+                  "$ref": "#/components/examples/POStartNumeric"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/production-orders/create-and-start` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Po422Order": {
+                    "$ref": "#/components/examples/Po422Order"
+                  },
+                  "Po422Ts": {
+                    "$ref": "#/components/examples/Po422Ts"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/stop": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOStop",
+        "summary": "Pause or finish the running production order",
+        "description": "Stops the running PO on the resolved equipment (edge-api `POST /api/production-orders/stop`, audit eventType `order-stopped`). `stop_type` accepts `pause`/`interrupt`/`1` (→ `pause`) or `finish`/`2` (→ `finish`), case-insensitive. `production_order_quantity` is the final good count edge-api stores on the PO.\n\nSide effects: edge-api updates the PO status and closes its runtime interval; user_logs audit row. Repeating the call depends on edge-api's state checks (a second stop of an already-stopped PO is edge-api's call, typically a 4xx).\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/POStopRequest"
+              },
+              "examples": {
+                "finish": {
+                  "$ref": "#/components/examples/POStopFinish"
+                },
+                "pause": {
+                  "$ref": "#/components/examples/POStopPause"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/production-orders/stop` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Stop422Type": {
+                    "$ref": "#/components/examples/Stop422Type"
+                  },
+                  "Stop422Qty": {
+                    "$ref": "#/components/examples/Stop422Qty"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/setup": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOSetup",
+        "summary": "Close the current production order, optionally open next",
+        "description": "Atomic \"close the current PO and optionally open the next\" (edge-api `POST /api/production-orders/setup`, eventType `order-changed`). Variants:\n\n- `should_open_new_po=false` → close only.\n- `should_open_new_po=true`, `should_create_po=true` → create a new PO from `id_order` (+ `production_order_quantity`, `nm_production_order`, `notes`, `id_label`) and start it.\n- `should_open_new_po=true`, `should_create_po` false/absent → start the existing PO `id_production_order`.\n\nAbsent optional integers are sent to edge-api as 0 and absent booleans as false. Side effects: PO status/runtime rows for both POs; user_logs audit row. Not idempotent.\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/POSetupRequest"
+              },
+              "examples": {
+                "createNext": {
+                  "$ref": "#/components/examples/POSetupCreateNext"
+                },
+                "reuseNext": {
+                  "$ref": "#/components/examples/POSetupReuseNext"
+                },
+                "closeOnly": {
+                  "$ref": "#/components/examples/POSetupCloseOnly"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/production-orders/setup` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Setup422Open": {
+                    "$ref": "#/components/examples/Setup422Open"
+                  },
+                  "Setup422Order": {
+                    "$ref": "#/components/examples/Setup422Order"
+                  },
+                  "Setup422Reuse": {
+                    "$ref": "#/components/examples/Setup422Reuse"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/replace": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOReplace",
+        "summary": "Switch the equipment to another existing production order",
+        "description": "Stops whatever PO is running on the resolved equipment and starts the existing PO `id_production_order` (edge-api `POST /api/production-orders/replace`, eventType `order-replaced`). Side effects: PO status/runtime rows; user_logs audit row.\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/POReplaceRequest"
+              },
+              "examples": {
+                "replace": {
+                  "$ref": "#/components/examples/POReplace"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/production-orders/replace` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Replace422Id": {
+                    "$ref": "#/components/examples/Replace422Id"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/change-status": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOChangeStatus",
+        "summary": "Toggle a production order between paused and finished",
+        "description": "Flips PO `id_production_order` between paused and finished (edge-api `POST /api/production-orders/change-status`, eventType `order-status-changed`). Calling it twice toggles back, so it is NOT idempotent. Side effects: PO status; user_logs audit row.\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/POStatusRequest"
+              },
+              "examples": {
+                "toggle": {
+                  "$ref": "#/components/examples/POChangeStatus"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/production-orders/change-status` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Status422Id": {
+                    "$ref": "#/components/examples/Status422Id"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/change-time": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOChangeTime",
+        "summary": "Edit a production-order runtime interval's start and end",
+        "description": "Rewrites the bounds of runtime interval `id_production_order_runtime` of PO `id_production_order` (edge-api `POST /api/production-orders/change-time`, eventType `order-time-changed`). `end` is optional (empty string forwarded as-is). Setting the same bounds again is idempotent in effect. Side effects: production_orders_runtime row; OEE for the touched window is recomputed downstream; user_logs audit row.\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/POTimeRequest"
+              },
+              "examples": {
+                "changeTime": {
+                  "$ref": "#/components/examples/POChangeTime"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/production-orders/change-time` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Time422Runtime": {
+                    "$ref": "#/components/examples/Time422Runtime"
+                  },
+                  "Time422Start": {
+                    "$ref": "#/components/examples/Time422Start"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/split": {
+      "post": {
+        "tags": [
+          "downtime"
+        ],
+        "operationId": "operatorSplitEvent",
+        "summary": "Split one event into re-categorised sub-intervals",
+        "description": "Splits event `id_equipment_event` into the given sub-intervals, each with its own category (edge-api `POST /api/downtimes/split`, eventType `event-splitted`). Every sub-interval's `machineCode` is the resolved `cd_machine`. Per sub-interval `start_time`, `category_code`, `desc_category`, `idle` (Yes|yes|No|no), `change_over` and `planned_dwt` are required; `event_type` must be downtime|manual|low_speed. Distinct from the trim path of POST /operator/downtime.\n\nSide effects: edge-api replaces the original event with the sub-events; user_logs audit row. Not idempotent (the original event no longer exists after a successful split).\n\nOrder of checks (each step fails closed): POST only (405) → `X-Ingest-Key` (401) → JSON decode, 1 MiB cap, unknown fields ignored (400) → tenant scope (403) → SparkPlug topic → equipment resolution (422 unresolved, 503 resolver DB error) → field mapping to the edge-api DTO (422, message names the field) → POST to edge-api with the gateway's own key and `?idEnterprise=<configured id>` (2xx → 202, 4xx → passed through, other → 502, transport error/timeout → 503).",
+        "requestBody": {
+          "required": true,
+          "description": "One operator action. Tenant envelope fields plus the action fields; extra Node-RED metadata keys are accepted and ignored.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SplitRequest"
+              },
+              "examples": {
+                "split": {
+                  "$ref": "#/components/examples/SplitDowntime"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "description": "`invalid JSON body`: malformed JSON, a wrongly typed field (e.g. a string where an integer is expected, an `id_order` that is neither string nor number), or a body over 1 MiB. Also returned verbatim when edge-api itself answers 400 (validation), with edge-api's body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalidJson": {
+                    "$ref": "#/components/examples/ErrInvalidJSON"
+                  },
+                  "edgeValidation": {
+                    "$ref": "#/components/examples/EdgeValidation400"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid or missing X-Ingest-Key` (also when the server has no key configured). A 401 with an edge-api-shaped body instead means edge-api rejected the gateway's own EDGE_API_KEY (server misconfiguration, not your key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "badKey": {
+                    "$ref": "#/components/examples/ErrUnauthorized"
+                  },
+                  "edgeKeyRejected": {
+                    "$ref": "#/components/examples/EdgeAuth401"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The body's `enterprise` / SparkPlug topic do not positively match the instance's configured tenant (or neither is present). A 403 with an edge-api-shaped body is edge-api's own refusal, passed through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EdgeError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "outOfScope": {
+                    "$ref": "#/components/examples/ErrForbidden"
+                  },
+                  "edgeForbidden": {
+                    "$ref": "#/components/examples/EdgeForbidden403"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "description": "Fail-closed rejection, never retried successfully without changing the body: the SparkPlug topic is empty, does not resolve to exactly one active equipment of this tenant, or a required field for edge-api `/api/downtimes/split` is missing/invalid. The message names the field. (Unlikely but possible: edge-api's own 422, passed through.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "topicMissing": {
+                    "$ref": "#/components/examples/ErrTopicMissing"
+                  },
+                  "topicUnresolved": {
+                    "$ref": "#/components/examples/ErrTopicUnresolved"
+                  },
+                  "Split422Empty": {
+                    "$ref": "#/components/examples/Split422Empty"
+                  },
+                  "Split422Idle": {
+                    "$ref": "#/components/examples/Split422Idle"
+                  },
+                  "Split422Type": {
+                    "$ref": "#/components/examples/Split422Type"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeBadGateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ingestKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Ingest-Key",
+        "description": "Shared key for the client's tee node (OPERATOR_API_KEY), compared in constant time. An unset key on the server denies every request."
+      }
+    },
+    "responses": {
+      "Accepted": {
+        "description": "edge-api accepted the call (any 2xx). The write has landed; nothing is queued.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Accepted"
+            },
+            "example": {
+              "status": "accepted"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "`method not allowed`: only POST is accepted (no Allow header is set).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "method": {
+                "$ref": "#/components/examples/ErrMethod"
+              }
+            }
+          }
+        }
+      },
+      "EdgePassthrough": {
+        "description": "Any other 4xx from edge-api (e.g. 404 unknown PO, 409 state conflict): edge-api's status code and body returned unchanged, with Content-Type forced to application/json. Do not retry unchanged.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/EdgeError"
+            },
+            "examples": {
+              "notFound": {
+                "$ref": "#/components/examples/EdgeNotFound404"
+              },
+              "conflict": {
+                "$ref": "#/components/examples/EdgeConflict409"
+              }
+            }
+          }
+        }
+      },
+      "EdgeBadGateway": {
+        "description": "`edge-api error`: edge-api answered 5xx (or any status outside 2xx/4xx). The write may or may not have happened; check before retrying a create.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "edge5xx": {
+                "$ref": "#/components/examples/ErrEdge5xx"
+              }
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Retryable infrastructure failure: `edge-api unreachable` (connect error, 10 s timeout or unreadable response; after a timeout edge-api MAY have committed the write), `topic resolver unavailable` (DB error; nothing was sent to edge-api) or `topic resolver is not configured`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "edgeUnreachable": {
+                "$ref": "#/components/examples/ErrEdgeUnreachable"
+              },
+              "resolverDown": {
+                "$ref": "#/components/examples/ErrResolverDown"
+              },
+              "resolverUnset": {
+                "$ref": "#/components/examples/ErrResolverUnset"
+              }
+            }
+          }
+        }
+      }
+    },
+    "examples": {"ErrInvalidJSON": {"summary": "Malformed or wrongly typed body", "value": {"error": "invalid JSON body"}}, "ErrUnauthorized": {"summary": "Missing or wrong X-Ingest-Key", "value": {"error": "invalid or missing X-Ingest-Key"}}, "ErrForbidden": {"summary": "enterprise / topic outside the configured tenant", "value": {"error": "action is not scoped to the configured Incoplast enterprise"}, "description": "Byte-exact handler message (server.go pre). The tenant name in it is a literal in the code, not your tenant."}, "ErrMethod": {"summary": "Anything but POST", "value": {"error": "method not allowed"}}, "ErrTopicMissing": {"summary": "SparkPlug topic field empty or absent", "value": {"error": "packml_topic is required — the tee node must send the SparkPlug topic so the adapter can resolve the staging equipment"}}, "ErrTopicUnresolved": {"summary": "Topic unknown, inactive, cross-tenant or ambiguous", "value": {"error": "topic \"ACME/Plant1/Extrusion/Line99\" did not resolve to a staging equipment (unknown, inactive, cross-tenant, or ambiguous in packml_register)"}}, "ErrEdgeUnreachable": {"summary": "edge-api down, timed out (10 s) or response unreadable", "value": {"error": "edge-api unreachable"}}, "ErrResolverDown": {"summary": "Resolver database error", "value": {"error": "topic resolver unavailable"}}, "ErrResolverUnset": {"summary": "Resolver not wired (misconfiguration)", "value": {"error": "topic resolver is not configured"}}, "ErrEdge5xx": {"summary": "edge-api answered 5xx (or a non-2xx/4xx status)", "value": {"error": "edge-api error"}}, "EdgeValidation400": {"summary": "edge-api validation error, passed through", "value": {"statusCode": 400, "message": ["timestamp must be a valid ISO 8601 date string"], "error": "Bad Request"}, "description": "Illustrative NestJS class-validator body; the exact shape and text are edge-api's."}, "EdgeAuth401": {"summary": "edge-api rejected the gateway's own EDGE_API_KEY, passed through", "value": {"statusCode": 401, "message": "Unauthorized"}, "description": "Illustrative. This 401 is about the gateway's server-side edge-api key, not your X-Ingest-Key."}, "EdgeForbidden403": {"summary": "edge-api refused the call, passed through", "value": {"statusCode": 403, "message": "Forbidden resource", "error": "Forbidden"}, "description": "Illustrative edge-api body."}, "EdgeNotFound404": {"summary": "edge-api could not find the referenced row, passed through", "value": {"statusCode": 404, "message": "Production order not found", "error": "Not Found"}, "description": "Illustrative edge-api body."}, "EdgeConflict409": {"summary": "edge-api state conflict, passed through", "value": {"statusCode": 409, "message": "There is already a running production order on this equipment", "error": "Conflict"}, "description": "Illustrative edge-api body."}, "DowntimeJustify": {"summary": "Justify a downtime (id_param 30810, creates a manual event)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_param": 30810, "ts_event": "2026-10-13T08:15:00-03:00", "ts_end": "2026-10-13T08:42:30-03:00", "category": "12", "category_desc": "Mechanical failure", "subcategory": "1203", "subcategory_desc": "Screw jam", "txt_downtime": "Cleared the jam, replaced shear pin"}}, "DowntimeManual": {"summary": "Register a manual downtime (id_param 30811)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_param": 30811, "ts_event": "2026-10-13T13:00:00-03:00", "ts_end": "2026-10-13T13:30:00-03:00", "category": "30", "category_desc": "Planned maintenance", "subcategory": "", "subcategory_desc": "", "txt_downtime": ""}}, "DowntimeEdit": {"summary": "Re-categorise / trim an existing event (id_param 30812, edit path)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_param": 30812, "id_equipment_event": 918273, "ts_event": "2026-10-13T08:15:00-03:00", "ts_end": "2026-10-13T08:35:00-03:00", "category": "20", "category_desc": "Changeover", "subcategory": "2001", "subcategory_desc": "Mould change", "txt_downtime": "Shortened: changeover ended earlier", "planned_dwt": true, "change_over": true, "idle": "No"}}, "POStart": {"summary": "Create and start a PO (order number as text)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_order": "08396260", "production_order_quantity": 12000, "timestamp": "2026-10-13 06:00:00", "nm_production_order": "Bottle cap 28mm blue", "notes": "Priority run", "id_label": null}}, "POStartNumeric": {"summary": "Order number sent as a JSON number (kept as literal text)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_order": 834.058, "production_order_quantity": 5000, "timestamp": "2026-10-13 14:00:00"}}, "POStopFinish": {"summary": "Finish the running PO", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T14:00:00-03:00", "stop_type": "finish", "id_production_order": 55123, "production_order_quantity": 11870}}, "POStopPause": {"summary": "Pause the running PO (numeric convention 1 = pause)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T10:30:00-03:00", "stop_type": "1", "id_production_order": 55123, "production_order_quantity": 6400}}, "POSetupCreateNext": {"summary": "Close current PO and create + open a new one", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T14:00:00-03:00", "should_open_new_po": true, "stop_type": "finish", "old_id_production_order": 55123, "old_production_order_prod_final": 11870, "should_create_po": true, "id_order": "08396261", "production_order_quantity": 8000, "nm_production_order": "Bottle cap 28mm red", "notes": ""}}, "POSetupReuseNext": {"summary": "Close current PO and open an already-created PO", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T14:00:00-03:00", "should_open_new_po": true, "stop_type": "finish", "old_id_production_order": 55123, "old_production_order_prod_final": 11870, "should_create_po": false, "id_production_order": 55124}}, "POSetupCloseOnly": {"summary": "Close the current PO only (pause)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T22:00:00-03:00", "should_open_new_po": false, "stop_type": "pause", "old_id_production_order": 55123, "old_production_order_prod_final": 9050}}, "POReplace": {"summary": "Switch the line to an existing PO", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_production_order": 55124}}, "POChangeStatus": {"summary": "Toggle a PO between paused and finished", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_production_order": 55120}}, "POChangeTime": {"summary": "Correct a runtime interval's bounds", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_production_order_runtime": 771204, "id_production_order": 55120, "start": "2026-10-12T06:05:00-03:00", "end": "2026-10-12T13:58:00-03:00"}}, "SplitDowntime": {"summary": "Split one downtime into two re-categorised intervals", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_equipment_event": 918273, "event_type": "downtime", "events": [{"start_time": "2026-10-13T08:15:00-03:00", "end_time": "2026-10-13T08:25:00-03:00", "note": "Waiting for maintenance", "category_code": "40", "subcategory_code": "4001", "desc_category": "Waiting", "desc_subcategory": "Maintenance crew", "idle": "No", "change_over": false, "planned_dwt": false}, {"start_time": "2026-10-13T08:25:00-03:00", "end_time": "2026-10-13T08:42:30-03:00", "note": "", "category_code": "12", "subcategory_code": "1203", "desc_category": "Mechanical failure", "desc_subcategory": "Screw jam", "idle": "No", "change_over": false, "planned_dwt": false}]}}, "Dt422Category": {"summary": "category empty", "value": {"error": "category is required but was empty (edge cdCategory @IsNotEmpty)"}}, "Dt422Param": {"summary": "id_param outside 30810-30814", "value": {"error": "id_param 30899 is not a recognised downtime parameter (expected 30810-30814)"}}, "Dt422EditId": {"summary": "Edit path without id_equipment_event", "value": {"error": "id_equipment_event is required to edit an existing downtime (id_param 30812) but was not supplied"}}, "Po422Order": {"summary": "id_order missing or blank", "value": {"error": "id_order is required but was not supplied (operator-selected order number, msg.payload.new_po)"}}, "Po422Ts": {"summary": "timestamp empty", "value": {"error": "timestamp is required but was empty (expected 'YYYY-MM-DD HH:mm:ss')"}}, "Stop422Type": {"summary": "Unknown stop_type", "value": {"error": "stop_type \"abort\" is not recognised (expected pause|finish or 1|2)"}}, "Stop422Qty": {"summary": "Final count missing", "value": {"error": "production_order_quantity is required but was not supplied (final good count)"}}, "Setup422Open": {"summary": "should_open_new_po absent", "value": {"error": "should_open_new_po is required (true = close current + open next, false = close only) but was not supplied"}}, "Setup422Order": {"summary": "Create-next without id_order", "value": {"error": "id_order is required when should_open_new_po and should_create_po are true (the new order number)"}}, "Setup422Reuse": {"summary": "Reuse-next without id_production_order", "value": {"error": "id_production_order is required when opening an existing next PO (should_create_po false)"}}, "Replace422Id": {"summary": "Target PO missing", "value": {"error": "id_production_order is required but was not supplied (the PO to switch to)"}}, "Status422Id": {"summary": "PO id missing", "value": {"error": "id_production_order is required but was not supplied"}}, "Time422Runtime": {"summary": "Runtime id missing", "value": {"error": "id_production_order_runtime is required but was not supplied (the runtime interval to edit)"}}, "Time422Start": {"summary": "start empty", "value": {"error": "start is required but was empty"}}, "Split422Empty": {"summary": "No sub-intervals", "value": {"error": "events is required but was empty (a split must produce at least one sub-interval)"}}, "Split422Idle": {"summary": "Bad idle value", "value": {"error": "events[0].idle \"maybe\" is not recognised (expected Yes|yes|No|no)"}}, "Split422Type": {"summary": "Unknown event_type", "value": {"error": "event_type \"stop\" is not recognised (expected downtime|manual|low_speed)"}}},
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "description": "Gateway error body. Written with Go's json.Encoder, so the body ends with a newline.",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Human-readable reason; stable strings listed per response.",
+            "examples": [
+              "invalid JSON body"
+            ]
+          }
+        }
+      },
+      "EdgeError": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "edge-api's own error body, passed through byte-for-byte (NestJS shape; defined by edge-api, not by this gateway).",
+        "properties": {
+          "statusCode": {
+            "type": "integer",
+            "description": "edge-api HTTP status.",
+            "examples": [
+              400
+            ]
+          },
+          "message": {
+            "description": "Reason: a string or an array of validation messages.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "error": {
+            "type": "string",
+            "description": "HTTP reason phrase.",
+            "examples": [
+              "Bad Request"
+            ]
+          }
+        }
+      },
+      "Accepted": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "description": "edge-api accepted the action.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `accepted`.",
+            "const": "accepted",
+            "examples": [
+              "accepted"
+            ]
+          }
+        }
+      },
+      "OrderNumber": {
+        "description": "Client production-order number (ADR-0062): kept as text exactly as given, only surrounding whitespace trimmed. A JSON number keeps its literal text (834.058 → \"834.058\", no rounding). null, absent or blank means not supplied. Booleans/objects/arrays are a 400.",
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "examples": [
+          "08396260",
+          834.058
+        ]
+      },
+      "OperatorScope": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Tenant envelope carried by every action. Unknown fields (Node-RED metadata such as socketid) are allowed and ignored. Scope passes only on a positive match: `enterprise` equals the configured id, or `packml_topic` starts with the configured topic prefix; a present-but-mismatching value on either rejects (403).",
+        "properties": {
+          "enterprise": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Tenant id; must equal the instance's configured enterprise id when present.",
+            "examples": [
+              42
+            ]
+          },
+          "topic": {
+            "type": "string",
+            "description": "The operator app's user topic; carried for audit/debug, not used for scope or resolution.",
+            "examples": [
+              "ACME/operator-app/Line01"
+            ]
+          },
+          "packml_topic": {
+            "type": "string",
+            "description": "SparkPlug topic of the equipment (required in practice: 422 when empty). Resolved server-side to id_equipment / id_area / id_site / cd_machine via the active `packml_register` rows of this tenant, and scope-checked against the configured prefix. Resolutions are cached 5 min (misses 30 s).",
+            "examples": [
+              "ACME/Plant1/Extrusion/Line01"
+            ]
+          },
+          "user": {
+            "type": "string",
+            "description": "Operator id; audit only, never forwarded to edge-api or logged.",
+            "examples": [
+              "op-1042"
+            ]
+          }
+        }
+      },
+      "DowntimeRequest": {
+        "description": "Downtime justification / manual event / edit.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_param",
+              "ts_event",
+              "ts_end",
+              "category",
+              "category_desc"
+            ],
+            "properties": {
+              "id_param": {
+                "type": "integer",
+                "description": "SparkPlug Parameter id selecting the path: 30810/30811 create, 30812/30813/30814 edit.",
+                "enum": [
+                  30810,
+                  30811,
+                  30812,
+                  30813,
+                  30814
+                ],
+                "examples": [
+                  30810
+                ]
+              },
+              "id_equipment_event": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Event to edit; required for 30812-30814, ignored on create.",
+                "examples": [
+                  918273
+                ]
+              },
+              "ts_event": {
+                "type": "string",
+                "description": "Event start, ISO 8601 (forwarded as `tsEvent` / `start`).",
+                "examples": [
+                  "2026-10-13T08:15:00-03:00"
+                ]
+              },
+              "ts_end": {
+                "type": "string",
+                "description": "Event end, ISO 8601 (forwarded as `tsEnd` / `end`).",
+                "examples": [
+                  "2026-10-13T08:42:30-03:00"
+                ]
+              },
+              "category": {
+                "type": "string",
+                "description": "Reason category code (cd_category).",
+                "examples": [
+                  "12"
+                ]
+              },
+              "category_desc": {
+                "type": "string",
+                "description": "Reason category description (desc_category).",
+                "examples": [
+                  "Mechanical failure"
+                ]
+              },
+              "subcategory": {
+                "type": "string",
+                "description": "Reason subcategory code (cd_subcategory); optional.",
+                "examples": [
+                  "1203"
+                ]
+              },
+              "subcategory_desc": {
+                "type": "string",
+                "description": "Reason subcategory description; optional.",
+                "examples": [
+                  "Screw jam"
+                ]
+              },
+              "txt_downtime": {
+                "type": "string",
+                "description": "Free-text operator notes (txtDowntimeNotes); optional.",
+                "examples": [
+                  "Cleared the jam"
+                ]
+              },
+              "planned_dwt": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Planned downtime flag; edit path only (absent = false).",
+                "examples": [
+                  false
+                ]
+              },
+              "change_over": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Changeover flag; edit path only (absent = false).",
+                "examples": [
+                  false
+                ]
+              },
+              "idle": {
+                "type": "string",
+                "description": "Idle marker forwarded verbatim; edit path only.",
+                "examples": [
+                  "No"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "PORequest": {
+        "description": "Create-and-start a production order.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_order",
+              "production_order_quantity",
+              "timestamp"
+            ],
+            "properties": {
+              "id_order": {
+                "$ref": "#/components/schemas/OrderNumber",
+                "description": "Operator-selected client order number."
+              },
+              "production_order_quantity": {
+                "type": "integer",
+                "description": "Programmed quantity.",
+                "examples": [
+                  12000
+                ]
+              },
+              "timestamp": {
+                "type": "string",
+                "description": "Start time, `YYYY-MM-DD HH:mm:ss`.",
+                "examples": [
+                  "2026-10-13 06:00:00"
+                ]
+              },
+              "nm_production_order": {
+                "type": "string",
+                "description": "Product / PO name; optional.",
+                "examples": [
+                  "Bottle cap 28mm blue"
+                ]
+              },
+              "notes": {
+                "type": "string",
+                "description": "PO notes (txtProductionOrderNotes); optional.",
+                "examples": [
+                  "Priority run"
+                ]
+              },
+              "id_label": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Label id; optional (omitted when null).",
+                "examples": [
+                  null
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "POStopRequest": {
+        "description": "Pause or finish the running PO.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "stop_type",
+              "id_production_order",
+              "production_order_quantity"
+            ],
+            "properties": {
+              "timestamp": {
+                "type": "string",
+                "description": "Stop time, ISO 8601 or `YYYY-MM-DD HH:mm:ss` (forwarded verbatim).",
+                "examples": [
+                  "2026-10-13T14:00:00-03:00"
+                ]
+              },
+              "stop_type": {
+                "type": "string",
+                "description": "`pause` (also `interrupt` or `1`) or `finish` (also `2`); case-insensitive.",
+                "examples": [
+                  "finish"
+                ]
+              },
+              "id_production_order": {
+                "type": "integer",
+                "description": "Internal id of the running PO.",
+                "examples": [
+                  55123
+                ]
+              },
+              "production_order_quantity": {
+                "type": "integer",
+                "description": "Final good count.",
+                "examples": [
+                  11870
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "POSetupRequest": {
+        "description": "Close current PO, optionally open the next.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "should_open_new_po",
+              "stop_type",
+              "old_id_production_order",
+              "old_production_order_prod_final"
+            ],
+            "properties": {
+              "timestamp": {
+                "type": "string",
+                "description": "Change time (forwarded verbatim).",
+                "examples": [
+                  "2026-10-13T14:00:00-03:00"
+                ]
+              },
+              "should_open_new_po": {
+                "type": "boolean",
+                "description": "true = close current and open next; false = close only.",
+                "examples": [
+                  true
+                ]
+              },
+              "stop_type": {
+                "type": "string",
+                "description": "How the current PO is closed: `pause`/`interrupt`/`1` or `finish`/`2`.",
+                "examples": [
+                  "finish"
+                ]
+              },
+              "old_id_production_order": {
+                "type": "integer",
+                "description": "PO being closed.",
+                "examples": [
+                  55123
+                ]
+              },
+              "old_production_order_prod_final": {
+                "type": "integer",
+                "description": "Final good count of the PO being closed.",
+                "examples": [
+                  11870
+                ]
+              },
+              "should_create_po": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "When opening next: true = create a new PO from `id_order`; false/absent = reuse `id_production_order`.",
+                "examples": [
+                  true
+                ]
+              },
+              "id_order": {
+                "$ref": "#/components/schemas/OrderNumber",
+                "description": "New PO's client order number; required when creating."
+              },
+              "id_production_order": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Existing next PO; required when opening without creating.",
+                "examples": [
+                  55124
+                ]
+              },
+              "production_order_quantity": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Programmed quantity of the new PO (absent = 0).",
+                "examples": [
+                  8000
+                ]
+              },
+              "id_label": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Label id for the new PO; optional.",
+                "examples": [
+                  3
+                ]
+              },
+              "nm_production_order": {
+                "type": "string",
+                "description": "New PO name; optional.",
+                "examples": [
+                  "Bottle cap 28mm red"
+                ]
+              },
+              "notes": {
+                "type": "string",
+                "description": "New PO notes; optional.",
+                "examples": [
+                  ""
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "POReplaceRequest": {
+        "description": "Switch to an existing PO.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_production_order"
+            ],
+            "properties": {
+              "id_production_order": {
+                "type": "integer",
+                "description": "Existing PO to switch to.",
+                "examples": [
+                  55124
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "POStatusRequest": {
+        "description": "Toggle PO status.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_production_order"
+            ],
+            "properties": {
+              "id_production_order": {
+                "type": "integer",
+                "description": "PO whose paused/finished status is toggled.",
+                "examples": [
+                  55120
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "POTimeRequest": {
+        "description": "Edit runtime interval bounds.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_production_order_runtime",
+              "id_production_order",
+              "start"
+            ],
+            "properties": {
+              "id_production_order_runtime": {
+                "type": "integer",
+                "description": "Runtime interval to edit.",
+                "examples": [
+                  771204
+                ]
+              },
+              "id_production_order": {
+                "type": "integer",
+                "description": "PO the interval belongs to.",
+                "examples": [
+                  55120
+                ]
+              },
+              "start": {
+                "type": "string",
+                "description": "New interval start (forwarded verbatim).",
+                "examples": [
+                  "2026-10-12T06:05:00-03:00"
+                ]
+              },
+              "end": {
+                "type": "string",
+                "description": "New interval end; optional.",
+                "examples": [
+                  "2026-10-12T13:58:00-03:00"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "SplitRequest": {
+        "description": "Split one event into re-categorised sub-intervals.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_equipment_event",
+              "event_type",
+              "events"
+            ],
+            "properties": {
+              "id_equipment_event": {
+                "type": "integer",
+                "description": "Event being split.",
+                "examples": [
+                  918273
+                ]
+              },
+              "event_type": {
+                "type": "string",
+                "description": "Kind of event being split.",
+                "enum": [
+                  "downtime",
+                  "manual",
+                  "low_speed"
+                ],
+                "examples": [
+                  "downtime"
+                ]
+              },
+              "events": {
+                "type": "array",
+                "minItems": 1,
+                "description": "The sub-intervals (at least one).",
+                "items": {
+                  "$ref": "#/components/schemas/SplitEvent"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SplitEvent": {
+        "type": "object",
+        "description": "One sub-interval. `machineCode` is filled server-side from the resolved equipment.",
+        "required": [
+          "start_time",
+          "category_code",
+          "desc_category",
+          "idle",
+          "change_over",
+          "planned_dwt"
+        ],
+        "properties": {
+          "start_time": {
+            "type": "string",
+            "description": "Sub-interval start, ISO 8601.",
+            "examples": [
+              "2026-10-13T08:15:00-03:00"
+            ]
+          },
+          "end_time": {
+            "type": "string",
+            "description": "Sub-interval end, ISO 8601; optional.",
+            "examples": [
+              "2026-10-13T08:25:00-03:00"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "description": "Free-text note; optional.",
+            "examples": [
+              "Waiting for maintenance"
+            ]
+          },
+          "category_code": {
+            "type": "string",
+            "description": "Reason category code.",
+            "minLength": 1,
+            "examples": [
+              "40"
+            ]
+          },
+          "subcategory_code": {
+            "type": "string",
+            "description": "Reason subcategory code; optional.",
+            "examples": [
+              "4001"
+            ]
+          },
+          "desc_category": {
+            "type": "string",
+            "description": "Reason category description.",
+            "minLength": 1,
+            "examples": [
+              "Waiting"
+            ]
+          },
+          "desc_subcategory": {
+            "type": "string",
+            "description": "Reason subcategory description; optional.",
+            "examples": [
+              "Maintenance crew"
+            ]
+          },
+          "idle": {
+            "type": "string",
+            "description": "Idle marker; exactly one of Yes, yes, No, no.",
+            "enum": [
+              "Yes",
+              "yes",
+              "No",
+              "no"
+            ],
+            "examples": [
+              "No"
+            ]
+          },
+          "change_over": {
+            "type": "boolean",
+            "description": "Changeover flag (required, false is a value).",
+            "examples": [
+              false
+            ]
+          },
+          "planned_dwt": {
+            "type": "boolean",
+            "description": "Planned downtime flag (required).",
+            "examples": [
+              false
+            ]
+          }
+        }
+      }
+    }
+  }
+}
