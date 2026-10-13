@@ -2,19 +2,23 @@
 title: sparkplug-decoder (cloud decoder)
 layer: 3
 owner_area: ingestion
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # sparkplug-decoder (cloud decoder)
 
 > **Layer 3 · Component** — the cloud service that reads Sparkplug B from Mosquitto, turns PLC
 > totalizers into per-sample increments, and publishes JSON envelopes to RabbitMQ. For engineers
 > changing counter math, routing, or the decoder's configuration.
-> Up: [Ingestion subsystem](../subsystems/ingestion.md)
+> Up: [Ingestion subsystem](../subsystems/ingestion.md) ·
+> [README (run / change it)](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/sparkplug-decoder/README.md) ·
+> [Onboard API reference](../../reference/api/onboard-api.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
 The decoder owns **the counter math at the ingest boundary**: for each production counter it keeps
-the last absolute value per topic in memory and emits the difference (the *increment*) plus the
+the last absolute value per topic (in memory, checkpointed to SQLite, see
+[Durable Calc baselines](#durable-calc-baselines)) and emits the difference (the *increment*) plus the
 absolute value, after guarding against first-boot spikes, resets, rollovers and impossible jumps.
 It then publishes one envelope per Sparkplug message to the `oee` exchange. It does **not** write to
 the database and does **not** resolve topics to `id_equipment`; the
@@ -37,9 +41,10 @@ those are covered in the [edge subsystem](../subsystems/edge.md): see
 | Compose service | `sparkplug-decoder` (`compose.staging.yml`), static IP `172.18.0.23` |
 | Image | built from `services/sparkplug-decoder/Dockerfile`, entrypoint `/usr/local/bin/sparkplug-decoder` |
 | Host (staging) | the staging app host (EC2), with the rest of the stack |
-| Ports | 9102 `/healthz`, `/health`, `/metrics`; 9105 onboard-generate API (`ONBOARD_API_ENABLED=true` on staging) |
+| Host (production) | `compose.production.yml`, same block but behind profile `client-ingest` (starts only once a client is onboarded); no `PHASE9_LINE_AGG_ENABLED` / `F3_PER_TENANT_ROUTING`, `COUNTERS_ONLY_FROM_DB=true` |
+| Ports | 9102 `/healthz`, `/health`, `/metrics`; 9105 onboard API (`/v1/onboard/generate`, `/simulate`, `GET /openapi.json`; `ONBOARD_API_ENABLED=true` on staging) |
 | Limits | `mem_limit: 128m`, `cpus: 0.5` |
-| Volumes | `edge_transformer_outbox` → `/var/lib/edge-transformer` (SQLite outbox); `docs/clients/cpack.yaml` → `/etc/packiot/client.yaml` (read-only) |
+| Volumes | `edge_transformer_outbox` → `/var/lib/edge-transformer` (SQLite outbox + `calc_state` baselines); `docs/clients/cpack.yaml` → `/etc/packiot/client.yaml` (read-only) |
 | Depends on | Mosquitto, RabbitMQ; analytics DB (read-only lookups); read-api (only if birth-bound routing is on) |
 | Depended on by | stream-engine (through RabbitMQ), oeecloud-fanout |
 
@@ -49,9 +54,9 @@ those are covered in the [edge subsystem](../subsystems/edge.md): see
 |---|---|---|
 | In | MQTT `spBv1.0/#` on `tcp://mosquitto:1883`, QoS 0 | NBIRTH/DBIRTH seed the alias table; NDATA/DDATA carry values |
 | In (read-only DB) | `packml_register` + `equipments` | Parameter30700 seed for Phase 9 line aggregation (every 5 min) |
-| In (read-only DB) | `client_descriptors.descriptor->'oee_profile'` | per-client spike margin and rated speed (every 300 s) |
+| In (read-only DB) | `client_descriptors.descriptor` | per-client `oee_profile` spike margin and rated speed, plus the counters a descriptor declares as S7 `type: int` (unsigned 16-bit, see Calc phase 0) — every 300 s |
 | In (read-only DB, off on staging) | `client_descriptors.descriptor->>'counters_only_oee'` + `equipments.production_speed` | counters-only rated speeds (`COUNTERS_ONLY_FROM_DB`) |
-| Out | AMQP exchange `oee`, routing key `sparkplug.data.<tenant>` | JSON envelope, persistent, publisher confirms |
+| Out | AMQP exchange `oee`, routing key `sparkplug.data.<tenant>` | JSON envelope, persistent, publisher confirms; consumed by [stream-engine](stream-engine.md) queues `stream-engine-q` / `stream-engine-q-<tenant>` |
 | Out (off) | `spBv1.0/<g>/NCMD/<node>` rebirth request | `ET_REQUEST_REBIRTH_ENABLED` |
 | Out (off) | `spBv1.0/<g>/DCMD/<node>` | command channel, `EDGE_COMMANDS_ENABLED` |
 | Out (off unless configured) | `POST /api/admin/production-orders/csv/import` on edge-api | ERP connector PO upsert, needs `EDGE_API_URL` |
@@ -76,11 +81,13 @@ and `SHADOW_EMIT_GO`.
           │ decode protobuf, resolve aliases (StateStore per group/node/device)
           │ NBIRTH: seed Calc state from MachSpeed / Parameter* metrics
           ▼
-       Calc (calc_production_counters) per counter metric ── state in memory (memState)
+       Calc (calc_production_counters) per counter metric ── state in memory (TrackedState)
           ▼
        buildCutoverMetrics: Calc increments + non-counter metrics passed through
           ▼
-       SQLite outbox (enqueue) ──▶ drain goroutine ──▶ RabbitMQ `oee` (confirm, then delete row)
+       SQLite outbox: envelopes + changed baselines in ONE tx (EnqueueBatch)
+          ▼
+       drain goroutine ──▶ RabbitMQ `oee` (confirm, then delete row)
 ```
 
 ### Alias resolution and births
@@ -89,6 +96,16 @@ and `SHADOW_EMIT_GO`.
 arrives before a birth returns `ErrNoBirth`: it is logged ("data before birth") and dropped, and a
 rebirth NCMD is requested if that feature is on. Sequence gaps increment
 `edge_transformer_sparkplug_seq_gaps_total{group_id,edge_node_id,device_id}`.
+
+**Birth-bound identity (ADR-0061, off on staging).** With `BIRTH_BOUND_ROUTING=true`,
+`cmd/edge-transformer/birthbind_wiring.go` binds every birth metric that declares a
+`device_key` (opaque `dk_<32 hex>`) and a `role`, resolves it through read-api
+`/internal/resolve-device` (`BIRTH_BOUND_RESOLVER=refdata`) to `(id_equipment, id_enterprise)`,
+and stamps those plus the role on the envelope. Bindings are scoped per (group, edge node):
+NBIRTH replaces a node's bindings, DBIRTH extends them; a metric without a declared key stays
+unbound (no name-derived fallback), and a mixed-tenant envelope is left unstamped. Staging does
+not set the flag, so envelopes are byte-identical to the unbound path and the stream-engine
+still resolves topics.
 
 ### Counter classification
 
@@ -116,18 +133,19 @@ calls `CalcWithConfig`. Phases, in order:
 
 | Phase | What happens | Drops the sample when |
 |---|---|---|
+| 0 | S7 unsigned-16 reinterpretation: for counters the descriptor declares as S7 `type: int`, a payload in −32768…−1 becomes +65 536 (#1505, 2026-09-29) | – |
 | 1 | Parse topic, read unit mode | unit is in SETUP (mode 6) |
 | 2 | Read the three prior absolutes for the unit | no trigger flag (never on this path) |
-| First-observation seed (ADR-0045 P1) | no stored baseline for this counter → store `cur`, emit nothing | always, on the first sample after a restart |
+| First-observation seed (ADR-0045 P1) | no stored baseline for this counter → store `cur`, emit nothing | first sample of a counter with no baseline (new topic, or a fresh outbox volume) |
 | Monotonicity guard (`CALC_MONOTONICITY_GUARD`, off) | drop samples not newer than the last one for that counter | timestamp ≤ last |
 | 3 | `cur > prev` → increment. `cur < prev` → a 16-bit wrap (`prev ≥ 61440`, `cur < 4096`) keeps counting across 65 536; otherwise a **reset**. `CALC_COUNTER_ROLLOVER` (off) adds a per-equipment `CounterMax` wrap | – |
 | Reset-heal (`CALC_RESET_HEAL_ENABLED`, **on by default**) | on a genuine reset, reseed the baseline to `cur` and emit nothing | reset |
 | 4 | TRIG corrections. With plain `***TRIG`: if the defective absolute is ≤ 0, set defective = consumed − processed. The suffix variants `TRIG_CS`, `TRIG_CI`, `TRIG_C=I`, `TRIG_C=O`, `TRIG_CO`, `STATESPEED_THIS` exist for Node-RED parity but are not produced by this decoder | – |
-| Spike guard (WS1, per client) | clamp an increment above `margin × rated_speed × Δt/60 000` to that ceiling | never drops; clamps |
+| Spike guard (WS1, per client) | clamp an increment above `margin × rated_speed × Δt/60 000` to that ceiling. **Inert on staging since 2026-09-30** (`CALC_COUNTER_SPIKE_MARGIN=0`) unless a descriptor's `oee_profile.spike_margin` > 0 opts a tenant in; the stream-engine ingest check (`INCREMENT_SANITY_CLAMP_*`) rejects phantoms instead and records a data-quality event | never drops; clamps |
 | 5 | Persist new absolutes (negatives stored as 0) | – |
 | 6 | Speed = consumed increment / time since the unit's last speed timestamp × 60 000, × `Parameter*30710*` if set | – |
-| 7–8 | Glitch guard: emit a counter only if `speed < 3 × MachSpeed`. Counters-only machines use `3 × IdealRate`. With `CALC_NO_SPEED_GUARD_FALLBACK=true` a machine with no MachSpeed and no ideal rate has no guard | speed ≥ bound |
-| 9 | Line aggregation: if the unit's count index is first or last in the line's `Parameter30700` CSV, also emit line-level consumed / processed / defective (tagged `LineAggregated`) | – |
+| 7–8 | Glitch guard: emit a counter only if `cur ≥ 0` and `speed < 3 × MachSpeed`. Counters-only machines use `3 × IdealRate`. With `CALC_NO_SPEED_GUARD_FALLBACK=true` a machine with no MachSpeed and no ideal rate has no guard | speed ≥ bound |
+| 9 | Line aggregation: if the unit's count index is first or last in the line's `Parameter30700` CSV, also emit line-level consumed / processed / defective (tagged `LineAggregated`). Line defective is emitted at most once per wall-clock second and only after the line's first consumed (infeed) contribution (`___HAS_INFEED`, fix e6e22fc5, 2026-10-08) | – |
 | 10 | Status metric (`StateCurrent = 6`) when speed ≥ `MachSpeed × Parameter*30750* / 100` (or the mode-4 rolling average), unless `Parameter*30763*` disables it | – |
 
 **Per-counter spike-guard timestamp (#1462, 2026-09-27).** The spike guard measures Δt from the
@@ -150,6 +168,18 @@ With `CALC_CUTOVER_REFACTORED=true` the `refactored` envelope carries Calc's out
 (`value` = increment, `counter` = absolute, `curspeed`) and drops the raw cumulative counters.
 Before this, the continuous aggregate summed cumulative totalizers into billions. Non-counter
 metrics are passed through unchanged.
+
+### Durable Calc baselines
+
+`CALC_STATE_DURABLE` (default **true**, needs `OUTBOX_ENABLED`; #1671, 2026-10-09). Calc runs on a
+`TrackedState` that records which numeric keys changed. The MQTT handler writes the envelopes
+and those changed baselines to the outbox SQLite file in one transaction
+(`outbox.Store.EnqueueBatch`, table `calc_state`). At boot `restoreCalcState` loads them before
+the subscriber starts. The persisted baseline therefore always equals the last counter whose
+delta was emitted: after a restart the next reading differences against it, so nothing is lost
+and nothing is counted twice. Before this, every decoder restart dropped one reading's delta per
+counter stream (Bispharma 2026-10-08: 984 units on 42 machines). This relies on a **single
+drainer** of the Mosquitto namespace (see [Data & invariants](#data-invariants)).
 
 ### Outbox
 
@@ -216,11 +246,12 @@ unless the host `/opt/packiot/.env` (not in git) sets it.
 | `USE_GO_PORT` | `false` | `true` | run Calc; required for everything below |
 | `CALC_CUTOVER_REFACTORED` | off | `true` | F3 envelope = Calc increments |
 | `CALC_RESET_HEAL_ENABLED` | `true` | — | reseed on reset instead of emitting the whole totalizer |
+| `CALC_STATE_DURABLE` | `true` | — | checkpoint Calc baselines in the outbox tx and restore them at boot; `false` = memory only (a restart loses one delta per counter) |
 | `CALC_NO_SPEED_GUARD_FALLBACK` | `false` | `true` | no glitch guard when there is no speed reference |
 | `CALC_MONOTONICITY_GUARD` | `false` | — | drop out-of-order samples |
 | `CALC_COUNTER_ROLLOVER` | `false` | — | per-equipment `CounterMax` wrap |
-| `CALC_COUNTER_SPIKE_MARGIN` | 0 (off) | `10` | default spike-guard margin |
-| `OEE_PROFILE_FROM_DB` / `OEE_PROFILE_REFRESH_SECONDS` | `false` / 300 | `true` / — | per-client margin + rated speed |
+| `CALC_COUNTER_SPIKE_MARGIN` | 0 (off) | `0` (disabled 2026-09-30, "no clamps in data") | default spike-guard margin |
+| `OEE_PROFILE_FROM_DB` / `OEE_PROFILE_REFRESH_SECONDS` | `false` / 300 | `true` / — | per-client margin + rated speed + S7 unsigned-16 counter set |
 | `OEE_PROFILE_DSN` | unset | — | overrides the DSN built from `POSTGRES_*` |
 | `COUNTERS_ONLY_OEE_ENABLED` | `false` | `true` | counters-only glitch bound |
 | `COUNTERS_ONLY_IDEAL_RATES` | `{}` | 7 CPACK L6/L5 unit topics at 147 | JSON map unit topic → parts/min |
@@ -238,7 +269,7 @@ unless the host `/opt/packiot/.env` (not in git) sets it.
 | `LOCAL_STATE_DB` | unset | — | on-prem current-state SQLite sink (ADR-0053) |
 | `LINE_TRACE_TENANTS` | empty | — (commented) | INFO-level per-counter drop trace for listed tenants |
 | `ET_REQUEST_REBIRTH_ENABLED` / `…_MIN_INTERVAL_SECONDS` | `false` / 30 | — | send rebirth NCMD on seq gap / data before birth |
-| `BIRTH_BOUND_ROUTING` | `false` | — | ADR-0046 birth-declared identity (off) |
+| `BIRTH_BOUND_ROUTING` | `false` | — | ADR-0046 / ADR-0061 birth-declared identity: bind on births and stamp ids on envelopes (off) |
 | `BIRTH_BOUND_RESOLVER` | `map` | `refdata` | resolver used only when routing is on |
 | `BIRTH_BOUND_DEVICE_MAP` | `{}` | — | device key → id_equipment for the `map` resolver |
 | `REFDATA_URL` / `REFDATA_INTERNAL_KEY` | empty | `http://read-api:9104` / from `.env` | refdata resolver |
@@ -257,8 +288,11 @@ unless the host `/opt/packiot/.env` (not in git) sets it.
   baseline. A genuine reset only reseeds. This is why a decoder restart loses one sample per
   counter instead of minting a whole-totalizer spike (the 2026-08-11 bug: ~66% of CPACK new-prod
   production was fake, fingerprint `incr == val`).
-- **State is per process.** Baselines live in memory (`NewMemState`). Only one decoder may consume a
-  given Mosquitto namespace; a second instance would compute its own deltas and double-count.
+- **One drainer.** Baselines live in memory and are checkpointed to the outbox volume. Only one
+  decoder may consume a given Mosquitto namespace, and the volume belongs to that one process; a
+  second instance would compute its own deltas and double-count.
+- **Baseline = last emitted counter.** Envelopes and the baselines they were computed from commit
+  together or not at all (`CALC_STATE_DURABLE`), so a restart neither loses nor repeats a delta.
 - **Increments are never negative** and a spike is clamped, not dropped: the next reading
   differences normally from the stored absolute.
 - **Tenant = Sparkplug group, lowercased.** Routing key and downstream tenant come from it.
@@ -276,20 +310,27 @@ unless the host `/opt/packiot/.env` (not in git) sets it.
 | `edge_transformer_mqtt_dropped_events_total{reason}` | ingest queue full |
 | `outbox_depth`, `outbox_oldest_age_seconds` | outbox backlog |
 | `edge_transformer_shadowpub_*` (published, confirmed, nacked, confirm timeouts) | RabbitMQ publisher |
+| `calc_state_restored_entries` | baselines restored at boot (0 on a fresh volume = that restart seeds and loses one delta per stream) |
+| `calc_state_checkpoint_failures_total` | outbox transactions (envelopes + baselines) that failed; the next restart would lose deltas |
+| `edge_transformer_birthbind_counters_total`, `…_birthbind_envelopes_total` | birth-bound binding outcomes (only with `BIRTH_BOUND_ROUTING`) |
 | `edge_transformer_rebirth_requests_total`, `edge_transformer_onboard_generate_total`, `edge_transformer_commands_*` | optional features |
 
-Log lines worth grepping: `sparkplug: data before birth`, `sparkplug: sequence gap`,
+Log lines worth grepping: `calc state: restored durable baselines`, `sparkplug: data before birth`, `sparkplug: sequence gap`,
 `phase9 line-agg: seeded Parameter30700`, `analyticspub: broker unreachable after startup retries`,
 `outbox: publish failed`, `line-trace:` (with `LINE_TRACE_TENANTS`).
 
 Alerts (`monitoring/prometheus/rules.yml`): `MQTTDisconnected`, `TransformerOutboxBacklog` (> 1000),
 `TransformerOutboxStale` (> 900 s), `TransformerPublishNacked`, `TransformerMqttDrops`,
-`SparkplugSeqGapStream`.
+`SparkplugSeqGapStream`. They reach Slack only if Alertmanager on the host has its
+`monitoring/alertmanager/slack_api_url` file (gitignored, provided at deploy).
 
 ## Failure modes
 
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
+| Restart lost one reading per counter (every restart since 2026-09-25; seen 2026-10-08) | Bispharma −984 units on 42 machines after a deploy; `calc_state_mutations_total{counter.seed_baseline}` jumps at process start | baselines in memory only; first post-restart sample only seeded | #1671 durable baselines, #1672 restore/checkpoint metrics |
+| Phase-9 line scrap wrong (found 2026-10-08) | L6 stored line scrap 2–25× gross − net; lines without an infeed sensor had negative scrap | two line-defective emissions in one second overwrote each other; accumulator started on processed only | e6e22fc5: one emission per second, start at first infeed |
+| S7 unsigned INT read as signed (2026-09-03 → 09-29) | CPACK L8/L10-PTH counter never above 32 767, half of each cycle lost | PLC register is unsigned 16-bit, edge reads signed | #1505: descriptor `type: int` set → reinterpret negatives |
 | Spike-guard window bug (2026-09-23 → 09-27) | CPACK L6 net −40%, RMH −15% | Δt measured from the unit's speed timestamp | #1462 per-counter `___GUARD_TS`; repaired from silver values |
 | Synthetic writers on real topics (to 2026-09-25) | L5 production ~6× legacy | twin injector and deploy inject fixture published on CPACK L5 topics; fixture also sent `Parameter30700="61"` | #1460 fixture uses group `E2EFIXTURE`; data repaired 2026-09-27 |
 | Decoder up before RabbitMQ (2026-09-25) | healthy, publishing nothing | publisher init failed once | #1447 `NewWithRetry` then exit |
@@ -302,9 +343,12 @@ Alerts (`monitoring/prometheus/rules.yml`): `MQTTDisconnected`, `TransformerOutb
 
 ## Operating it
 
-- **Deploy**: part of the staging deploy (`docker compose up -d`). A restart costs one sample per
-  counter (seed) and needs births: agents that stay connected do not rebirth unless asked, so
-  consider `ET_REQUEST_REBIRTH_ENABLED` before relying on restarts.
+- **Deploy**: part of the staging deploy (`docker compose up -d`). With the outbox volume intact a
+  restart loses no deltas (check `calc_state_restored_entries` > 0), but it does need births to
+  rebuild alias tables: agents that stay connected do not rebirth unless asked, so consider
+  `ET_REQUEST_REBIRTH_ENABLED` before relying on restarts.
+- **Never delete the `edge_transformer_outbox` volume** casually: it holds undelivered envelopes
+  and the Calc baselines; a fresh volume costs one reading per counter stream.
 - **Health**: `docker exec sparkplug-decoder /usr/local/bin/sparkplug-decoder --healthcheck`, or
   `curl` port 9102 `/healthz` from inside the network.
 - **Trace one tenant's lines**: set `LINE_TRACE_TENANTS: cpack` and redeploy normally.
@@ -319,7 +363,11 @@ Alerts (`monitoring/prometheus/rules.yml`): `MQTTDisconnected`, `TransformerOutb
 - `cd services/sparkplug-decoder && go test ./...` (also runs in CI: `.github/workflows/go-services.yml`, `go test -race`).
 - Calc golden and focused tests: `internal/transforms/calc_production_counters/*_test.go`
   (`spike_guard_interval_test.go`, `counters_only_test.go`, `no_speed_guard_test.go`,
-  `line_aggregation_test.go`, `silver_rules_test.go`), with fixtures in `testdata/`.
+  `line_aggregation_test.go`, `silver_rules_test.go`, `tracked_state_test.go`,
+  `uint16_counter_test.go`), with fixtures in `testdata/`. The outbox has `EnqueueBatch`
+  atomicity / reopen tests in `internal/outbox/`.
+- OpenAPI drift: `openapi_test.go` in `internal/agent/onboardapi` and `internal/agent/httpingest`
+  fails when a served route and the embedded spec disagree.
 - Deploy smoke: the inject fixture and the outbox chaos test in `.github/workflows/deploy-staging.yml`.
 
 ## Source map
@@ -333,7 +381,9 @@ Alerts (`monitoring/prometheus/rules.yml`): `MQTTDisconnected`, `TransformerOutb
 | `services/sparkplug-decoder/internal/mqtt/` | subscriber, rebirth requester |
 | `services/sparkplug-decoder/internal/sparkplug/` | protobuf decode, alias table |
 | `services/sparkplug-decoder/internal/analyticspub/` | envelope + RabbitMQ publisher |
-| `services/sparkplug-decoder/internal/outbox/` | SQLite store-and-forward |
+| `services/sparkplug-decoder/internal/outbox/` | SQLite store-and-forward + `calc_state` checkpoint |
+| `services/sparkplug-decoder/cmd/edge-transformer/birthbind_wiring.go`, `internal/birthbind/` | ADR-0061 birth-bound binding (off) |
+| `services/sparkplug-decoder/internal/agent/onboardapi/` | onboard API on :9105, embedded `openapi.json` |
 | `services/sparkplug-decoder/internal/oeeprofile/`, `internal/countersrate/` | DB watchers |
 | `services/sparkplug-decoder/internal/erpconnector/`, `internal/edgeapiclient/` | ERP read + PO upsert |
 | `services/sparkplug-decoder/internal/command/` | DCMD command channel (off) |

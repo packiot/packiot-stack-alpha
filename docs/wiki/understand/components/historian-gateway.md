@@ -2,14 +2,17 @@
 title: Historian gateway
 layer: 3
 owner_area: historian
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Historian gateway
 
 > **Layer 3 · Components** — the `hist-gateway` container: a Postgres instance with
 > `pg_duckdb` and `postgres_fdw` that serves hot + cold history through plain SQL, plus the
 > scripts that feed and check its S3 archive. For whoever operates it or writes queries
-> against it. Up: [Historian](../subsystems/historian.md)
+> against it. Up: [Historian](../subsystems/historian.md) ·
+> [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/historian-gateway/README.md) ·
+> [read-api API reference](../../reference/api/read-api.md) (`/v1/historian/*`, the HTTP face of this
+> gateway; the gateway itself speaks only SQL) · [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -27,12 +30,13 @@ hot side is a foreign table onto the analytics DB and the cold side is Parquet o
 | Image | `pgduckdb/pgduckdb:16-main` (glibc; cannot be loaded into the Alpine/musl TimescaleDB image) |
 | Compose | `compose.historian-gateway.yml`, project `packiot`, network `stack_packiot-net` (external) |
 | Container / service | `hist-gateway` / `historian-gateway` |
-| Database | `packiot_historian` (renamed from `postgres` in #274) |
+| Database | `packiot_historian` (renamed from `postgres` in #274); service login `historian_svc` |
 | Host (staging) | app host `i-06c9547a2c7091ab7`; reached in-stack as `hist-gateway:5432`; no host port |
 | Volume | `hist_gateway_data` (the init script runs only on a fresh volume) |
 | Limits | `mem_limit: 2560m`; DuckDB 1024 MB and 2 threads per backend |
 | Depends on | analytics DB at 10.10.10.89 (role `histgw_ro`), S3 bucket `packiot-staging-historian-<account>` (IAM user `svc-historian-gateway`) |
-| Depended on by | read-api `/v1/historian/*`, Superset database `historian_union`, CloudBeaver (browse), the nightly job's boundary refresh |
+| Depended on by | read-api `/v1/historian/production-series` and `/downtime-series`, Superset database `historian_union`, CloudBeaver (browse), the nightly job's boundary refresh |
+| Backups | the `packiot_historian` catalog is dumped nightly; the **Parquet archive has no copy** (see [Backups and restore](../../build/operate/backups-and-restore.md#known-gaps)) |
 | Deploy | **by hand**; the staging deploy workflow does not manage this container |
 | Production | not deployed |
 
@@ -64,14 +68,15 @@ the gateway.
 |---|---|
 | `live` | the four foreign tables (hot) |
 | `cold` | Parquet source views, the allow-list, boundary and watermark tables (`search_path = cold, public` is the database default, so gateway scripts use bare names) |
-| `silver` | the hot ∪ cold union views, named like the analytics DB (ADR-0057) |
+| `silver` | the hot ∪ cold union views `silver.equipment_values`, `silver.equipment_events`, `silver.production_orders`, named like the analytics DB (ADR-0057) |
 | `gold` | created empty by the init script |
 | `public` | extension objects only (`read_parquet`, `duckdb.*`) |
 
-!!! warning "Unverified: live-only `gold.equipment_oee_shift`"
-    The Superset database asset and `scripts/historian-oee-shift-backfill.sh` refer to a
-    cold-only view `gold.equipment_oee_shift` on the gateway over the `equipment_oee_shift/`
-    prefix. It is **not** created by `10-historian-gateway.sh`, so a fresh volume will not
+!!! warning "Unverified: hand-made cold-only `gold.equipment_oee_shift`"
+    The Superset database asset (`historian_union.yaml`), `scripts/historian-oee-shift-backfill.sh`
+    and `scripts/historian-staging-run-append.sh` refer to a cold-only view
+    `gold.equipment_oee_shift` on the gateway over the `equipment_oee_shift/` prefix. It is
+    **not** created by `10-historian-gateway.sh` or any migration, so a fresh volume will not
     have it. Check with `\dv gold.*` before relying on it, and codify it if it exists.
 
 ### Storage layout
@@ -136,13 +141,14 @@ in the gateway query is the only fence.
 
 `historian-staging-append.timer` (02:30 UTC) runs `/opt/packiot/historian/historian-staging-run-append.sh`:
 
-1. `historian-legacy-copy.sh` — legacy `packiot40` `equipment_values` → S3, current + previous
+1. `historian-legacy-copy.sh` — legacy `packiot40` `equipment_values` → S3 (read-only on legacy), current + previous
    month, legacy → F3 id remap via the packml-topic join, lag 1 day.
 2. `historian-po-backfill.sh` with `PO_COPY_MONTHS_BACK=1`.
 3. `historian-oee-shift-backfill.sh` with `SHIFT_COPY_MONTHS_BACK=1`.
 4. Post-run hook, in order, each `docker exec -i hist-gateway psql -d packiot_historian -f`:
    `stamp-equipment_values-meta.sql` (stamps `cold_append_watermark`), then
-   `refresh-equipment_values-cutover.sql`, `refresh-ee-cutover.sql`, `refresh-po-cutover.sql`.
+   `refresh-equipment_values-cutover.sql` (EV boundary from Parquet footer statistics since
+   #1553), `refresh-ee-cutover.sql`, `refresh-po-cutover.sql`.
 5. `historian-ev-daily-rollup.sh` — rewrites the daily rollup for current + previous month
    (whole UTC days before `date(ev cutover)`) and updates `cold.ev_daily_watermark`.
 
@@ -196,8 +202,8 @@ locally after pulling the whole remote table (173 s vs 59 ms with a literal, 202
 Check with `EXPLAIN (VERBOSE)`: the `Remote SQL:` line must contain the time filter.
 
 Other rules: never wrap a Parquet read in a SQL or PL/pgSQL function ("DuckDB execution is not
-supported inside functions"; `ev_between()` and a live-only `refresh_ev_union_boundary()` were
-removed for this); pass equipment filters as an inline integer list, not an `int[]` parameter
+supported inside functions"; `ev_between()` (t269) and a live-only `refresh_ev_union_boundary()`
+were removed for this); pass equipment filters as an inline integer list, not an `int[]` parameter
 (pg_duckdb cannot cast a Postgres array literal); avoid mixing a Parquet scan and an FDW scan
 in one heavy plan (the FDW side loses pushdown).
 
@@ -261,6 +267,7 @@ Consumers:
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
 | Double count after an append | recent window totals doubled | boundary refresh skipped | run the three `refresh-*-cutover.sql`; the staleness check flags it |
+| Nightly refresh OOM (2026-09-29 → 10-02) | CPACK totals double-counted 09-27..09-30; EE/PO refresh and daily rollup never ran | the EV boundary refresh took `max(ts_value)` through `cold.equipment_values` (window functions over 10.5 GB), DuckDB spilled past its temp space, `set -e` stopped the hook | #1553: the refresh reads Parquet footer statistics (`parquet_metadata`), ~98 s, constant memory |
 | Cross-tenant leak (2026-09-14) | tenant 6 query returned 16.7 M legacy rows | legacy id collision, no allow-list | allow-list (t271); never promote an unverified id |
 | Refresh inside a function (2026-09-08) | boundary silently stale | pg_duckdb cannot scan Parquet in a function | keep refreshes top-level SQL |
 | `read_parquet` 403 "No credentials" | cold reads fail for one role | that role lacks its own `simple_s3_secret` mapping, or the key rotated | re-run `apply-hardening.sh`; after rotation use `scripts/rotate-historian-s3-key.sh` |
@@ -297,7 +304,8 @@ HIST_GW_SVC_PASSWORD=… /opt/packiot/historian/apply-hardening.sh
 docker exec -i hist-gateway psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < 02-gateway-guards.sql
 ```
 
-Some migration READMEs still say `-d postgres`; the database is `packiot_historian` since #274.
+`db/migrations/t282-historian-gateway-glue/README.md` and `t287-historian-cold-schema/README.md`
+still say `-d postgres`; the database is `packiot_historian` since #274.
 
 **Refresh boundaries by hand** (after any backfill, reunload or prune):
 
@@ -344,7 +352,7 @@ un-bounded (no year/month) queries on the union views.
 | `services/historian-gateway/docker-entrypoint-initdb.d/10-historian-gateway.sh` | fresh-volume init: extensions, FDW, views, allow-list, boundaries, roles, comments |
 | `services/historian-gateway/apply-hardening.sh` | `historian_svc` / `historian_readers` on a running gateway |
 | `services/historian-gateway/refresh-*-cutover.sql` | boundary refreshes (EV, EE, PO) |
-| `services/historian-gateway/README.md` | design notes and serving rules (its Superset URI example is stale) |
+| `services/historian-gateway/README.md` | how to run and change it |
 | `scripts/historian-staging-run-append.sh` | nightly wrapper |
 | `scripts/historian-legacy-copy.sh`, `historian-po-backfill.sh`, `historian-oee-shift-backfill.sh`, `historian-events-backfill.sh`, `historian-events-reunload.sh` | archive writers (DuckDB CLI) |
 | `scripts/historian-ev-daily-rollup.sh` | daily cold rollup + watermark |

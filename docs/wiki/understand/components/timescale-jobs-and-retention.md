@@ -2,31 +2,38 @@
 title: Timescale jobs and retention
 layer: 3
 owner_area: analytics-db
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Timescale jobs and retention
 
 > **Layer 3 · Components** — every hypertable, continuous aggregate, background job,
-> compression policy and retention rule in `packiot_analytics`, with the intervals read from
-> the live staging catalog on 2026-09-28, and the retention catalog that drives them.
-> For DBAs and anyone changing how long data lives. Up: [Analytics DB](../subsystems/analytics-db.md)
+> compression policy and retention rule in `packiot_analytics`, and the retention catalog that
+> drives them. Intervals and job IDs come from the staging catalog read on 2026-09-28, checked
+> against the migrations and the production transplant script up to 2026-10-13. For DBAs and
+> anyone changing how long data lives. Up: [Analytics DB](../subsystems/analytics-db.md) ·
+> [db/README](https://github.com/packiot/packiot-stack-alpha/blob/staging/db/README.md) ·
+> [service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
-TimescaleDB's background scheduler does four jobs for the analytics DB: keep the continuous
+TimescaleDB's background scheduler does five jobs for the analytics DB: keep the continuous
 aggregates materialized, compress old chunks into columnar form, drop chunks older than the
-retention horizon, and run two user-defined procedures (the catalog-driven purge of plain
-tables and the downtime-resolved refresh). The retention catalog `ops.retention_policy`
-decides every horizon; this page lists what is actually configured.
+retention horizon, and run three user-defined procedures (the catalog-driven purge of plain
+tables, the downtime-resolved refresh, and the data-invariant battery). The retention catalog
+`ops.retention_policy` decides every horizon; this page lists what is configured.
+
+This is **staging**. Production still runs the legacy DB for most clients; when the new stack is
+promoted, `scripts/promotion/transplant/10-policies.sql` re-creates staging's compression,
+refresh and compute jobs there, but deliberately **not** the retention policies or the purge job
+(held for a decision: production has no cold tier yet).
 
 ## At a glance
 
 | | |
 |---|---|
-| Engine | TimescaleDB 2.27.0 on PostgreSQL 15.17 |
-| Scheduler | Timescale background workers (`timescaledb.max_background_workers = 12`); `pg_cron` is preloaded but not installed in `packiot_analytics` |
-| Jobs | 29 (27 scheduled policies, 2 user-defined actions); telemetry reporter disabled |
-| Status on 2026-09-28 | every scheduled job's last run = Success |
+| Engine | TimescaleDB 2.27.0 on PostgreSQL 15.17 (observed 2026-09-28) |
+| Scheduler | Timescale background workers (`timescaledb.max_background_workers = 12`); `pg_cron` is preloaded (`db_init.sh`) but not installed in `packiot_analytics` |
+| Jobs | the scheduled policies below plus 3 user-defined actions; telemetry reporter not scheduled (`TIMESCALEDB_TELEMETRY=off`) |
 | Source of truth for horizons | `ops.retention_policy` (migration `db/migrations/t-retention-catalog`) |
 | Host (staging) | DB EC2 `i-064bb36d1c454d861` |
 
@@ -37,17 +44,19 @@ decides every horizon; this page lists what is actually configured.
 | `silver.equipment_values`, `silver.equipment_events`, `bronze.*_raw` | the 7 materialization hypertables, compressed chunks |
 | `ops.retention_policy` | drops chunks; deletes from plain tables; logs to `ops.retention_run` |
 | `silver.equipment_events`, `core.*`, `gold.equipment_oee_shift`, … | `serving.downtime_events_resolved` |
+| Silver, Gold, core, legacy-oracle results | `ops.data_invariant_result` |
 
 ## Internal design
 
 ### Hypertables
 
-| Hypertable | Time column | Chunk interval | Chunks (compressed) | Size | Coverage from |
+| Hypertable | Time column | Chunk interval | Chunks (compressed), 2026-09-28 | Size | Coverage from |
 |---|---|---|---|---|---|
 | `silver.equipment_values` | `ts_value` | 1 day | 87 (79) | 1.56 GB | 2026-07-01 |
 | `silver.equipment_events` | `ts_event` | 1 day, `compress_chunk_time_interval` 30 days | 155 (140) | 900 MB | 2021-12-15 |
 | `bronze.equipment_values_raw` | `ts_value` | 7 days | 3 (1) | 2.0 GB | 2026-09-10 |
 | `bronze.equipment_events_raw` | `ts_event` | 7 days | 0 | 24 kB | — |
+| `silver.plc_link_minutes` | `ts_minute` | 7 days | created 2026-10-01 | — | 2026-10-01 |
 
 `silver.equipment_events` was consolidated from 1,483 to 156 chunks on 2026-09-24 with
 `merge_chunks` (`scripts/consolidate-event-chunks.sh`) after the CPACK history backfill; the
@@ -55,10 +64,14 @@ decides every horizon; this page lists what is actually configured.
 monthly ones. It is stored in `_timescaledb_catalog.dimension.compress_interval_length`, not
 in `reloptions`.
 
+`silver.plc_link_minutes` (`t-plc-link-health`) has no compression or retention policy and no row
+in the retention catalog: it grows by one row per tenant × PLC endpoint × minute until one is added.
+
 ### Continuous aggregates
 
 All seven are real-time (`materialized_only = false`). Materialization hypertables use
-10-day chunks.
+10-day chunks. Refresh and compression settings match `scripts/promotion/transplant/10-policies.sql`,
+which copies staging's.
 
 | Cagg | Bucket | Source | Mat. hypertable | Refresh job: every, window | Compress | Retention | Size |
 |---|---|---|---|---|---|---|---|
@@ -72,13 +85,18 @@ All seven are real-time (`materialized_only = false`). Materialization hypertabl
 
 Compressed caggs and hypertables segment by `id_equipment` and order by the time column
 descending (bronze also orders by `source_seq DESC`), with min/max sparse indexes on the
-order-by columns.
+order-by columns. The counter-carrying caggs keep float4-derived `*_val` columns marked DEPRECATED
+since 2026-10-07; they were not rebuilt (see [schemas](analytics-db-schemas.md#silver-cleaned-facts-buckets-and-current-state)).
 
 Why small refresh windows matter: a refresh over a range whose raw rows were already dropped
 **deletes** the aggregated buckets for that range. Every `start_offset` here is at most 3
 days, far inside the 90-day raw horizon, so the hourly caggs keep their 13 months.
 
 ### All jobs
+
+Job IDs are from the staging catalog on 2026-09-28. Any other database (a restore, the production
+transplant) assigns its own IDs; look jobs up by `proc_name` and `hypertable_name` in
+`timescaledb_information.jobs`.
 
 | Job | Kind | Target | Schedule | Config |
 |---|---|---|---|---|
@@ -111,10 +129,9 @@ days, far inside the 90-day raw horizon, so the hourly caggs keep their 13 month
 | 1095 | retention | `equipment_metrics_1min` | 1 day | 90 days |
 | 1033 | user-defined | `public.purge_analytics_plain` | 1 day | reads `ops.retention_policy` (kind `plain`) |
 | 1072 | user-defined | `serving.job_refresh_downtime_events_resolved` | 2 min | `refresh_downtime_events_resolved(now() - 3 days, now())` |
+| (assigned 2026-10-01) | user-defined | `ops.job_data_invariants` | 30 min | runs the invariant battery (`statement_timeout` 600 s since v9), writes `ops.data_invariant_result`, deletes its own rows older than 14 days |
 
-The retention jobs 1088–1095 were (re)created by `ops.apply_retention()` on 2026-09-23;
-their low run counts (5) reflect that, not failures. Cagg refresh jobs 1003, 1057, 1064 and
-1068 show a few historical failures but their last run succeeded.
+The retention jobs 1088–1095 were (re)created by `ops.apply_retention()` on 2026-09-23.
 
 ### The retention catalog
 
@@ -135,13 +152,13 @@ Mechanics:
 
 - `CALL ops.apply_retention()` validates every `time_expr`, then for hypertables and caggs
   removes and re-adds the Timescale retention policy only where `keep` differs from live.
-- Job 1033 `public.purge_analytics_plain` runs, for each `plain` row with a non-NULL `keep`,
+- The purge job (`public.purge_analytics_plain`) runs, for each `plain` row with a non-NULL `keep`,
   `DELETE FROM <relation> WHERE <time_expr> < now() - keep`, each in its own subtransaction,
   logging `rows_deleted` or the error to `ops.retention_run`.
 - `ops.retention_drift` lists catalog-vs-live disagreements; it should return 0 rows.
 
 **Production profile** (seeded by the migration; also `db/retention/profiles/production.sql`,
-live on staging today):
+live on staging):
 
 | Tier | Relations | Kind | Keep | Cold copy |
 |---|---|---|---|---|
@@ -149,7 +166,7 @@ live on staging today):
 | hot_raw | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | hypertable | 90 days | — |
 | hot_raw | `ca_discrete_changes_1s`, `ca_equipment_boxes_1s`, `agg_equipment_values_1min`, `equipment_metrics_1min`, `equipment_categorical_1min` | cagg | 90 days | derivable |
 | hot_agg | `agg_equipment_values_1hour`, `equipment_categorical_1hour` | cagg | 13 months | — |
-| hot_agg | `gold.equipment_oee_hourly` | plain (job 1033) | 13 months | — |
+| hot_agg | `gold.equipment_oee_hourly` | plain (purge job) | 13 months | — |
 | hot_agg | `gold.equipment_oee_{shift,daily,weekly,monthly,shift_weekly,shift_monthly}`, `gold.area_oee_{shift,daily}`, `gold.site_oee_shift` | plain | forever | historian `equipment_oee_shift` (shift) |
 | hot_agg | `silver.equipment_events` | hypertable | 5 years | historian `equipment_events` |
 | business | `bronze.box_scans`, `gold.po_box_counter`, `gold.production_orders_runtime`, `core.production_orders`, `silver.equipment_events_man` | plain | forever | historian `production_orders` (POs) |
@@ -163,20 +180,26 @@ records on the next purge. The historian half of that cap is
 
 ### What is not in the catalog
 
-- `serving.downtime_events_resolved` is rebuilt for a rolling 3-day window by job 1072; rows
+- `serving.downtime_events_resolved` is rebuilt for a rolling 3-day window by its refresh job; rows
   older than that stay until a manual refresh. Its served floor is
   `serving.downtime_events_resolved_meta.coverage_from`.
+- `ops.data_invariant_result` is trimmed to 14 days by `ops.job_data_invariants` itself.
+- `silver.plc_link_minutes` has no horizon yet (see above).
 - Current-state tables (`silver.*_live_*`) are overwritten in place.
 - `ops._bkp_*` backups are never purged automatically.
 
 ## Configuration
 
-| Knob | Value | Effect |
+| Knob | Value (staging, observed) | Effect |
 |---|---|---|
 | `timescaledb.max_background_workers` | 12 | concurrent jobs |
-| `timescaledb.enable_chunkwise_aggregation` | on | partial aggregation per chunk; see the memory warning below |
-| `timescaledb.max_tuples_decompressed_per_dml_transaction` | 100000 (the frozen `packiot` DB has 5,000,000 as a database setting) | DML touching compressed chunks aborts past it |
+| `timescaledb.enable_chunkwise_aggregation` | on | partial aggregation per chunk; see the memory failure below |
+| `timescaledb.max_tuples_decompressed_per_dml_transaction` | 100000 (the frozen `packiot` DB has 5,000,000 as a database setting) | DML touching compressed chunks aborts past it; the stream-engine closer sets it to 0 per transaction |
 | `timescaledb.bgw_log_level` | warning | |
+
+The server flags (`shared_preload_libraries`, `max_connections=200`, `pg_stat_statements`,
+`auto_explain`, log settings) are passed as `-c` arguments in
+`terraform/staging/user_data/db_init.sh`; the Timescale knobs above are not in git.
 
 ## Data & invariants
 
@@ -191,16 +214,19 @@ records on the next purge. The historian half of that cap is
 
 | Signal | Where |
 |---|---|
-| job status | `SELECT * FROM timescaledb_information.job_stats` (`last_run_status`, `total_failures`) and `timescaledb_information.job_errors` |
-| cagg lag | `_timescaledb_functions.to_timestamp(_timescaledb_functions.cagg_watermark(mat_hypertable_id))` from `_timescaledb_catalog.continuous_agg`; alert compares lag with `clamp_min(2 × schedule, 900 s)` (#1417). On 2026-09-28 every watermark was within one refresh window of now, except `ca_equipment_boxes_1s`, whose watermark is `-infinity` (shown as 4714 BC): it has never materialized a bucket because no source row carries `analogs->'Label'` yet. That is empty, not stalled. |
+| job status | `SELECT * FROM timescaledb_information.job_stats` (`last_run_status`, `total_failures`) and `timescaledb_information.job_errors`; alert `AnalyticsTimescaleJobFailing` (last run failed and the job has run at least once) |
+| cagg lag | `_timescaledb_functions.to_timestamp(_timescaledb_functions.cagg_watermark(mat_hypertable_id))` from `_timescaledb_catalog.continuous_agg`; alert `AnalyticsCaggRefreshLag` when time since the last successful refresh exceeds `clamp_min(2 × schedule, 900 s)`. `ca_equipment_boxes_1s` had a `-infinity` watermark on 2026-09-28 (no source row carries `analogs->'Label'`): empty, not stalled |
 | retention | alerts `RetentionPolicyDrift` (drift rows) and `RetentionPurgeErrors` (errors in `ops.retention_run`), from the `pg_retention_*` exporter queries |
+| data invariants | `ops.data_invariant_latest`; alerts `DataInvariantCritical`, `DataInvariantWarn`, `DataInvariantsStale` (no completed run for > 90 min), `DataInvariantsSlow` (battery averaging > 400 s of its 600 s budget) |
 | disk | `HostDiskHigh` at 80 % on the DB host |
 
 ## Failure modes
 
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
-| Cagg without a refresh policy (CPACK #196) | a rollup query slowly degrades to the statement timeout; OEE stale for days | real-time cagg with a frozen watermark re-aggregates all raw on every read | check the watermark first; full-gap `refresh_continuous_aggregate`, then add the policy |
+| Stable bound on compressed DML (2026-10-09) | a repair `UPDATE` returned 0 on every compressed day, uncompressed days fine | `ts_value < date 'X' + 1` (a stable expression) matched nothing on compressed chunks; `SELECT` with the same bound worked | compute literal timestamp bounds client-side; mark a repair done only from a read-back |
+| `decompress_chunk` on the shared DB (2026-09-30) | CPACK operator pages timed out (500s) for ~20 min | `decompress_chunk` holds ACCESS EXCLUSIVE on the chunk for the whole copy | never decompress on a live DB; insert row by row into compressed chunks (slow, but only row locks) |
+| Cagg without a refresh policy (CPACK, early 2026-09) | a rollup query slowly degrades to the statement timeout; OEE stale for days | real-time cagg with a frozen watermark re-aggregates all raw on every read | check the watermark first; full-gap `refresh_continuous_aggregate`, then add the policy |
 | Nightly purge deleting client history (before 2026-09-23) | shift and hourly OEE older than 90 days vanished | hard-coded 90-day DELETE in `purge_analytics_plain` | catalog-driven purge (T0) |
 | Unbounded caggs (before 2026-09-23) | disk growth (~7.5 GB/yr from `equipment_categorical_1min` alone) | no retention policy | now 90 days / 13 months |
 | Refresh over dropped raw | aggregated history disappears | `refresh_continuous_aggregate(..., NULL, NULL)` or a wide window after retention | refresh only inside the raw horizon |
@@ -240,11 +266,17 @@ Recent purge results:
 SELECT relation, ran_at, rows_deleted, error FROM ops.retention_run ORDER BY ran_at DESC LIMIT 40;
 ```
 
+Repairing data in compressed chunks: use literal bounds, never `decompress_chunk`, and read back.
+The rollup side of a repair is in
+[rollup internals — recomputing history](stream-engine-rollup-internals.md#recomputing-history-safely).
+
 ## Tests
 
 - `ops.apply_retention()` validates every `time_expr` with `SELECT … LIMIT 0` before touching
   a policy, so a typo fails loudly.
 - The T0 rollout was proven by a dry run inside `BEGIN … ROLLBACK` showing 0 deletions.
+- `scripts/promotion/transplant/xplant.sh` rehearses the production transplant (including
+  `10-policies.sql`) against a scratch Postgres container, phase by phase.
 
 ## Source map
 
@@ -253,8 +285,12 @@ SELECT relation, ran_at, rows_deleted, error FROM ops.retention_run ORDER BY ran
 | `db/migrations/t-retention-catalog/01-up.sql`, `rollback.sql` | catalog, drift view, `apply_retention`, purge procedure |
 | `db/retention/profiles/production.sql`, `staging-capped.sql` | environment profiles |
 | `db/migrations/analytics-cagg-refresh-policies/` | cagg refresh policies |
+| `db/migrations/t-downtime-events-materialization/`, `t-data-invariants*/` | the two newer user-defined jobs |
+| `db/migrations/t-plc-link-health/` | `silver.plc_link_minutes` hypertable |
 | `db/migrations/t261b-caggs-to-silver/`, `t239-*`, `t258a-*`, `t261a-*` | cagg moves and drops |
 | `db/init-f3/snapshot/05-f3-cagg-agg.sql`, `10-f3-timescale-supplement.sql` | greenfield hypertable/cagg DDL |
+| `scripts/promotion/transplant/10-policies.sql` | the policies and jobs re-created at production promotion (retention held) |
 | `scripts/consolidate-event-chunks.sh` | chunk merge for `silver.equipment_events` |
-| `monitoring/postgres-exporter/queries.yaml`, `monitoring/prometheus/rules.yml` | `pg_retention_*` metrics and the retention/cagg-lag alerts |
+| `terraform/staging/user_data/db_init.sh` | DB container flags |
+| `monitoring/postgres-exporter/queries.yaml`, `monitoring/prometheus/rules.yml` | `pg_retention_*`, cagg and job metrics and their alerts |
 | `docs/plans/unified-hot-cold-serving-grain-tiered-retention.md` | the design and execution log |
