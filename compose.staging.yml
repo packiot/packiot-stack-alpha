@@ -2966,10 +2966,14 @@ services:
       # the industry-standard collector pattern (single egress, buffering, a place
       # to add tail-sampling later). Fall back to tempo:4317 for a direct path.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4317
-      # ADR-0015 P3 tenancy: key → customer(enterprise) id. Staging demo
-      # keys only; production keys move to Secrets Manager at P3
-      # hardening. customer_id is NEVER client-supplied.
-      QUERY_API_KEYS: "stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4,stg-sbxcpack-key:2000003,stg-bispharma-key:5"
+      # ADR-0015 P3 tenancy: key → customer(enterprise) id ("key:cid,key2:cid2").
+      # customer_id is NEVER client-supplied. The map is a SECRET: refdata is
+      # public (refdata.staging.packiot.app), so whoever holds a key reads that
+      # tenant. Source of truth = Secrets Manager packiot/staging/app key
+      # `query_api_keys`, mirrored into /opt/packiot/.env as REFDATA_QUERY_API_KEYS
+      # by deploy-staging.yml ("Materialize read-api keys"). Fail-closed: compose
+      # refuses to interpolate without it. Rotation: docs/runbooks/rotate-readapi-keys.md.
+      QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:?REFDATA_QUERY_API_KEYS unset - set packiot/staging/app query_api_keys (docs/runbooks/rotate-readapi-keys.md)}
       # ── ADR-0034: dual-accept IdP cutover (Firebase OR Cognito) ───────────────
       # refdata is now a relying party for the staging Cognito user pool
       # ALONGSIDE Firebase — a front4 session carrying EITHER token resolves its
@@ -3502,15 +3506,17 @@ services:
     # on proxied /v1/* reads (refdata-api). refdata derives customer_id from
     # this key server-side — the operator never names a tenant. This staging
     # SPA is single-tenant CPACK, so the value is the CPACK entry from
-    # refdata's QUERY_API_KEYS above (stg-cpack-key). It is an opaque read
-    # key, NOT an enterprise id and NOT the enterprises.api_key secret —
-    # refdata maps it to the tenant. Overridable via /opt/packiot/.env;
-    # defaults to the committed staging key so the box works out of the box.
+    # refdata's QUERY_API_KEYS above. It is an opaque read key, NOT an
+    # enterprise id and NOT the enterprises.api_key secret — refdata maps it
+    # to the tenant. It IS a secret (it reads the tenant through the public
+    # refdata vhost): Secrets Manager packiot/staging/app key
+    # `operator_refdata_api_key` → .env OPERATOR_REFDATA_API_KEY (deploy step
+    # "Materialize read-api keys"). No committed default — fail-closed.
     # ORDERED PAIR: deploy this BEFORE refdata's auth middleware (PR2) so the
     # operator sends the key before refdata requires it.
     environment:
       EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
-      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:-stg-cpack-key}
+      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:?OPERATOR_REFDATA_API_KEY unset - set packiot/staging/app operator_refdata_api_key}
     ports:
       - "127.0.0.1:8083:80"
     networks:
@@ -3571,12 +3577,12 @@ services:
     environment:
       # SANDBOX enterprise api-key (enterprises.api_key WHERE id_enterprise=2000003).
       # Lives in /opt/packiot/.env as OPERATOR_SBX_EDGE_API_KEY — NEVER the real
-      # CPACK key (fe1681…). Empty default = fail-closed (edge-api 401s) if unset.
+      # CPACK key. Empty default = fail-closed (edge-api 401s) if unset.
       EDGE_API_KEY: ${OPERATOR_SBX_EDGE_API_KEY:-}
-      # Sandbox reads reuse the CPACK staging read key for now (refdata maps it to
-      # a tenant); override via OPERATOR_SBX_REFDATA_API_KEY once a sandbox read
-      # key is provisioned in refdata's QUERY_API_KEYS.
-      REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:-stg-sbxcpack-key}
+      # Sandbox read key (refdata QUERY_API_KEYS entry → ent 2000003). Secret:
+      # packiot/staging/app key `operator_sbx_refdata_api_key` → .env (deploy step
+      # "Materialize read-api keys"). No committed default — fail-closed.
+      REFDATA_API_KEY: ${OPERATOR_SBX_REFDATA_API_KEY:?OPERATOR_SBX_REFDATA_API_KEY unset - set packiot/staging/app operator_sbx_refdata_api_key}
     ports:
       - "127.0.0.1:8085:80"
     networks:
@@ -3618,7 +3624,9 @@ services:
       # own operator a Bispharma user on the CPACK operator writes AS CPACK → the tenant
       # fence 404s every PO/justify write (found 2026-09-24, demo rehearsal).
       EDGE_API_KEY: ${OPERATOR_BISPHARMA_EDGE_API_KEY:-}
-      REFDATA_API_KEY: ${OPERATOR_BISPHARMA_REFDATA_API_KEY:-stg-bispharma-key}
+      # Bispharma read key (refdata QUERY_API_KEYS entry → ent 5). Secret:
+      # packiot/staging/app key `operator_bispharma_refdata_api_key` → .env.
+      REFDATA_API_KEY: ${OPERATOR_BISPHARMA_REFDATA_API_KEY:?OPERATOR_BISPHARMA_REFDATA_API_KEY unset - set packiot/staging/app operator_bispharma_refdata_api_key}
     ports:
       - "127.0.0.1:8087:80"
     networks:

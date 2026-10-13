@@ -221,7 +221,7 @@ See [Historian gateway](historian-gateway.md).
 | `REFDATA_FLOW` | `f1` | `f3` | `f3` → `DB_NAME_F3` |
 | `DB_NAME` / `DB_NAME_F3` | `packiot` / `packiot_analytics` | `packiot` / `packiot_analytics` | |
 | `HEALTH_PORT` | `9104` | `9104` | Serving port |
-| `QUERY_API_KEYS` | empty | static demo keys for ent 2, 3, 4, 5 and 2000003, **inline in `compose.staging.yml`** | api-key → enterprise map |
+| `QUERY_API_KEYS` | empty | `${REFDATA_QUERY_API_KEYS:?}` from Secrets Manager `packiot/staging/app.query_api_keys` (ent 2, 3, 4, 5, 2000003) | api-key → enterprise map; a secret in every environment (runbook `docs/runbooks/rotate-readapi-keys.md`) |
 | `COGNITO_AUTH_ENABLED` | on | `true` | Bearer path |
 | `COGNITO_ISSUER`, `COGNITO_CLIENT_ID`, `COGNITO_JWKS_URL` | staging pool | issuer + client id; JWKS derived | Public identifiers |
 | `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED` | off | `true` | Read escalation |

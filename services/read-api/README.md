@@ -88,7 +88,7 @@ With `REFDATA_FLOW` unset or anything but `f3`, it reads the retired `packiot` D
 | `DB_NAME` | `packiot` | no | legacy-flow database |
 | `DB_NAME_F3` | `packiot_analytics` | no | analytics database |
 | `HEALTH_PORT` | `9104` | no | HTTP listener (all routes) |
-| `QUERY_API_KEYS` | empty | no | `key:customer_id,…` service/operator keys (staging values are in `compose.staging.yml`) |
+| `QUERY_API_KEYS` | empty | no | `key:customer_id,…` service/operator keys (secret: staging reads it from Secrets Manager `packiot/staging/app.query_api_keys`, see `docs/runbooks/rotate-readapi-keys.md`) |
 | `COGNITO_ISSUER` | staging pool issuer | no | Bearer token issuer |
 | `COGNITO_CLIENT_ID` | staging app client | no | expected `aud`/`client_id` |
 | `COGNITO_JWKS_URL` | `<issuer>/.well-known/jwks.json` | no | JWKS override |

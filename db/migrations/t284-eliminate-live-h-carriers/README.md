@@ -39,7 +39,7 @@ Each rewrite was validated in a `REPEATABLE READ` transaction (same snapshot + s
 | `h_piot_get_downtimes_sector_microstops` | 30d | 5421 | 0 |
 | `serving.downtime_by_category` (calls helper) | 30d | 1 | 0 |
 
-Post-apply live checks (read-api `:9104`, `X-Api-Key: stg-cpack-key`):
+Post-apply live checks (read-api `:9104`, `X-Api-Key: <cpack-read-key>`):
 - `POST /v1/query {"dataset":"machine-speed"}` → 200 + series
 - `POST /v1/query {"dataset":"downtimes-per-category"}` → 200 + categories (MAN-01, PRG-15)
 

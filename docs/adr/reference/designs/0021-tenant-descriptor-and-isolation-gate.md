@@ -124,7 +124,7 @@ two tenants" without a full tenant environment.
 
 ### Level 2 — refdata request isolation (post-flip, on the promoted stack)
 
-Two API keys (`stg-cpack-key`, `stg-incoplast-key`) → two `customer_id`s. Every
+Two API keys (`<cpack-read-key>`, `<incoplast-read-key>`) → two `customer_id`s. Every
 `/v1/*` fixed route and `/v1/query` dataset, called with each key, returns only that
 tenant's rows; no parameter a client can set escapes its `customer_id`. Asserts the
 server-side scoping holds across the whole read surface.

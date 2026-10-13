@@ -111,6 +111,12 @@ resource "aws_secretsmanager_secret_version" "app" {
   #     --query SecretString --output text | jq '. + {grafana_dev_user_pass:"<random>"}' \
   #   | aws secretsmanager put-secret-value --secret-id packiot/staging/app --secret-string file:///dev/stdin
   # A brand-new `terraform apply` (fresh secret) picks it up automatically.
+  #
+  # REQUIRED out-of-band keys (never generated here — values must stay out of
+  # state/plan): query_api_keys ("key:enterprise_id,…" read-api map),
+  # operator_refdata_api_key, operator_sbx_refdata_api_key,
+  # operator_bispharma_refdata_api_key (each must be a key of query_api_keys).
+  # deploy-staging.yml fails without them; docs/runbooks/rotate-readapi-keys.md.
   lifecycle { ignore_changes = [secret_string] }
 }
 

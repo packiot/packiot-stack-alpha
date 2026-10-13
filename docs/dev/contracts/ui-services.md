@@ -318,7 +318,7 @@ Cross-cutting facts used by many sections:
      `VITE_EQUIPMENT_SETUP_GROUPS` (`src/Components/EquipmentSetup/index.jsx:18`, default `'PACK,C-PACK'`, not passed).
      Staging build args: `VITE_PO_WRITE_QUEUE_ENABLED: "true"`, pool `us-east-1_0T9t1sTwt`, client `2ckuoa0ov598rdpdn3uv039h6e` (`compose.staging.yml:3431-3442`).
    - Runtime (nginx envsubst): `EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}` (CPACK `enterprises.api_key`), `REFDATA_API_KEY:
-     ${OPERATOR_REFDATA_API_KEY:-stg-cpack-key}` (`compose.staging.yml:3461-3463`). read-api maps `stg-cpack-key:3` (`compose.staging.yml:2944`).
+     ${OPERATOR_REFDATA_API_KEY:-<cpack-read-key>}` (`compose.staging.yml:3461-3463`). read-api maps `<cpack-read-key>:3` (`compose.staging.yml:2944`).
 3. **Backend calls** (same-origin): edge-api `POST /session`, `/session/switch`, `/session/enterprises` (`operator/src/Services/endpoints.js:595-605`,
    `src/Components/Header/components/EnterpriseSwitcher.jsx:18`); `/api/downtimes/{justify,edit-manual-event,create-manual-event,split}`
    (`operator/src/Services/endpoints.js:326,358,391,435`); `/api/production-orders/{start,create-and-start,replace,setup,create}` (`operator/src/Services/endpoints.js:473,497,526,543,582`);
@@ -334,8 +334,8 @@ Cross-cutting facts used by many sections:
 7. **External**: AWS Cognito; Google Fonts (`operator/index.html:10`); npm/yarn registry at build.
 8. **Health/ports**: no compose healthcheck for `operator` (none in `:3426-3482`); nginx :80 → host 8083.
 9. **Variants** (same build stanza ⇒ same image):
-   - `operator-sbx` (`compose.staging.yml:3509-3546`): `EDGE_API_KEY=${OPERATOR_SBX_EDGE_API_KEY:-}` (sandbox ent 2000003), `REFDATA_API_KEY=${…:-stg-sbxcpack-key}`, host port 8085, no static IP.
-   - `operator-bispharma` (`compose.staging.yml:3552-3588`): `EDGE_API_KEY=${OPERATOR_BISPHARMA_EDGE_API_KEY:-}` (ent 5), `REFDATA_API_KEY=${…:-stg-bispharma-key}`, host port 8087.
+   - `operator-sbx` (`compose.staging.yml:3509-3546`): `EDGE_API_KEY=${OPERATOR_SBX_EDGE_API_KEY:-}` (sandbox ent 2000003), `REFDATA_API_KEY=${…:-<sbxcpack-read-key>}`, host port 8085, no static IP.
+   - `operator-bispharma` (`compose.staging.yml:3552-3588`): `EDGE_API_KEY=${OPERATOR_BISPHARMA_EDGE_API_KEY:-}` (ent 5), `REFDATA_API_KEY=${…:-<bispharma-read-key>}`, host port 8087.
 10. **UNPROVEN**: service-worker cached endpoints list (`isCacheableRead` body not traced); whether `/session` still returns HS256 tokens anywhere.
 
 ---

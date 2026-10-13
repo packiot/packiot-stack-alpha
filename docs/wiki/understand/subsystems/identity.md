@@ -188,7 +188,7 @@ API detail: [edge-api](../../reference/api/edge-api.md), [read-api](../../refere
 | Cognito users, group `cs-admin` | Cognito pool | created by csadmin or the AWS CLI; group membership managed by edge-api or by hand |
 | `identity.users`, `identity.user_roles` | analytics DB | created at onboarding; soft-deleted with `active` |
 | `enterprises.api_key` | analytics DB | `randomUUID()` at enterprise creation |
-| Read keys | `QUERY_API_KEYS` on read-api (`key:enterprise` pairs in `compose.staging.yml`) | edited in compose; five tenants on staging |
+| Read keys | `QUERY_API_KEYS` on read-api (`key:enterprise` pairs) | Secrets Manager `packiot/staging/app` → `query_api_keys`, mirrored to `.env` every deploy (runbook `docs/runbooks/rotate-readapi-keys.md`); five tenants on staging |
 | oauth2-proxy sessions | `app-redis` DB 1 | lost when `app-redis` restarts (`--appendonly no --save ""`) |
 | E2E QA users | Secrets Manager `packiot/staging/e2e-test-creds` | see `e2e/README.md` |
 

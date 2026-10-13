@@ -14,12 +14,17 @@ import { csadminLogin } from '../fixtures/auth';
  * Skipped unless E2E_SELFHEAL is set (i.e. only under `npm run test:sandbox`).
  */
 const REFDATA = process.env.REFDATA_URL || 'https://refdata.staging.packiot.app';
-const KEY_CPACK = process.env.REFDATA_KEY_CPACK || 'stg-cpack-key';
-const KEY_SBX = process.env.REFDATA_KEY_SBX || 'stg-sbxcpack-key';
+// read-api tenant keys are SECRETS (refdata is public) — never commit them. Export the
+// CPACK and sandbox entries of packiot/staging/app `query_api_keys` (equal to
+// operator_refdata_api_key / operator_sbx_refdata_api_key); unset → the suite skips.
+const KEY_CPACK = process.env.REFDATA_KEY_CPACK || '';
+const KEY_SBX = process.env.REFDATA_KEY_SBX || '';
 const USER = process.env.CSADMIN_USER || '';
 const PASS = process.env.CSADMIN_PASSWORD || '';
 
 async function dataset(request: APIRequestContext, key: string, body: object) {
+  // Not a skip: under test:sandbox an unprovable reset must fail loudly.
+  expect(key, 'REFDATA_KEY_CPACK / REFDATA_KEY_SBX must be exported (read-api keys)').not.toBe('');
   const r = await request.post(`${REFDATA}/v1/query`, {
     headers: { 'X-Api-Key': key, 'Content-Type': 'application/json' },
     data: body,

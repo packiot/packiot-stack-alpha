@@ -925,7 +925,7 @@ healthy) → GATE.
   `last_updated` advanced 12:32:31→12:43:47, `equipment_live_shift`→12:43:48 (both the new-binary
   GrainSchema=silver sink AND the EvSchema=public→shim rollup land on the silver base).
 - **read-api HTTP 200** (POST `/v1/query` `{dataset}` via sidecar on `stack_packiot-net`, key
-  `stg-cpack-key` cid 3) on `live-equipment-{shift,job,day}` returning grain rows — the
+  `<cpack-read-key>` cid 3) on `live-equipment-{shift,job,day}` returning grain rows — the
   mission-control reader path.
 - **Reader resolution proof through pgbouncer** (read-api's exact pooled path): unqualified
   `equipment_live_shift` → `silver` (NOT the shim), 283 rows, `JOIN equipments` → 283.

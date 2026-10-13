@@ -1018,7 +1018,7 @@ DEST — WRITE:
 | HIST_GW_PASSWORD | none → hist pool nil → 503 (`services/read-api/cmd/refdata-api/historian.go:60`) | `${HIST_GW_SVC_PASSWORD:-}` (`:2932`) |
 | HEALTH_PORT (also the API port) | `9104` (`services/read-api/cmd/refdata-api/main.go:297,457`) | `9104` (`:2934`) |
 | OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TRACES_SAMPLER_ARG | off (`services/read-api/internal/tracing/tracing.go:39,91`) | `http://alloy:4317` (`:2940`) |
-| QUERY_API_KEYS | none (`services/read-api/cmd/refdata-api/main.go:312`) | `stg-cpack-key:3,…,stg-bispharma-key:5` (`:2944`) |
+| QUERY_API_KEYS | none (`services/read-api/cmd/refdata-api/main.go:312`) | `<cpack-read-key>:3,…,<bispharma-read-key>:5` (`:2944`) |
 | COGNITO_ISSUER | **`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt`** (`services/read-api/cmd/refdata-api/auth_cognito.go:64`; read `services/read-api/cmd/refdata-api/main.go:320`) | same (`:2955`) **AWS Cognito** |
 | COGNITO_CLIENT_ID | `2ckuoa0ov598rdpdn3uv039h6e` (`services/read-api/cmd/refdata-api/auth_cognito.go:65`; `services/read-api/cmd/refdata-api/main.go:321`) | same (`:2956`) |
 | COGNITO_JWKS_URL | "" → `<issuer>/.well-known/jwks.json` (`services/read-api/cmd/refdata-api/main.go:322`) | not set |

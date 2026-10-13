@@ -276,7 +276,7 @@ counters red) is a no-go: data flows but cannot be trusted.
 |---|---|---|
 | Client managers (front4) | Cognito user (type `client`) + `identity.users` row with a role whose `permissions.desktop.line` lists the lines and `desktop.screen` the pages | csadmin **Login accounts** (creates both, born-linked), then **Users** and **Roles**; the lines each role sees are set in front4 → **Settings → Users and Permissions** |
 | Operators | same, and `identity.users.user_name` must equal the email (operator login looks it up by `user_name`) | csadmin |
-| The operator app for this tenant | a new operator container + vhost + keys: `OPERATOR_<X>_EDGE_API_KEY` (the tenant's `enterprises.api_key`) and a read key in read-api `QUERY_API_KEYS` | stack PR (copy `operator-bispharma`), `/opt/packiot/.env` |
+| The operator app for this tenant | a new operator container + vhost + keys: `OPERATOR_<X>_EDGE_API_KEY` (the tenant's `enterprises.api_key`) and a read key in read-api `QUERY_API_KEYS` | stack PR (copy `operator-bispharma`); keys in Secrets Manager `packiot/staging/app` (`query_api_keys` + a new `operator_<x>_refdata_api_key`, wired in `scripts/ops/materialize-readapi-keys.py`) |
 | Box scanning | on-prem `barcode_edge` opt-in (step 3), or a cloud barcode instance with the tenant's key | [Barcode app](../../understand/components/barcode-app.md) |
 | CS engineers | Cognito user type `cs` (joins `cs-admin`) | csadmin **Login accounts** |
 
