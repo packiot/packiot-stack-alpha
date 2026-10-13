@@ -65,7 +65,7 @@ across databases.
 | `pgbouncer` | transaction-mode pooler for stateless clients | app host, `edoburu/pgbouncer:1.22.1-p0` | this page, [Interfaces](#interfaces) |
 | `bi` schema + `superset_ro` | curated, RLS-fenced views for Superset | inside Postgres + Superset | [Superset](../components/superset.md) |
 | `histgw_ro` role | least-privilege login the historian gateway uses over `postgres_fdw` | inside Postgres | [Historian gateway](../components/historian-gateway.md) |
-| Nightly `pg_dump` | `terraform/staging/scripts/backup-db.sh` → S3 (`packiot`, `packiot_analytics`, `superset`); daily 14 d, weekly 4 w, monthly 3 m | DB host, `packiot-db-backup.timer` 02:00 UTC | [DBA guide](../../build/operate/dba-guide.md#backups) |
+| Nightly `pg_dump` | `terraform/staging/scripts/backup-db.sh` → S3 (`packiot`, `packiot_analytics`, `superset`); daily 14 d, weekly 4 w, monthly 3 m | DB host, `packiot-db-backup.timer` 02:00 UTC | [Backups & restore](../../build/operate/backups-and-restore.md) · [DBA guide](../../build/operate/dba-guide.md#backups) |
 
 Every service and its README, API page and dashboard: [Service catalog](../../reference/service-catalog.md).
 

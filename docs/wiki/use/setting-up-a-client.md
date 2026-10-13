@@ -123,6 +123,8 @@ code (`A`, `T1`, `MORNING`), switch on its weekdays and type start and end times
 | Problem | How to tell | Fix |
 |---|---|---|
 | No shifts at all | Dashboards stay empty after go-live | Create at least one shift |
+
+After go-live, if a number looks wrong, see [Troubleshooting OEE](troubleshooting-oee.md).
 | A shift that crosses midnight (22:00–06:00) | After saving, the shift shows other times than you typed, or the day shows gaps | Open the shift again and check it; if it is wrong, ask the platform team |
 | Shifts overlap | The same hour is counted twice | Make each shift end where the next one starts |
 

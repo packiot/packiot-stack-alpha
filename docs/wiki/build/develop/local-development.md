@@ -282,3 +282,9 @@ The four fragments added later the same day were verified the same way (`make de
 `make dev-smoke SVC=<svc>` one at a time): analytics-sync 3/3, ingest-shim 5/5, oeecloud-fanout 3/3, operator-gateway
 5/5 (a manual downtime written through edge-api). With `seed-replay` running, oeecloud-fanout cloned the real replay
 traffic into `stream-engine-q-sbxcpack`.
+
+## Next
+
+- [Add a service](add-a-service.md) — wire a new service into compose, the dev slices and CI.
+- [Add a migration](add-a-migration.md) — change the schema and keep the dev seed valid.
+- [Branches, merging & deploying](branches-and-merging.md).

@@ -28,7 +28,7 @@ last_verified: 2026-10-13
 Changes in a **submodule repo** (edge-api, operator4, csadmin, edge-node-red) reach
 staging only when the stack repo's submodule pointer moves. edge-api, operator4 and
 edge-node-red have a bump bot that opens and auto-merges that PR; csadmin is bumped by
-hand. See [Repositories](../../reference/repositories.md).
+hand. See [Repositories](../../reference/repositories.md) for which branch of each repo deploys where.
 
 ## What the deploy job does, in order
 

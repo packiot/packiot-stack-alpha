@@ -1,6 +1,6 @@
 [Unit]
 Description=Packiot staging DB nightly backup (pg_dump → S3)
-Documentation=https://github.com/packiot/packiot-stack-alpha/blob/main/terraform/staging/scripts/backup-db.sh
+Documentation=https://github.com/packiot/packiot-stack-alpha/blob/staging/terraform/staging/scripts/backup-db.sh
 After=network-online.target docker.service
 Wants=network-online.target
 # Don't even try if Docker isn't running — pg_dump is via `docker exec`

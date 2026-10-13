@@ -221,7 +221,7 @@ Detail: [read-api](../understand/components/read-api.md).
 |---|---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` | `pgbouncer`, `5432`, `readapi_ro` (default), from `.env` | read-only DB login |
 | `DB_NAME`, `DB_NAME_F3`, `REFDATA_FLOW` | `packiot`, `packiot_analytics`, `f3` | serve from the analytics DB |
-| `HIST_GW_HOST`, `HIST_GW_PORT`, `HIST_GW_USER`, `HIST_GW_PASSWORD`, `HIST_GW_DB` | `hist-gateway`, `5432`, `historian_svc`, from `.env`, `packiot_historian` | cold reads (pool is nil-safe → 503 if unset) |
+| `HIST_GW_HOST`, `HIST_GW_PORT`, `HIST_GW_USER`, `HIST_GW_PASSWORD`, `HIST_GW_DB` | `hist-gateway`, `5432`, `historian_svc`, `${HIST_GW_SVC_PASSWORD}` from `.env`, `packiot_historian` | cold reads as the least-privilege `historian_svc` login (pool is nil-safe → 503 if unset). Not the same secret as the gateway's own superuser `HIST_GW_PASSWORD` on `hist-gateway` |
 | `INTERNAL_API_KEY` | from `.env` | service-to-service key (decoder BIRTH resolver) |
 | `QUERY_API_KEYS` | `key:enterprise` list (values not reproduced) | static API key → tenant map |
 | `COGNITO_AUTH_ENABLED`, `COGNITO_ISSUER`, `COGNITO_CLIENT_ID`, `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED` | `true`, staging pool, …, `true` | JWT auth |

@@ -245,3 +245,8 @@ ADRs: [ADR index](../../reference/adr-index.md).
 - [Timescale jobs & retention](../components/timescale-jobs-and-retention.md) — when rows leave the hot DB.
 - [Service catalog](../../reference/service-catalog.md) — historian-gateway row.
 - [DBA guide](../../build/operate/dba-guide.md#read-only-access) — how to query both safely.
+
+!!! warning "Backups"
+    The Parquet archive is the only copy of raw data older than the hot window. Bucket
+    versioning is on, but there is no copy outside the bucket. See
+    [Backups & restore → Known gaps](../../build/operate/backups-and-restore.md#known-gaps).
