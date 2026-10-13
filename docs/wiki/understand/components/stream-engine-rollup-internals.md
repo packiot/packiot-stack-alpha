@@ -127,15 +127,21 @@ Transaction, `<dest>:runtime` try-lock.
 
 | # | Step | What |
 |---|---|---|
-| 1 | `eligible` | `day_elig`: flagged day rows in the last month, before the next production-day anchor, `tp_equipment > 1`; also computes `day_len_s` = real production-day length from two consecutive `piot_get_day_begin_by_equipment` anchors (82 800 / 86 400 / 90 000 s with DST) |
-| 2 | `rollup` | sum hour rows with `hr.ts_value_production = day.ts_value` (and `hr.ts_value ≥ day − 1 day`): counts, times (each capped at `day_len_s`), `ideal_production`, `target` (kept if customized), `proportional_target`; `oee = Σnet / Σideal_production` (≥ 0), `oee_a` (in [0,1]), `oee_q` (≥ 0), back-solved `oee_p`; clears the flag |
+| 1 | `eligible` | `day_elig`: flagged day rows in the last month, before the next production-day anchor, `tp_equipment > 1` |
+| 2 | `rollup` | sum hour rows with `hr.ts_value_production = day.ts_value` (and `hr.ts_value ≥ day − 1 day`): counts, times (raw sums, no day-length cap since 2026-10-13), `ideal_production`, `target` (kept if customized), `proportional_target`; `oee = Σnet / Σideal_production` (≥ 0), `oee_a` = Σrunning / Σavailable (in [0,1]), `oee_q` (≥ 0), back-solved `oee_p`; clears the flag |
 | 3 | `oee-reconcile` (canonical) | factors-first: `oee_p = gross × available / (ideal_production × running)`, `oee = a·p·q` |
 | 4 | `cascade-month`, `cascade-week` | flag the month and week rows |
 | 5 | `stamp` | lineage columns |
 | 6 | `reflag` | flag the current production day (`tp_equipment > 1`) |
 
-A production day whose `day_begin` is not on the hour straddles 25 hour buckets; the `day_len_s` cap
-stops it exceeding its real length, but the neighbouring day stays short (known limitation).
+**Day times are stored raw** (2026-10-13, user decision, same policy as P and Q in #1482). Until
+then `available_time`, `running_time`, `stopped_time` and `downtime` were capped at the real
+production-day length (`LEAST(Σ, day_len_s)`, task #59). Each hour row is still bounded by its own
+bucket, so a day can only exceed its length when more hour buckets are attributed to it than it has
+hours (a `day_begin` that is not on the hour) or when time is counted twice upstream. That is a
+data-quality signal, not something to clip: invariant `K7_day_time_gt_day_length`
+(`db/migrations/t-data-invariants-v10`) reports every settled day of the last 7 whose time columns
+exceed the day's DST-aware length. The UI may cap for display.
 
 ### RunShift
 
@@ -229,7 +235,7 @@ changeover counts against availability. The PO grain always uses the first form.
 
 | Invariant | Where enforced |
 |---|---|
-| Time in any state ≤ bucket length | `LEAST(…, ts_total)` in hour/shift/line-lead; `day_len_s` in day |
+| Time in any state ≤ bucket length | `LEAST(…, ts_total)` in hour/shift/line-lead. Day, week, month and area grains store the raw sums of their children (no cap); a day above its length is reported by invariant `K7_day_time_gt_day_length` |
 | `0 ≤ oee_a ≤ 1`; `oee`, `oee_p`, `oee_q` ≥ 0, no upper cap | the formulas, the Silver clamp, and the `*_oee_bounds` CHECK constraints (`t-oee-uncapped-data`) |
 | `oee = oee_a·oee_p·oee_q` | canonical reconcile at hour, shift, day, week, month (`OEE_CANONICAL_APQ_ENABLED`) |
 | Measured counts are not adjusted | no `net ≤ gross` clamp; `scrap = gross − net` is signed; only a missing meter is filled (line-lead identity) |
@@ -352,4 +358,5 @@ tests include `backfill_test.go`, `history_test.go`, `line_lead_scope_test.go`, 
 | `services/stream-engine/internal/rollup/provision.go`, `locks.go` | provisioning, advisory lock helper |
 | `scripts/recompute/` | per-day recompute runner and flag example |
 | `db/migrations/t-oee-uncapped-data/`, `t-history-uncap/` | relaxed OEE CHECKs, uncapped history |
+| `db/migrations/t-data-invariants-v10/` | K7: day time above the production-day length (day times stored raw since 2026-10-13) |
 | `services/stream-engine/cmd/port-parity/`, `services/stream-engine/scripts/parity-check.sql` | parity tooling |

@@ -118,6 +118,12 @@ availability in [0,1], no negative factor, no negative count or duration (scrap 
 is signed). Every value it changes is recorded as an `INVARIANT_CLAMPED_*` row in
 `silver.data_quality_event`; net > gross is detected (`NET_GT_GROSS`) but not changed.
 
+**Day, week and month are plain sums** of the hour (day) or day (week, month) rows, times
+included: since 2026-10-13 the day no longer caps its time columns at the production-day length.
+Availability is recomputed from the summed times and stays capped at 1. A day whose times exceed
+its own length is a data-quality signal (hour buckets attributed to the wrong day, or time counted
+twice), reported by the data invariant `K7_day_time_gt_day_length`.
+
 **Excluded time** (2026-10-01): out-of-service time is removed from available time *and*
 from the target; no-data time is removed from available time but kept in the target, and
 shown as `no_data_time` so coverage can be displayed.

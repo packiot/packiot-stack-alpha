@@ -264,7 +264,7 @@ Alerts are evaluated by Prometheus on staging; Alertmanager runs only under the 
   2021; RLS policies rewritten as InitPlans; self-inflicted OOM from an ad-hoc whole-history
   aggregate.
 - **2026-09-28/30** — `packiot_analytics` and `superset` added to the nightly backup; restore drill.
-- **2026-10-01** — data invariants (`t-data-invariants`, later `-v2` … `-v9`).
+- **2026-10-01** — data invariants (`t-data-invariants`, later `-v2` … `-v10`).
 - **2026-10-07** — RLS on `core.topic_routing` (`t-topic-routing-guards`).
 
 ADRs are listed in the [ADR index](../../reference/adr-index.md).
