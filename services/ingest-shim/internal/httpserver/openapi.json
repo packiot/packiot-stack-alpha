@@ -4,7 +4,7 @@
     "title": "ingest-shim",
     "version": "0.1.0",
     "summary": "Authenticated, scope-guarded HTTPS front door that republishes SparkPlug JSON envelopes to RabbitMQ.",
-    "description": "Accepts one SparkPlug-derived JSON envelope per request from a client's Node-RED tee, checks the shared `X-Ingest-Key`, admits only envelopes whose group (first topic segment) equals the configured scope (SCOPE_GROUP, default `INCOPLAST`), and publishes it to RabbitMQ with publisher confirms. The envelope is republished once per configured flow (FANOUT_SOURCE_TYPES, default `legacy,go,refactored` -> `source_type` \"\", \"go\", \"refactored\"); a failure on any copy returns 503 so the tee retries the whole message (all downstream writers are idempotent).\n\nTransport: the listener is TLS-only (`ListenAndServeTLS`, HTTP_ADDR default `:8444`), with the certificate mounted at /certs. Prometheus metrics are on a separate plaintext listener (METRICS_ADDR, default `:9105`).\n\nPublic exposure: none. No nginx vhost routes to this service on staging or production. Staging publishes the port on the host loopback only (127.0.0.1:8444). Production defines the service behind the `client-ingest` compose profile and publishes 8444 on all host interfaces, but the production security group does not admit 8444. The servers below are in-network addresses.\n\nOps route not described here: `GET /healthz` (200 `{\"status\":\"ok\"}`, or 503 `{\"status\":\"amqp_down\"}`)."
+    "description": "Accepts one SparkPlug-derived JSON envelope per request from a client's Node-RED tee, checks the shared `X-Ingest-Key`, admits only envelopes whose group (first topic segment) equals the configured scope (SCOPE_GROUP, default `INCOPLAST`, compared case-insensitively), and publishes it to RabbitMQ (exchange EXCHANGE default `oee`, routing key ROUTING_KEY default `sparkplug.data`) with publisher confirms (CONFIRM_TIMEOUT_MS, default 5000). The envelope is republished once per configured flow (FANOUT_SOURCE_TYPES, default `legacy,go,refactored` -> `source_type` \"\", \"go\", \"refactored\"); a failure on any copy returns 503 so the tee retries the whole message (all downstream writers are idempotent).\n\nTransport: the listener is TLS-only (`ListenAndServeTLS`, HTTP_ADDR default `:8444`), with the certificate mounted at /certs. Prometheus metrics are on a separate plaintext listener (METRICS_ADDR, default `:9105`).\n\nPublic exposure: none. No nginx vhost routes to this service on staging or production. Staging publishes the port on the host loopback only (127.0.0.1:8444). Production defines the service behind the `client-ingest` compose profile and publishes 8444 on all host interfaces, but the production security group does not admit 8444. The servers below are in-network addresses.\n\nOps route not described here: `GET /healthz` (200 `{\"status\":\"ok\"}`, or 503 `{\"status\":\"amqp_down\"}`).\n\n## How to call this API\n\n- **Auth**: send the shared ingest key in the `X-Ingest-Key` header (server env INGEST_API_KEY; the service refuses to start without one). Compared in constant time and never logged. Ask the platform team for the key of the target environment.\n- **Base URLs**: see `servers`; both are in-network only (packiot-net or the host loopback), there is no public URL. TLS with the stack's mounted certificate (`curl -k` against localhost).\n- **Content types**: request `application/json`, one JSON object per request, at most MAX_BODY_BYTES (default 1 MiB). Responses are `application/json`, except the router's own 405 which is `text/plain`.\n- **Errors**: `{\"error\":\"<message>\"}` (application/json, no trailing newline) with a stable message per cause; see each response. 400/401/403 are permanent (fix the request); 503 is retryable (resend the same envelope).\n- **Docs**: browse this spec in the API docs portal https://api.staging.packiot.app/docs/ (cs-admin SSO, read-only Swagger UI). The spec is also exported to `docs/api/openapi/ingest-shim.openapi.json` in packiot-stack-alpha."
   },
   "servers": [
     {
@@ -17,21 +17,86 @@
     }
   ],
   "tags": [
-    { "name": "ingest", "description": "SparkPlug envelope ingest" }
+    {
+      "name": "ingest",
+      "description": "Push SparkPlug-derived JSON envelopes from a client's factory tee into the platform's RabbitMQ data path (one envelope per request)."
+    }
   ],
-  "security": [ { "ingestKey": [] } ],
+  "security": [
+    {
+      "ingestKey": []
+    }
+  ],
   "paths": {
     "/ingest/sparkplug": {
       "post": {
-        "tags": [ "ingest" ],
+        "tags": [
+          "ingest"
+        ],
         "operationId": "ingestSparkplug",
         "summary": "Publish one SparkPlug JSON envelope",
-        "description": "Order of checks: API key (401) -> body read under MAX_BODY_BYTES (default 1 MiB; over the cap, unreadable or empty -> 400) -> group extraction (400 when the body is not a JSON object or carries no topic/group) -> scope check (403) -> fan-out publish (503 on any broker failure). The body is otherwise forwarded verbatim, with a top-level `source_type` added per copy.",
+        "description": "Admits one envelope from the client's tee and republishes it to RabbitMQ.\n\nOrder of checks: route/method (405, router) -> API key (401) -> body read under MAX_BODY_BYTES (default 1 MiB; over the cap, unreadable or empty -> 400) -> group extraction (400 when the body is not a JSON object, a probed field is not a string, or no topic/group is found) -> scope check (403) -> fan-out publish (503 on any broker failure).\n\nGroup extraction: the first `/`-separated segment of, in order, `topic`, `group`, `group_id`, then each `metrics[].name`; the first non-empty one wins. It must equal SCOPE_GROUP (case-insensitive).\n\nSide effects: one AMQP message per FANOUT_SOURCE_TYPES entry (default 3) on exchange `oee` / routing key `sparkplug.data`, each the original object with a top-level `source_type` set (\"\" = legacy flow, \"go\", \"refactored\"; any `source_type` you send is overwritten). The downstream worker routes each copy to its flow's tables (raw equipment values/events). Nothing is written to a database by this service.\n\nIdempotency and retries: 202 means every copy was broker-confirmed. On 503 some copies may already be published; resend the same envelope (downstream writes are idempotent upserts, so duplicates do not double-count). No rate limit is enforced here.\n\nTenant scoping: one scope group per instance; the key is shared by that client's tee only.",
         "requestBody": {
           "required": true,
+          "description": "One SparkPlug-derived JSON object (as produced by the tee's SparkPlug JSON decode). Forwarded verbatim apart from `source_type`. Examples assume SCOPE_GROUP=ACME.",
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SparkplugEnvelope" }
+              "schema": {
+                "$ref": "#/components/schemas/SparkplugEnvelope"
+              },
+              "examples": {
+                "topicAndMetrics": {
+                  "summary": "Envelope with an explicit topic",
+                  "value": {
+                    "topic": "ACME/Plant1/Extrusion/Line01",
+                    "timestamp": 1760353200000,
+                    "seq": 17,
+                    "metrics": [
+                      {
+                        "name": "ACME/Plant1/Extrusion/Line01/Admin/ProdProcessedCount",
+                        "timestamp": 1760353200000,
+                        "dataType": "Int32",
+                        "value": 48211
+                      },
+                      {
+                        "name": "ACME/Plant1/Extrusion/Line01/Status/StateCurrent",
+                        "timestamp": 1760353200000,
+                        "dataType": "Int32",
+                        "value": 6
+                      }
+                    ]
+                  }
+                },
+                "metricsOnly": {
+                  "summary": "No topic: group taken from the first metric name",
+                  "value": {
+                    "timestamp": 1760353260000,
+                    "metrics": [
+                      {
+                        "name": "ACME/Plant1/Extrusion/Line01/Status/StateCurrent",
+                        "dataType": "Int32",
+                        "value": 2
+                      }
+                    ]
+                  }
+                },
+                "groupId": {
+                  "summary": "Group taken from `group_id`",
+                  "value": {
+                    "group_id": "ACME",
+                    "edge_node_id": "Plant1",
+                    "device_id": "Line01",
+                    "timestamp": 1760353320000,
+                    "metrics": [
+                      {
+                        "name": "Admin/ProdDefectiveCount",
+                        "dataType": "Int32",
+                        "value": 12
+                      }
+                    ]
+                  }
+                }
+              }
             }
           }
         },
@@ -41,28 +106,106 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [ "status" ],
-                  "properties": { "status": { "type": "string", "const": "accepted" } }
+                  "$ref": "#/components/schemas/Accepted"
+                },
+                "example": {
+                  "status": "accepted"
                 }
               }
             }
           },
           "400": {
-            "description": "`payload too large`, `cannot read body`, `empty body`, `unparseable or topicless payload`, or `unparseable payload (fanout)`.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            "description": "Permanent request problem (do not retry unchanged): `payload too large` (body over MAX_BODY_BYTES; note 400, not 413), `cannot read body` (read error, e.g. client disconnect), `empty body`, `unparseable or topicless payload` (not a JSON object, a probed field has the wrong type, or no group can be found), or `unparseable payload (fanout)` (defensive: re-marshal failed after admission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over MAX_BODY_BYTES",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  },
+                  "unreadable": {
+                    "summary": "Body read failed",
+                    "value": {
+                      "error": "cannot read body"
+                    }
+                  },
+                  "empty": {
+                    "summary": "Zero-length body",
+                    "value": {
+                      "error": "empty body"
+                    }
+                  },
+                  "noGroup": {
+                    "summary": "Not a JSON object, or no topic/group anywhere",
+                    "value": {
+                      "error": "unparseable or topicless payload"
+                    }
+                  },
+                  "fanout": {
+                    "summary": "Re-marshal failed during fan-out",
+                    "value": {
+                      "error": "unparseable payload (fanout)"
+                    }
+                  }
+                }
+              }
+            }
           },
           "401": {
-            "description": "Missing or wrong `X-Ingest-Key` (`unauthorized`).",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            "description": "`unauthorized`: `X-Ingest-Key` missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
           },
           "403": {
-            "description": "`out-of-scope group`: the envelope's group is not the configured scope group.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            "description": "`out-of-scope group`: the envelope's group (first topic segment) is not the configured SCOPE_GROUP. The rejected group is logged server-side, not echoed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "out-of-scope group"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method other than POST on this path. Answered by Go's ServeMux before authentication, with an `Allow: POST` header and a plain-text body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "Go net/http reason phrase plus newline."
+                },
+                "example": "Method Not Allowed\n"
+              }
+            }
           },
           "503": {
-            "description": "`publish failed`: the broker did not confirm a copy. Retry the whole message.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            "description": "`publish failed`: the broker nacked, did not confirm within CONFIRM_TIMEOUT_MS, or the connection is down, for at least one copy. Earlier copies may already be published. Retry the whole message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "publish failed"
+                }
+              }
+            }
           }
         }
       }
@@ -81,27 +224,88 @@
       "SparkplugEnvelope": {
         "type": "object",
         "additionalProperties": true,
-        "description": "A JSON object from the tee. The shim reads only the fields below to find the group (first `/`-separated segment, tried in order: `topic`, `group`, `group_id`, then each `metrics[].name`); all other fields pass through untouched to the downstream worker. Any existing top-level `source_type` is overwritten per fan-out copy.",
+        "description": "A JSON object from the tee. The shim reads only the fields below to find the group (first `/`-separated segment, tried in order: `topic`, `group`, `group_id`, then each `metrics[].name`); all other fields pass through untouched to the downstream worker. If any of these fields is present with a non-string type the body is rejected (400). Any existing top-level `source_type` is overwritten per fan-out copy.",
         "properties": {
-          "topic": { "type": "string", "description": "SparkPlug topic, e.g. `INCOPLAST/Site/Area/Machine`." },
-          "group": { "type": "string" },
-          "group_id": { "type": "string" },
+          "topic": {
+            "type": "string",
+            "description": "SparkPlug topic; its first segment is the group.",
+            "examples": [
+              "ACME/Plant1/Extrusion/Line01"
+            ]
+          },
+          "group": {
+            "type": "string",
+            "description": "Explicit group (first segment used), tried when `topic` is empty.",
+            "examples": [
+              "ACME"
+            ]
+          },
+          "group_id": {
+            "type": "string",
+            "description": "SparkPlug group id, tried when `topic` and `group` are empty.",
+            "examples": [
+              "ACME"
+            ]
+          },
+          "source_type": {
+            "type": "string",
+            "description": "Ignored on input: overwritten on every fan-out copy.",
+            "examples": [
+              ""
+            ]
+          },
           "metrics": {
             "type": "array",
+            "description": "SparkPlug metrics; passed through. Names are tried for the group when no topic/group field is set.",
             "items": {
               "type": "object",
               "additionalProperties": true,
+              "description": "One metric (all fields forwarded verbatim).",
               "properties": {
-                "name": { "type": "string", "description": "e.g. `INCOPLAST/Site/Area/Machine/Status/StateCurrent`." }
+                "name": {
+                  "type": "string",
+                  "description": "Metric name; may be a full topic path whose first segment is the group.",
+                  "examples": [
+                    "ACME/Plant1/Extrusion/Line01/Status/StateCurrent"
+                  ]
+                }
               }
             }
           }
         }
       },
+      "Accepted": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "description": "Success body.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `accepted`.",
+            "examples": [
+              "accepted"
+            ],
+            "const": "accepted"
+          }
+        }
+      },
       "Error": {
         "type": "object",
-        "required": [ "error" ],
-        "properties": { "error": { "type": "string" } }
+        "required": [
+          "error"
+        ],
+        "description": "Error body (no trailing newline).",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Stable error message; see the response descriptions.",
+            "examples": [
+              "unauthorized"
+            ]
+          }
+        }
       }
     }
   }
