@@ -519,6 +519,19 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: pgbouncer
+      # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}
+      # from .env, which isn't in Secrets Manager → a fresh instance would lack it
+      # and csadmin.prod auth would break). Dual-accept: no Bearer → api-key
+      # path unchanged (safe for other consumers). These are edge-api settings
+      # (cognito-users, bearer-jwt, onboarding); they used to sit in the read-api
+      # block by mistake, where read-api ignored them. Same values as the
+      # compose.staging.yml edge-api block.
+      COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
+      COGNITO_CS_ADMIN_GROUP: cs-admin
+      EDGE_API_COGNITO_AUTH_ENABLED: "true"
+      EDGE_API_ONBOARDING_ENABLED: "true"
+      ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
+      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -1008,6 +1021,11 @@ services:
       # Per-client routing key → per-tenant worker queue. FILL AT DEPLOY with the
       # client's key (e.g. sparkplug.data.bispharma); defaults to the generic key.
       ROUTING_KEY: ${INGEST_ROUTING_KEY:-sparkplug.data}
+      # Publish the `refactored` copy ONLY (same as staging). The code default is
+      # "legacy,go,refactored" (one AMQP copy per entry): single-flow prod's
+      # oeecloud-worker runs the refactored lane only, so the default would triple-
+      # publish every envelope and feed the two copies no prod flow should see.
+      FANOUT_SOURCE_TYPES: refactored
       # Scope guard: only payloads whose topic/group first segment matches (case-
       # insensitive) are admitted; everything else → 403. FILL AT DEPLOY with the
       # client's topic prefix (e.g. BISPHARMA). REQUIRED — the shim refuses to
@@ -1069,8 +1087,18 @@ services:
     environment:
       DB_HOST: pgbouncer
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # task #264 (same as compose.staging.yml): read-api logs in as the NOBYPASSRLS,
+      # read-only `readapi_ro` role (db/migrations/t276), NOT the superuser
+      # ${POSTGRES_USER}, so FORCE ROW LEVEL SECURITY co-enforces the tenant fence.
+      # REQUIRED before this file deploys: t276 applied on the prod DB, the role
+      # given LOGIN + a password (ALTER ROLE readapi_ro LOGIN PASSWORD …, one-time,
+      # out of band), and READAPI_RO_PASSWORD in /opt/packiot/.env (Secrets Manager
+      # packiot/production/internal-keys on the release branch). The `:?` makes
+      # compose refuse to start rather than run read-api as the superuser or with
+      # an empty password. Rollback: READAPI_RO_USER=<superuser> +
+      # READAPI_RO_PASSWORD=$POSTGRES_PASSWORD in .env.
+      DB_USER: ${READAPI_RO_USER:-readapi_ro}
+      DB_PASSWORD: ${READAPI_RO_PASSWORD:?READAPI_RO_PASSWORD must be set in /opt/packiot/.env (packiot/production/internal-keys)}
       DB_NAME: ${POSTGRES_DB}
       REFDATA_FLOW: f3
       # Single DB: F3 target IS the main `packiot` pool (no packiot_analytics).
@@ -1087,20 +1115,11 @@ services:
       # keeps it (was ${..:-false} → refdata silently rejected Cognito → front4
       # Cognito login white-paged; flipped live 2026-08-07, codified here).
       # Override to false only for a deliberate Firebase-only rollback.
-      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-fbpackiot}
+      # FIREBASE_PROJECT_ID removed: read-api no longer reads it (#159, Firebase IdP
+      # retired; Cognito is the sole per-user verifier).
       COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-true}
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
-      # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}
-      # from .env, which isn't in Secrets Manager → a fresh instance would lack it
-      # and csadmin.prod auth would break). Dual-accept: no Bearer → api-key
-      # path unchanged (safe for other consumers).
-      COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
-      COGNITO_CS_ADMIN_GROUP: cs-admin
-      EDGE_API_COGNITO_AUTH_ENABLED: "true"
-      EDGE_API_ONBOARDING_ENABLED: "true"
-      ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
-      ONBOARD_API_KEY: ${ONBOARD_API_KEY}
       # ADR-0035 cache-aside over app-redis (fail-open). Point REDIS_URL at
       # managed ElastiCache instead once provisioned (see app-redis note).
       REDIS_CACHE_ENABLED: "true"
