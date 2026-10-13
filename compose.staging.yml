@@ -2540,26 +2540,14 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
-  # ── edge-transformer (ADR-0009 Phase 2 — SHADOW MODE) ──────────────────────────
-  # Per-factory Go service that consumes from the local RabbitMQ exchange
-  # `edge.plc-normalized` and will replace the deterministic transform layer
-  # currently inside edge-node-red's Sparkplug subflow + Calc_Counters.
-  #
-  # SHADOW MODE — logs+acks every delivery, writes nothing. Phase 3 (Go ports
-  # of Calc_Counters family) is what flips this from shadow to authoritative.
-  #
-  # Prerequisites (ALL MET as of 2026-06-30):
-  #   ✓ Secret packiot/staging/rabbitmq-sparkplug-decoder-creds exists
-  #   ✓ RabbitMQ user `edge-transformer` provisioned via app_init.sh
-  #     (configure/write/read scoped per ADR-0009 runbook §2.B)
-  #   ✓ Topology declared: edge.plc-normalized + dlx.edge.plc-normalized
-  #   ✗ Node-RED publisher flow (Phase 2.5 follow-up — until then, the
-  #     consumer sits idle waiting for messages; harmless)
-  #
-  # Reuse rule (ADR-0009 Errata Correction 2): everything below mirrors
-  # oeecloud-worker's service entry — same Secrets Manager pattern, same env
-  # var shape, same depends_on RabbitMQ healthcheck. Only port + queue names
-  # differ.
+  # ── sparkplug-decoder (formerly edge-transformer; live, not shadow) ───────────
+  # Subscribes to Mosquitto spBv1.0/#, decodes Sparkplug B, turns counters into
+  # increments (Calc state durable by default, #1671/#1672) and publishes to the
+  # `oee` exchange through its outbox. Connects to RabbitMQ as `sparkplug-decoder`
+  # (packiot/staging/rabbitmq-sparkplug-decoder-creds), a user created on every
+  # broker boot from monitoring/rabbitmq/definitions.template.json. Queue names
+  # keep the historical `edge-transformer-q*` prefix. Docs:
+  # docs/wiki/understand/components/sparkplug-decoder.md.
   sparkplug-decoder:
     build: ./services/sparkplug-decoder
     container_name: sparkplug-decoder
