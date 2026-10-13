@@ -116,7 +116,7 @@ When `FANOUT_CPACK_TO_SBXCPACK_ENABLED` (or `FANOUT_ENABLED`) is not `true`, the
 | `CONFIRM_TIMEOUT_MS` | 5000 | — | publish confirm wait |
 | `HTTP_ADDR` / `METRICS_ADDR` | `:8444` / `:9105` | same | |
 | `INGEST_API_KEY` | none (required) | from host `.env` | shared secret for `X-Ingest-Key` |
-| `SCOPE_GROUP` | `INCOPLAST` | `INCOPLAST` | the only admitted Sparkplug group |
+| `SCOPE_GROUP` | none (required) | `INCOPLAST` | the only admitted Sparkplug group; empty → refuses to start |
 | `FANOUT_SOURCE_TYPES` | `legacy,go,refactored` | `refactored` | one publish per token |
 | `MAX_BODY_BYTES` | 1048576 | — | |
 | `TLS_CERT_FILE` / `TLS_KEY_FILE` | none (required) | `/certs/server.crt` / `/certs/server.key` | |

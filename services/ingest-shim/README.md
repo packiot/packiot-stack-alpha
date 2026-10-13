@@ -85,7 +85,7 @@ N/A: no database access.
 | `EXCHANGE` | `oee` | no | Target exchange |
 | `ROUTING_KEY` | `sparkplug.data` | no | Target routing key (staging: `sparkplug.data.incoplast`; production: `INGEST_ROUTING_KEY`) |
 | `CONFIRM_TIMEOUT_MS` | `5000` | no | Wait for a publisher confirm before answering 503 |
-| `SCOPE_GROUP` | `INCOPLAST` | no | Only this group is admitted. An empty value falls back to the default (it does not disable the guard) |
+| `SCOPE_GROUP` | — | **yes** | Only this group is admitted (case-insensitive). Unset or empty → the shim refuses to start (there is no default; staging/dev set `INCOPLAST`, production `INGEST_SCOPE_GROUP`) |
 | `FANOUT_SOURCE_TYPES` | `legacy,go,refactored` | no | Comma list of flows; staging/dev: `refactored` |
 | `MAX_BODY_BYTES` | `1048576` | no | Larger bodies are 400 |
 | `LOG_LEVEL` | `info` | no | slog level |

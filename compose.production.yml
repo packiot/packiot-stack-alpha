@@ -1010,7 +1010,10 @@ services:
       ROUTING_KEY: ${INGEST_ROUTING_KEY:-sparkplug.data}
       # Scope guard: only payloads whose topic/group first segment matches (case-
       # insensitive) are admitted; everything else → 403. FILL AT DEPLOY with the
-      # client's topic prefix (e.g. BISPHARMA).
+      # client's topic prefix (e.g. BISPHARMA). REQUIRED — the shim refuses to
+      # start when this is empty (no silent INCOPLAST default). Not `:?` here:
+      # that would fail interpolation of the whole file for deploys that never
+      # enable the client-ingest profile.
       SCOPE_GROUP: ${INGEST_SCOPE_GROUP:-}
       HTTP_ADDR: ":8444"
       METRICS_ADDR: ":9105"
