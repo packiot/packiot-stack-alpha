@@ -393,14 +393,21 @@ services:
   # with `--profile s7` (or COMPOSE_PROFILES=s7). Flow:
   #
   #   s7-softplc  --(S7comm / ISO-on-TCP :102)-->  s7-reader
-  #     (pure-Go in-memory PLC, counters climb)      (gos7 client → SparkPlug B)
-  #                                                       │ NBIRTH/NDATA over MQTT
+  #     (pure-Go in-memory PLC, counters climb)      (gos7 client)
+  #                                                       │ raw-tag JSON over MQTT
   #                                                       ▼
-  #                                              mosquitto → edge-transformer → F1/F3
+  #                                              mosquitto  edge/raw/incoplast
   #
-  # This proves the gos7 wire path + tag→PackML mapping end-to-end against a real
-  # S7 endpoint, with no Snap7/C library and no CGo (the soft-PLC is pure Go; the
-  # same server type backs the internal/s7/softplc wire-level unit test).
+  # s7-reader runs in its DEFAULT raw-emit mode here (RAW_EMIT unset = true): it
+  # publishes plain raw-tag envelopes to edge/raw/<tenant>, NOT Sparkplug B. No
+  # staging agent subscribes to edge/raw/incoplast (the shared agent has no
+  # incoplast tenant file), so these readings do not reach sparkplug-decoder or the
+  # `oee` exchange. Set RAW_EMIT=false for the legacy direct-Sparkplug path
+  # (spBv1.0/INCOPLAST/… → sparkplug-decoder → `oee` → stream-engine).
+  #
+  # This proves the gos7 wire path against a real S7 endpoint, with no Snap7/C
+  # library and no CGo (the soft-PLC is pure Go; the same server type backs the
+  # internal/s7/softplc wire-level unit test).
   s7-softplc:
     profiles: ["s7"]
     build:
@@ -436,8 +443,9 @@ services:
       S7_EDGE_NODE: "s7-reader"
       S7_TICK_SEC: "5"
       # Demo tag set (no CLIENT_CONFIG): DB100 → the four NOVOFLEX_15 tags in
-      # cmd/s7-reader. For a landed F1/F3 row the topic must exist active in
-      # packml_register for the tenant; the mechanism here is PLC → SparkPlug.
+      # cmd/s7-reader. Raw-emit mode (default) → edge/raw/incoplast only; for a
+      # landed Silver row use RAW_EMIT=false (direct Sparkplug) AND the topic must
+      # exist active in packml_register for the tenant.
     depends_on:
       mosquitto:
         condition: service_healthy
@@ -452,8 +460,9 @@ services:
     mem_limit: 64m
 
   # ── Mosquitto (MQTT broker for Sparkplug B, ADR-0010) ──────────────────────────
-  # Factory-side MQTT broker. PLCs publish Sparkplug B here; edge-transformer
-  # subscribes to `spBv1.0/+/+/+/+` and bridges the decoded data into RabbitMQ.
+  # MQTT broker for Sparkplug B. Agents and simulators publish here;
+  # sparkplug-decoder (formerly edge-transformer; network alias kept) subscribes
+  # to `spBv1.0/#` and publishes the decoded envelopes to RabbitMQ exchange `oee`.
   #
   # ADR-0011 rule 1 + P0-2: persistence is enabled in the config file so
   # retained NBIRTHs survive broker restart. Without this, every subscriber
@@ -2711,11 +2720,12 @@ services:
       # sparkplug.data.cpack (+ CPACK group guard) so the SBXCPACK twin is
       # unaffected. Verified after the flip: cpack routed to stream-engine-q-cpack
       # (deliver_get climbing), the plain stream-engine-q went idle, sbxcpack kept
-      # flowing, redeliver=0 / no DLQ. OBSERVABILITY GAP: the `oee` exchange has
-      # NO alternate-exchange, so a non-allowlisted / unbound tenant's messages
-      # are now silently discarded as unroutable (no DLQ, no log, no metric)
-      # rather than reaching the worker. cpack + sbxcpack are allowlisted + bound,
-      # so unaffected. Reversible: set "false" here (or F3_PER_TENANT_ROUTING=false
+      # flowing, redeliver=0 / no DLQ. Unbound tenants: policy `oee-ae` sets the
+      # `oee` exchange's alternate-exchange to `oee-unroutable`, so a non-allowlisted
+      # / unbound tenant's messages land in `oee-unroutable-q` (capped by policy
+      # `oee-unroutable-cap`, alert OeeUnroutableMessages) instead of being
+      # discarded. (The original 2026-08-24 gap — no alternate-exchange — is closed;
+      # see monitoring/rabbitmq/definitions.template.json.) Reversible: set "false" here (or F3_PER_TENANT_ROUTING=false
       # in .env pre-merge) + recreate sparkplug-decoder → back to the plain key.
       F3_PER_TENANT_ROUTING: "true"
       POSTGRES_DB: packiot_analytics
