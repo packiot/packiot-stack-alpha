@@ -96,7 +96,9 @@ var validScanTypes = map[string]bool{
 // database — the pg implementation (pgScanTx) runs the real SQL, already inside
 // the advisory-locked transaction opened by pgScanStore.RecordScan.
 type scanTx interface {
-	existingByUUID(ctx context.Context, scanUUID string) (ScanResult, bool, error)
+	// existingByUUID also returns the enterprise that owns the row, so a replay
+	// can be fenced to the caller's tenant.
+	existingByUUID(ctx context.Context, scanUUID string) (res ScanResult, ownerEnterprise int, found bool, err error)
 	tenantOwns(ctx context.Context, enterpriseID int, idPO int64, idEquip int) (bool, error)
 	lastLabelSeq(ctx context.Context, idPO int64) (int64, error)
 	insertScan(ctx context.Context, enterpriseID int, req ScanRequest, labelSeq *int64, counterSeq, delta int64) (boxScanID, total int64, err error)
@@ -108,10 +110,16 @@ type scanTx interface {
 // or replay), a *domainError (expected 4xx), or an error (infra 5xx).
 func applyScan(ctx context.Context, tx scanTx, enterpriseID int, req ScanRequest) (ScanResult, *domainError, error) {
 	// 1) Idempotent replay — a repeat of an accepted scan_uuid returns the
-	//    original row with no second insert.
-	if res, ok, err := tx.existingByUUID(ctx, req.ScanUUID); err != nil {
+	//    original row with no second insert. Fenced to the caller's tenant: a
+	//    scan_uuid that belongs to ANOTHER enterprise is a 409 that reveals
+	//    nothing about that row (before this, it replayed the other tenant's
+	//    box id, label_seq and PO total with a 200).
+	if res, owner, ok, err := tx.existingByUUID(ctx, req.ScanUUID); err != nil {
 		return ScanResult{}, nil, err
 	} else if ok {
+		if owner != enterpriseID {
+			return ScanResult{}, &domainError{Status: http.StatusConflict, Code: "scan_uuid_conflict"}, nil
+		}
 		res.Replayed = true
 		return res, nil, nil
 	}
@@ -221,22 +229,23 @@ func (s *pgScanStore) RecordScan(ctx context.Context, enterpriseID int, req Scan
 // pgScanTx binds the scanTx seam to a live pgx.Tx (already advisory-locked).
 type pgScanTx struct{ tx pgx.Tx }
 
-func (p *pgScanTx) existingByUUID(ctx context.Context, scanUUID string) (ScanResult, bool, error) {
+func (p *pgScanTx) existingByUUID(ctx context.Context, scanUUID string) (ScanResult, int, bool, error) {
 	const q = `
-		SELECT bs.box_scan_id, COALESCE(bs.label_seq, 0), COALESCE(c.total_qty, 0)
+		SELECT bs.id_enterprise, bs.box_scan_id, COALESCE(bs.label_seq, 0), COALESCE(c.total_qty, 0)
 		  FROM box_scans bs
 		  LEFT JOIN po_box_counter c ON c.id_production_order = bs.id_production_order
 		 WHERE bs.scan_uuid = $1`
 	var r ScanResult
-	err := p.tx.QueryRow(ctx, q, scanUUID).Scan(&r.BoxScanID, &r.LabelSeq, &r.Total)
+	var owner int
+	err := p.tx.QueryRow(ctx, q, scanUUID).Scan(&owner, &r.BoxScanID, &r.LabelSeq, &r.Total)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ScanResult{}, false, nil
+		return ScanResult{}, 0, false, nil
 	}
 	if err != nil {
-		return ScanResult{}, false, err
+		return ScanResult{}, 0, false, err
 	}
 	r.ScanUUID = scanUUID
-	return r, true, nil
+	return r, owner, true, nil
 }
 
 func (p *pgScanTx) tenantOwns(ctx context.Context, enterpriseID int, idPO int64, idEquip int) (bool, error) {
