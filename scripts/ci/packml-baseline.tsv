@@ -104,7 +104,6 @@
 1	services/read-api/cmd/refdata-api/testdata/external/montebello/data-sync.golden.json
 1	services/read-api/cmd/refdata-api/testdata/external/montebello/get-shift-validation.golden.json
 1	services/read-api/cmd/refdata-api/testdata/external/montebello/job_data_integration.golden.json
-5	services/read-api/refdata-api
 4	services/read-api/scripts/refdata-f3-parity-check.sh
 3	services/sparkplug-decoder/cmd/bispharma-twin/main.go
 1	services/sparkplug-decoder/cmd/edge-transformer/birthbind_wiring.go

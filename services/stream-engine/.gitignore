@@ -1,0 +1,4 @@
+# Local `go build ./cmd/port-parity` output (14 MB binary). Anchored with a
+# leading slash so it never matches the cmd/port-parity/ source directory.
+# Was committed by accident until 2026-10-13; history still holds it.
+/port-parity
