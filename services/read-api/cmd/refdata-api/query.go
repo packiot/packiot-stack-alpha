@@ -139,7 +139,7 @@ func parseAPIKeys(raw string) map[string]int {
 	return out
 }
 
-func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
+func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 	// ADR-0027 Surface-1: tenant auth is now whole-mux middleware (auth.go),
 	// not a per-handler closure. Handlers read the resolved customer_id from
 	// request context (customerIDFromContext) — the middleware guarantees a

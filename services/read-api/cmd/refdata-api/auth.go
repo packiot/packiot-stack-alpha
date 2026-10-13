@@ -134,10 +134,13 @@ var queryAPIRoutes = []mountedRoute{
 	{"/v1/dashboard-config", routeTenantScoped},
 }
 
-// infraRoutes are the unauthenticated ops probes — no tenant data.
+// infraRoutes are the unauthenticated ops probes — no tenant data. /openapi.json
+// is the static API description (openapi.go): no tenant data either, and the
+// central API portal fetches it without a tenant credential.
 var infraRoutes = []mountedRoute{
 	{"/healthz", routeInfra},
 	{"/metrics", routeInfra},
+	{"/openapi.json", routeInfra},
 }
 
 // routeManifest is the complete, classified set of every mux route — the
