@@ -368,5 +368,5 @@ func (s *Server) handlePOAction(w http.ResponseWriter, r *http.Request, action s
 		s.handleMapErr(w, action, err)
 		return
 	}
-	s.forward(w, r.Context(), action, call)
+	s.forward(w, r, action, call)
 }

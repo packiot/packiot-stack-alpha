@@ -153,6 +153,10 @@ type edgeCall struct {
 	path         string // e.g. /api/downtimes/create-manual-event
 	idEnterprise int    // becomes ?idEnterprise= so the audit log records the right tenant
 	body         any    // one of the edge* DTOs above
+	// idempotencyKey, when set, is sent as the Idempotency-Key header so edge-api
+	// answers a retry of an already-committed write from its key store instead of
+	// running it again. Set by Server.forward (see idempotency.go).
+	idempotencyKey string
 }
 
 // outcome label constants — keep in sync with metrics.go's documented set.

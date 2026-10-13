@@ -89,8 +89,13 @@ cached 5 min, misses 30 s (a newly registered topic can 422 for up to 30 s).
 | resolver DB error | 503 (nothing sent; safe to retry) |
 | bad JSON | 400 |
 
-**Idempotency:** none added. A 502, or a 503 caused by the 10 s timeout, can follow a write edge-api
-already committed, so creates are not safe to replay blindly.
+**Idempotency:** a 502, or a 503 caused by the 10 s timeout, can follow a write edge-api already
+committed. The gateway sends edge-api an `Idempotency-Key` so the retry is answered from edge-api's
+24 h key store instead of written twice: the caller's own `Idempotency-Key` header (any action), or
+else a key derived from tenant + endpoint + edge-api body for the time-anchored writes (downtime
+justify/manual, PO create-and-start, stop, setup). Edit, replace, change-status, change-time and
+split get no derived key (an identical body can be a new action), so callers should send their own.
+See `internal/adapter/idempotency.go`.
 
 ### Messaging
 

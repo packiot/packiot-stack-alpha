@@ -79,7 +79,7 @@ telemetry path.
         DB error                                                              → 503
      4. map fields to the edge-api DTO; missing required field                → 422
      5. POST edge-api with x-api-key = EDGE_API_KEY, ?idEnterprise=<ent>, traceparent
-        (no Idempotency-Key), 10 s timeout
+        + Idempotency-Key (caller's header, or derived for time-anchored writes), 10 s timeout
  edge-api 2xx → 202 · 4xx → passthrough · 5xx → 502 · unreachable or timeout → 503
 ```
 
@@ -145,19 +145,27 @@ means another instance with different values.
 | 403 | Body enterprise or topic prefix not the configured tenant | Fix the tee node payload |
 | 422 "topic … did not resolve" | Topic missing/inactive in `packml_register`, or duplicated | Fix registration in csadmin; wait up to 30 s for the negative cache |
 | 502 | edge-api 5xx | edge-api logs |
-| 503 `edge-api unreachable` | edge-api down, or slower than the 10 s client timeout | edge-api health; see the duplicate-write risk below |
+| 503 `edge-api unreachable` | edge-api down, or slower than the 10 s client timeout | edge-api health; a retry with the same Idempotency-Key does not write twice (see below) |
 | 4xx passthrough (e.g. 404) | edge-api TenantFence or validation | The edge-api key does not own the target, or DTO mismatch |
 | Container exits at boot | Missing TLS files or required env | Place certs, fill `.env` |
 
-!!! warning "Known failure mode: a retry after a timeout can duplicate a write"
+!!! note "Retry after a timeout: Idempotency-Key"
     The gateway answers 503 when the edge-api call errors, **including a client timeout**
-    (10 s). If edge-api had already committed the action (slow response, not a failure),
-    a tee that retries on 503 sends it again, and the gateway forwards it without an
-    `Idempotency-Key`, so edge-api cannot recognise the replay. Manual events, PO
-    create-and-start and splits are not naturally idempotent; a duplicate needs manual
-    cleanup. Mitigation today: tell the client to retry 503s only after checking the
-    effect (for example the PO list), or not at all for creates. A fix would forward a
-    deterministic `Idempotency-Key` (edge-api already honours it for 24 h).
+    (10 s), even if edge-api had already committed the action. To keep a retry from
+    writing twice, the gateway sends edge-api an `Idempotency-Key` (edge-api replays a key
+    that already succeeded from `idempotency_keys` for 24 h, `IdempotencyInterceptor`):
+
+    | Source | Applies to |
+    |---|---|
+    | The caller's `Idempotency-Key` header (hashed with tenant + endpoint) | Every action |
+    | Derived: SHA-256 of tenant + edge-api path + exact edge-api body | Downtime justify/manual, PO create-and-start, stop, setup (bodies carry the event time) |
+    | None | Downtime edit, replace, change-status, change-time, split without a caller header |
+
+    The last group gets no derived key because an identical body can be a new action
+    (A→B→A); a derived key would skip the write. Remaining gaps: a retry that arrives while
+    the first attempt is still running in edge-api is written again (no in-flight lock),
+    and a reused key with a different body gets the first result. Code:
+    `internal/adapter/idempotency.go`.
 
 ## Operating it
 
