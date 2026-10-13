@@ -51,7 +51,15 @@ volumes:
 # reader via `<<: *reader-base` without itself becoming a runnable service. See
 # the reader block under `services:` for the multi-PLC / mixed-protocol design.
 x-reader-base: &reader-base
-  image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+  # READER_IMAGE, NOT AGENT_IMAGE: the readers need the FULL sparkplug-decoder
+  # build (main Dockerfile → /usr/local/bin/{s7,modbus,opcua}-reader), while the
+  # agent below builds from Dockerfile.agent (agent binary ONLY). Sharing one
+  # image name meant (a) pinning AGENT_IMAGE to an agent-only artifact dropped the
+  # reader binaries (readers crash-loop "exec … no such file") and (b) a local
+  # `docker compose build` wrote BOTH builds to the same :local tag, last one wins.
+  # A distinct local default tag keeps the two builds apart. A box that already
+  # pins AGENT_IMAGE to the full build sets READER_IMAGE to the SAME ref.
+  image: ${READER_IMAGE:-packiot/edge-reader:local}
   build:
     context: ../../../services/sparkplug-decoder
     dockerfile: Dockerfile
@@ -245,7 +253,9 @@ services:
   # PLC_HOST_* vars — whose names compose cannot enumerate — reach the container.
   #
   # The image is the MAIN sparkplug-decoder Dockerfile (NOT Dockerfile.agent) — it
-  # ships /usr/local/bin/{s7,modbus,opcua}-reader.
+  # ships /usr/local/bin/{s7,modbus,opcua}-reader. It has its OWN variable,
+  # READER_IMAGE (see x-reader-base), so the agent image can be pinned or rebuilt
+  # without touching the readers.
   #
   # NOTE: reader-only vars stay `${VAR:-}` (soft) — compose interpolates the WHOLE
   # file (all profiles) before selecting one, so a `:?` on a reader-only var would
@@ -333,7 +343,8 @@ services:
   # The uniform Go SparkPlug agent. Consumes raw tags (internal broker AND/OR the
   # HTTP tee), runs the full SparkPlug session, and publishes to new-prod over
   # mTLS. The image is either PINNED (AGENT_IMAGE, the released artifact) or built
-  # locally from the multi-arch Dockerfile.agent.
+  # locally from the multi-arch Dockerfile.agent. AGENT_IMAGE drives ONLY this
+  # service; the readers use READER_IMAGE.
   sparkplug-agent:
     image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
     build:
