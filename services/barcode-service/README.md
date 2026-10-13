@@ -60,7 +60,8 @@ Error codes (JSON `{"error": "<code>"}`): `scan_uuid_required`, `id_production_o
 `id_equipment_required`, `qty_invalid`, `scan_type_invalid`, `mode_invalid`, `label_seq_required`
 (400); `tenant_mismatch` (403: PO or equipment not owned by the token's tenant); `label_seq_gap` (409,
 with `expected`/`got`); `scan_uuid_conflict` (409: the `scan_uuid` belongs to another tenant). Every
-auth failure is the same 401. Request bodies are capped at 64 KiB.
+auth failure is the same 401. Request bodies are capped at 64 KiB; a larger body gets 413
+`{"error":"request body too large"}`.
 
 ### Messaging
 

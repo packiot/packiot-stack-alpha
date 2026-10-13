@@ -311,6 +311,10 @@ func (p *pgScanTx) insertScan(ctx context.Context, enterpriseID int, req ScanReq
 
 // ── HTTP handler ─────────────────────────────────────────────────────────────
 
+// maxScanBodyBytes caps a POST /v1/scans body (64 KiB). One scan is a few
+// hundred bytes; anything over the cap is answered 413.
+const maxScanBodyBytes = 64 << 10
+
 type scanServer struct {
 	store  scanStore
 	broker *sseBroker
@@ -333,10 +337,17 @@ func (s *scanServer) handlePostScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ScanRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxScanBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		failed.Add(1)
+		// An over-cap body is a size problem, not a syntax one: 413 tells the
+		// client not to retry it unchanged (a 400 read as "fix the JSON").
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, `{"error":"request body too large"}`)
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, `{"error":"invalid json body"}`)
 		return
 	}

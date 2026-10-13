@@ -113,12 +113,12 @@
             }
           },
           "400": {
-            "description": "Malformed JSON, a body over 64 KiB, or an unknown field (`invalid json body`); or a validation code: `scan_uuid_required`, `id_production_order_required`, `id_equipment_required`, `qty_invalid` (negative qty), `scan_type_invalid`, `mode_invalid`, `label_seq_required` (`validate` mode for a `production` scan without `label_seq`; checked inside the transaction, after the tenant fence).",
+            "description": "Malformed JSON or an unknown field (`invalid json body`); or a validation code: `scan_uuid_required`, `id_production_order_required`, `id_equipment_required`, `qty_invalid` (negative qty), `scan_type_invalid`, `mode_invalid`, `label_seq_required` (`validate` mode for a `production` scan without `label_seq`; checked inside the transaction, after the tenant fence).",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/DomainError" },
                 "examples": {
-                  "invalidJSON": { "summary": "Unparseable, oversized or unknown field", "value": { "error": "invalid json body" } },
+                  "invalidJSON": { "summary": "Unparseable or unknown field", "value": { "error": "invalid json body" } },
                   "missingUUID": { "summary": "No scan_uuid", "value": { "error": "scan_uuid_required" } },
                   "badScanType": { "summary": "scan_type not in the enum", "value": { "error": "scan_type_invalid" } },
                   "labelSeqRequired": { "summary": "validate mode without label_seq", "value": { "error": "label_seq_required" } }
@@ -146,6 +146,15 @@
                   "label_seq_gap": { "summary": "Label sequence gap (validate mode)", "value": { "error": "label_seq_gap", "expected": 9, "got": 11 } },
                   "scan_uuid_conflict": { "summary": "scan_uuid owned by another tenant", "value": { "error": "scan_uuid_conflict" } }
                 }
+              }
+            }
+          },
+          "413": {
+            "description": "`request body too large`: the body is over 64 KiB. Nothing is read further or written. Permanent: do not retry the same body; one scan is a few hundred bytes.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DomainError" },
+                "example": { "error": "request body too large" }
               }
             }
           },
