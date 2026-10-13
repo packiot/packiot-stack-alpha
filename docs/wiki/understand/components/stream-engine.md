@@ -126,9 +126,11 @@ in [analytics DB schemas](analytics-db-schemas.md).
    `hash(source_type) % N`. Staging emits only `refactored`, so all messages of a queue land in one
    lane and each tenant queue is processed serially, in order.
 4. **Retry**: a handler error nacks without requeue → `oee-retry` → the queue's `-retry-30s` (TTL
-   `RETRY_TTL_MS`) → back to `oee`. The handler sends a message to `oee-failed` once the **sum** of
-   its `x-death` counts reaches `MAX_RETRIES`. Each round trip adds one `rejected` and one `expired`
-   count, so with 5 the handler runs three times before a message is parked.
+   `RETRY_TTL_MS`) → back to `oee`. Each round trip adds one `rejected` count (on the main queue)
+   and one `expired` count (on the retry queue) to the `x-death` header. Only the `rejected` count
+   for the queue being consumed is a handler failure, so that is the retry count. A message is
+   parked in `oee-failed` once it exceeds `MAX_RETRIES`: with 5, the handler runs six times (one
+   first run + five retries).
 5. **Handler** (`internal/handlers/sparkplug.go`):
    - Parse the envelope. A JSON string of JSON is dropped (poison guard). Other parse failures are
      retried only if legacy ingest is on.
@@ -392,7 +394,7 @@ overrides it; that file is not in git).
 | `WORKER_QUEUE` | `stream-engine-q` | same | firehose queue name and per-tenant prefix |
 | `RETRY_EXCHANGE` / `RETRY_QUEUE` | `oee-retry` / `stream-engine-q-retry-30s` | same | |
 | `FAILED_EXCHANGE` / `FAILED_QUEUE` | `oee-failed` / `stream-engine-q-failed` | same | |
-| `RETRY_TTL_MS` / `MAX_RETRIES` | 30000 / 5 | same | `MAX_RETRIES` compares with the summed `x-death` count (two per round trip) |
+| `RETRY_TTL_MS` / `MAX_RETRIES` | 30000 / 5 | same | retries after the first run; counted from the `x-death` `rejected` entry of the consumed queue |
 | `PREFETCH` | 50 | 50 | unacked messages per queue |
 | `CONSUME_LANES` | 1 | 4 | lanes per queue (by `source_type`) |
 | `TENANT_DISCOVERY_INTERVAL_SECONDS` | 60 | 60 | 0 = boot only |

@@ -428,7 +428,7 @@ func (c *Consumer) consumeOne(ctx context.Context, conn *amqp.Connection, queue 
 		go func(in <-chan amqp.Delivery) {
 			defer wg.Done()
 			for d := range in {
-				c.handleDelivery(ctx, ch, &chMu, d)
+				c.handleDelivery(ctx, ch, &chMu, queue, d)
 			}
 		}(laneCh[i])
 	}
@@ -502,19 +502,24 @@ func sourceTypeOf(body []byte) string {
 
 // handleDelivery is the per-message decision tree:
 //
-//  1. Check x-death header for retry-count. If at MaxRetries, the message
-//     has bounced through the retry queue too many times — publish to
-//     oee-failed and ack the original so it doesn't loop forever.
+//  1. Check x-death header for retry-count. If MaxRetries retries have
+//     already failed, the message has bounced through the retry queue too
+//     many times — publish to oee-failed and ack the original so it doesn't
+//     loop forever.
 //  2. Dispatch to a handler by routing key (or a fallback for unknown).
 //  3. Handler returns nil → ack. Handler returns error → nack with
 //     requeue=false so the message goes to DLX (oee-retry) → TTL → back
 //     to source → re-delivered to this consumer.
+//
 // handleDelivery processes one delivery and acks/nacks it. It may run
 // concurrently across lanes, so every operation on the shared AMQP channel
 // (Publish/Ack/Nack — the amqp channel is single-writer) is serialized under
 // chMu. The DB work in dispatcher.Handle is not channel-bound and runs
 // concurrently. In serial mode (lanes==1) chMu is uncontended.
-func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, chMu *sync.Mutex, d amqp.Delivery) {
+//
+// queue is the queue this delivery was consumed from; the retry count is read
+// from the x-death entry for that queue (see retryCount).
+func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, chMu *sync.Mutex, queue string, d amqp.Delivery) {
 	c.delivered.Add(1)
 	c.lastDelivery.Store(time.Now().UnixNano())
 	start := time.Now()
@@ -544,8 +549,10 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, chMu *s
 		}
 	}()
 
-	retries := xDeathCount(d.Headers)
-	if retries >= c.cfg.MaxRetries {
+	// retries = failed handler runs so far, so this delivery is retry #retries.
+	// MAX_RETRIES=N allows the first run plus N retries (see retriesExhausted).
+	retries := retryCount(d.Headers, queue)
+	if retriesExhausted(retries, c.cfg.MaxRetries) {
 		// Publish to failed exchange (terminal) and ack the original.
 		chMu.Lock()
 		err := ch.PublishWithContext(ctx, c.cfg.FailedExchange, d.RoutingKey, false, false, amqp.Publishing{
@@ -609,15 +616,23 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, chMu *s
 	}
 }
 
-// xDeathCount sums the count fields of all x-death header entries.
-// Each "round trip" through the retry queue adds an entry. Returns 0 if
-// the message has never been dead-lettered.
-func xDeathCount(h amqp.Table) int {
-	xd, ok := h["x-death"]
-	if !ok {
-		return 0
-	}
-	deaths, ok := xd.([]any)
+// retryCount returns how many times the handler has already failed this
+// message on queue, read from the RabbitMQ x-death header.
+//
+// x-death holds ONE entry per (queue, reason) pair, each with its own count.
+// One failed attempt dead-letters the message twice:
+//
+//	{queue: <queue>,             reason: rejected} — our nack(requeue=false)
+//	{queue: <queue>-retry-30s,   reason: expired}  — the retry TTL bouncing it back
+//
+// so summing every entry counted each failure twice: MAX_RETRIES=5 parked the
+// message after only 3 handler runs (2 retries). Only the `rejected` entry for
+// the queue we consume from is a handler failure. Matching the queue also keeps
+// a copy that was rejected elsewhere (another consumer's queue) from spending
+// this queue's budget. queue == "" (unknown) falls back to every `rejected`
+// entry. Returns 0 when the message was never dead-lettered.
+func retryCount(h amqp.Table, queue string) int {
+	deaths, ok := h["x-death"].([]any)
 	if !ok {
 		return 0
 	}
@@ -627,11 +642,33 @@ func xDeathCount(h amqp.Table) int {
 		if !ok {
 			continue
 		}
-		if v, ok := entry["count"].(int64); ok {
-			total += int(v)
+		if reason, _ := entry["reason"].(string); reason != "rejected" {
+			continue
 		}
+		if q, _ := entry["queue"].(string); queue != "" && q != queue {
+			continue
+		}
+		total += xDeathEntryCount(entry["count"])
 	}
 	return total
+}
+
+// retriesExhausted: MAX_RETRIES=max allows the first run plus max retries, so
+// the delivery is parked once more than max handler runs have failed.
+func retriesExhausted(retries, max int) bool { return retries > max }
+
+// xDeathEntryCount reads an x-death count. RabbitMQ sends it as a long (int64
+// in amqp091-go); the narrower ints are accepted for safety.
+func xDeathEntryCount(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
 }
 
 // Snapshot returns counters + state for /health JSON.

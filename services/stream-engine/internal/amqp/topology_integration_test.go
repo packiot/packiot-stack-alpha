@@ -128,3 +128,71 @@ func assertCount(t *testing.T, ch *amqp.Channel, q string, want int) {
 		t.Fatalf("%s: want %d messages, have %d", q, want, got)
 	}
 }
+
+// TestMaxRetriesAgainstBroker drives a real broker (skipped unless AMQP_TEST_URL is set) through the
+// production topology with a short retry TTL and a handler that always fails, using the consumer's
+// own decision (retryCount + retriesExhausted on the broker-written x-death header). MAX_RETRIES=N
+// must give exactly N+1 handler runs, then one message in the tenant's failed queue.
+func TestMaxRetriesAgainstBroker(t *testing.T) {
+	url := os.Getenv("AMQP_TEST_URL")
+	if url == "" {
+		t.Skip("AMQP_TEST_URL not set")
+	}
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+
+	p := fmt.Sprintf("t%06d", rand.Intn(1_000_000))
+	cfg := &config.Config{
+		SourceExchange: p + "-oee", RetryExchange: p + "-oee-retry", FailedExchange: p + "-oee-failed",
+		WorkerQueue: p + "-sq", RetryQueue: p + "-sq-retry-30s", FailedQueue: p + "-sq-failed",
+		RetryTTLMs: 100, MaxRetries: 3,
+	}
+	tenant := "cpack"
+	tenantQ, tenantRetryQ, tenantFailedQ := cfg.WorkerQueue+"-"+tenant, cfg.WorkerQueue+"-"+tenant+"-retry-30s", cfg.WorkerQueue+"-"+tenant+"-failed"
+	t.Cleanup(func() {
+		for _, q := range []string{cfg.WorkerQueue, cfg.RetryQueue, cfg.FailedQueue, tenantQ, tenantRetryQ, tenantFailedQ} {
+			_, _ = ch.QueueDelete(q, false, false, false)
+		}
+		for _, ex := range []string{cfg.SourceExchange, cfg.RetryExchange, cfg.FailedExchange} {
+			_ = ch.ExchangeDelete(ex, false, false)
+		}
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	must(t, DeclareTopology(context.Background(), conn, cfg, []string{tenant}, logger))
+
+	publish(t, ch, cfg.SourceExchange, "sparkplug.data."+tenant)
+	runs := 0
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		d, ok, err := ch.Get(tenantQ, false)
+		must(t, err)
+		if !ok {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		retries := retryCount(d.Headers, tenantQ)
+		if retriesExhausted(retries, cfg.MaxRetries) {
+			t.Logf("parked after %d failed runs; x-death: %v", retries, d.Headers["x-death"])
+			must(t, ch.PublishWithContext(context.Background(), cfg.FailedExchange, d.RoutingKey, false, false,
+				amqp.Publishing{Body: d.Body, Headers: d.Headers}))
+			must(t, d.Ack(false))
+			break
+		}
+		runs++ // the handler runs and fails
+		must(t, d.Nack(false, false))
+	}
+	if want := cfg.MaxRetries + 1; runs != want {
+		t.Fatalf("handler ran %d times, want %d (1 + MAX_RETRIES=%d)", runs, want, cfg.MaxRetries)
+	}
+	waitCount(t, ch, tenantFailedQ, 1)
+	assertCount(t, ch, tenantQ, 0)
+	assertCount(t, ch, tenantRetryQ, 0)
+}
