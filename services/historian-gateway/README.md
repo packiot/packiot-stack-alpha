@@ -1,151 +1,147 @@
 # historian-gateway
 
-A thin Postgres **query gateway** that unifies hot (live) and cold (S3 Parquet
-historian) equipment data behind one relation, so **front4, Superset, and any
-SQL tool can query old timestamps with plain SQL** — no per-tool Athena driver,
-no query rewrites.
+A Postgres query gateway (pg_duckdb + postgres_fdw) that serves hot analytics-DB rows and the cold
+S3 Parquet historian as one set of relations, so read-api, Superset and SQL tools can query any
+time range with plain SQL.
 
+## What it does
+
+The gateway is the stock `pgduckdb/pgduckdb:16-main` image plus one init script
+(`docker-entrypoint-initdb.d/10-historian-gateway.sh`); there is no application code. The init
+builds, in database `packiot_historian`: foreign tables in schema `live` over the analytics DB
+(postgres_fdw), cold-source views in schema `cold` over `s3://<HISTORIAN_BUCKET>/…/*-legacy.parquet`
+(pg_duckdb `read_parquet`), and union views `silver.equipment_values`, `silver.equipment_events`
+and `silver.production_orders`. A per-enterprise boundary keeps the two sides disjoint (cold owns
+time up to the cutover, hot owns time after it), and an allow-list (`promoted_enterprise`) decides
+which tenants get cold rows at all. It is a separate container because pg_duckdb is a glibc build
+and the analytics DB image is Alpine/musl, and because heavy archive scans must stay off the OLTP
+database.
+
+## Where it fits
+
+```text
+ legacy DB packiot40 ── nightly copy (systemd timer, scripts/historian-*.sh) ──▶ S3 historian bucket
+                                                                                 *-legacy.parquet
+ read-api /v1/historian/*  ─┐                                                         ▲ pg_duckdb
+ Superset historian_union  ─┼─ SQL ──▶ hist-gateway :5432 (packiot_historian) ─────────┘
+ CloudBeaver (read-only)   ─┘          silver.* = live ∪ cold                ─ postgres_fdw ─▶
+                                                                    analytics DB packiot_analytics
 ```
-consumer ──SQL──► historian-gateway (Postgres)
-                     │
-                     ├─ live.equipment_values   ─postgres_fdw─► timescaledb hypertable   (HOT, recent)
-                     └─ hist                     ─pg_duckdb──► s3://…/*-legacy.parquet    (COLD, legacy)
-                     └─ ev_all = live ∪ hist     ← query THIS
-```
 
-**Serving surface (canonical, narrow):** `{ts_value, id_enterprise, year, month,
-id_equipment, gross_production_incr, net_production_incr, speed}`. This is a
-production-series server, not a raw mirror — widen only on demand.
+## Status and environments
 
-**Prune-proof FDW import:** `live.equipment_values` is a **pinned** foreign table
-declaring ONLY those served columns, not `IMPORT FOREIGN SCHEMA` (which pulls all
-~58). The analytics clean-schema cutover prunes the dead columns off the remote
-`equipment_values`; a pinned import can never break when that happens (postgres_fdw
-only ships referenced columns).
+| Environment | Where (compose file · service · profile) | Image | Ports | Health |
+|---|---|---|---|---|
+| dev | none: needs an S3 endpoint option and a cold archive in MinIO (`dev/README.md`, "Not in dev") | — | — | — |
+| staging | `compose.historian-gateway.yml` · `historian-gateway` (container `hist-gateway`) on the external network `stack_packiot-net`; started by hand, **not** by the deploy workflow | `pgduckdb/pgduckdb:16-main` | in-network 5432; no host publish | `pg_isready -U postgres`; `start_period` 20 min (first boot seeds the cutover by scanning the archive) |
+| production | not in `compose.production.yml` | — | — | — |
 
-## Why a gateway (not pg_duckdb in the timescaledb instance)
+Limits (2026-09-28 audit): `mem_limit: 2560m`; DuckDB `memory_limit`/`max_memory` 1024 MB,
+`threads` 2, `max_temp_directory_size` 8 GB, set as `postgres -c` flags in the compose file
+(they override both config files).
 
-- The operational DB image is **Alpine/musl** (`timescale/timescaledb:*-pg15`);
-  pg_duckdb ships **glibc** + bundles DuckDB — it won't drop into that image.
-- A separate gateway keeps heavy historian scans **off the OLTP instance**.
-- Consumers change **one connection host**; SQL and schema are unchanged.
+## Interfaces
 
-## How queries stay cheap (T3 — needs a year/month predicate)
+### HTTP
 
-The historian is partitioned `enterprise=/year=/month=`. DuckDB prunes ONLY on the
-partition columns, **not on `ts_value`** — hardproof via `EXPLAIN ANALYZE` on
-staging:
+N/A: Postgres wire protocol only. No OpenAPI spec. read-api's `/v1/historian/*` routes (see
+[read-api](../read-api/README.md)) are the HTTP surface over it.
 
-| Predicate | Files read | Time |
-|---|---|---|
-| `ts_value BETWEEN <one day>` (only) | **59 / 836** | 170.76 s |
-| `year=2026 AND month=9 AND ts_value ...` | **1 / 836** | 0.57 s |
-| compound year/month RANGE + `ts_value ...` (Jinja) | **1 / 836** | 0.74 s |
+### Messaging
 
-So a bounded query prunes the cold side **only if it carries a year/month
-predicate**. `ev_all` therefore surfaces `year`/`month`, and consumers add the
-predicate: Superset via the `ev_all` virtual-dataset Jinja (`{{ from_dttm }}`),
-read-api/tools via `ev_between(p_start, p_end)`. DuckDB's pushdown survives through
-the Postgres view (`Custom Scan (DuckDBScan)`).
+N/A.
 
-## Correctness invariants (each caught by hardproof)
+### Database
 
-1. **No double-count — via a per-enterprise cutover (T2b, corrected 2026-09-04).**
-   The `hist` view reads only `*-legacy.parquet`, but that is NOT pre-cutover:
-   hardproof showed the staging `*-legacy.parquet` for ent3 spans 2021→**today**
-   (it is the deep-remap of the still-live legacy packiot40 source), and live also
-   holds ent3 from its F3 cutover (2026-07-23) onward — so on 2026-09-03 BOTH sides
-   had ent3 rows (hist 196,671 / live 155,465) and a plain `UNION ALL` returned
-   352,136 == **double-count**. Fixed with `ev_union_boundary(id_enterprise, cutover_ts =
-   max(hist.ts_value))`: COLD owns `ts <= cutover`, HOT owns `ts > cutover` (disjoint;
-   live fills forward from the archive's end). Hardproof of the fix: the same day now
-   returns **196,671** (HOT 0 + COLD 196,671), 1 parquet file. **Operational
-   invariant:** the cutover refresh (top-level `refresh-equipment_values-cutover.sql`) MUST be
-   re-run after every historian backfill/append, and every in-historian enterprise
-   MUST have a `ev_union_boundary` row, or the double-count returns. **Never** wrap this
-   refresh in a PL/pgSQL function — pg_duckdb cannot scan the `hist` parquet inside a
-   function body, so it throws and leaves the cutover silently stale (a broken
-   `refresh_ev_union_boundary()` fn of exactly this shape was found live on staging and
-   dropped 2026-09-08).
-   *(A naïve `live ∪ all-historian` double-counted 2026 and surfaced 99e9 gross.)*
-2. **Tenant RLS must be a LITERAL.** pg_duckdb pushes predicates into DuckDB,
-   which has **no PG session context** — `current_setting('app.tenant_id')` and a
-   STABLE `current_tenant()` both fail on the cold path. So the tenant must arrive
-   as a literal/param: **Superset native RLS** injects it; **read-api** adds
-   `id_enterprise = <id>` from its known tenant. Never rely on a GUC policy here.
-3. **Cutover is per-enterprise.** Each tenant left legacy at a different time;
-   the `*-legacy.parquet` scoping encodes that per file, so the union is uniform.
-
-## Credentials
-
-- **Cold (S3):** scoped read-only IAM user `svc-historian-gateway`
-  (`s3:GetObject`/`ListBucket` on the historian bucket only). Instance-role
-  `credential_chain` is **not** usable — the DB enforces **IMDSv2** and DuckDB's
-  aws extension can't fetch v2 creds through the docker hop. Manage this key via
-  Terraform for prod (the staging key was minted manually for the PoC).
-- **Hot (FDW):** the `packiot_analytics` Postgres credential.
-
-## Proven on staging (CPACK, ent 1→3, 328M rows, lossless deep-remap)
-
-| Check | Result |
+| Object (in `packiot_historian`) | What |
 |---|---|
-| pg_duckdb + postgres_fdw coexist | ✅ |
-| live hypertable via FDW | 3.14M CPACK post-cutover rows |
-| `ev_all` spanning 2022→2026 | unified, no double-count |
-| old-timestamp lookup | 1/181 files scanned |
-| via Superset (SQL Lab + engine) | `2022→242 (cold)`, `2026→17281 (hot)` |
+| `live.equipment_values`, `live.equipment_values_1hour`, `live.equipment_events`, `live.production_orders` | postgres_fdw foreign tables on `packiot_analytics` (server `live_pg`), pinned to the served columns |
+| `cold.equipment_values`, `cold.equipment_values_daily`, `cold.equipment_events`, `cold.production_orders` | pg_duckdb views over the Parquet archive (hive partitions `enterprise=/year=/month=`) |
+| `silver.equipment_values`, `silver.equipment_events`, `silver.production_orders` | the hot ∪ cold union views consumers query |
+| `cold.ev_union_boundary`, `ee_union_boundary`, `po_union_boundary` | per-enterprise cutover timestamps that keep hot and cold disjoint |
+| `cold.promoted_enterprise` | allow-list: the only tenants that get cold rows (archive ids collide with new-stack tenant ids) |
+| `cold.ev_daily_watermark`, `cold.cold_append_watermark` | daily-rollup coverage and last-append stamps |
+| roles `historian_svc`, `historian_readers`, `cloudbeaver_histro` | read-api/Superset service login; the group allowed to run pg_duckdb; read-only browser role |
 
-## Serving rules (2026-09-28 audit: t-historian-serving-guards)
+On the analytics side the FDW logs in as the least-privilege role `histgw_ro` when `HISTGW_RO_PASS`
+is set (else as `FDW_USER`).
 
-**1. Never bound a `live.*` query with `now()`.** postgres_fdw only ships immutable
-expressions to the remote, and `now()` is stable, so a `ts_value > now() - interval '2h'`
-filter is evaluated locally after pulling the WHOLE remote table: measured 173 s vs 59 ms
-with a literal timestamp. Pass literal bounds (read-api binds literals through the simple
-protocol). Check with `EXPLAIN (VERBOSE)`: the `Remote SQL:` line must carry the time filter.
+## Configuration
 
-**2. Long windows read daily rollups, never per-second rows.** Re-aggregating the cold
-archive at query time costs about 25 s per 30 days (a CPACK month is 6-8 M rows), and a
-mixed pg_duckdb + FDW plan loses the FDW pushdown. read-api (`historian_split.go`) runs
-hot and cold as separate statements and merges them (production is served at whole-UTC-day
-resolution; the per-second `silver.equipment_values` union stays for Superset/raw use):
+Read by the init script on a **fresh volume only** (`compose.historian-gateway.yml`); on staging the
+values come from `/opt/packiot/.env.historian-gateway`, not the main `.env`.
 
-| Endpoint | Cold (pure DuckDB) | Hot (pure Postgres/FDW) |
-|---|---|---|
-| production-series, any window | `cold.equipment_values_daily`, days < `ev_daily_watermark.covered_until` | `live.equipment_values_1hour` (analytics hourly rollup), days ≥ watermark |
-| downtime-series, any window | `cold.equipment_events`, only for EE-promoted tenants and only before `ee_union_boundary` | `live.equipment_events`, aggregated per UTC day |
+| Name | Default | Required | Effect |
+|---|---|---|---|
+| `POSTGRES_PASSWORD` (from `HIST_GW_PASSWORD`) | — | yes | Gateway superuser `postgres` |
+| `POSTGRES_DB` | `packiot_historian` (set in compose) | — | Database the init provisions |
+| `FDW_HOST` / `FDW_PORT` / `FDW_DB` / `FDW_USER` (from `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`) | staging DB EC2 / `5432` / `packiot_analytics` / `postgres` | no | Hot side (`live_pg` server and the superuser mapping) |
+| `FDW_PASS` (from `DB_PASSWORD`) | — | yes | Password for that mapping |
+| `HISTORIAN_BUCKET` | — | yes | S3 bucket of the archive (`terraform/staging/historian-gateway.tf`) |
+| `AWS_REGION` | `us-east-1` | no | S3 region |
+| `HIST_AWS_KEY` / `HIST_AWS_SECRET` | — | yes | Read-only key of IAM user `svc-historian-gateway`; source of truth Secrets Manager `packiot/staging/historian-gateway-s3`, rotated with `scripts/rotate-historian-s3-key.sh`. Instance-role credentials do not work (IMDSv2 through the Docker hop) |
+| `HIST_GW_SVC_PASSWORD` | `""` | no | Creates `historian_svc`; unset skips it. deploy-staging.yml mirrors it into the main `.env` from Secrets Manager `packiot/staging/historian-svc` for read-api |
+| `CLOUDBEAVER_HISTRO_PASSWORD` | `""` | no | Creates the read-only browser role; unset skips it |
+| `HISTGW_RO_PASS` | `""` | no | Password of the remote `histgw_ro` role (`db/migrations/t282-historian-gateway-glue/`); unset falls back to the FDW superuser with a warning |
 
-The daily rollup is written by `scripts/historian-ev-daily-rollup.sh` (nightly, from the
-append job, current + previous month; `FULL=1` rebuilds everything and is required once on a
-new bucket).
+A running gateway is brought to the init's role state with `apply-hardening.sh`
+(`HIST_GW_SVC_PASSWORD=… services/historian-gateway/apply-hardening.sh`; may restart the container).
 
-**3. Cold increments are spike-guarded.** `cold.equipment_values` and the daily rollup NULL
-an increment that is physically impossible: negative; > 10,000 and at least half the
-lifetime totalizer (legacy stored the totalizer in the increment column: POLYTYPE net
-2022-10..2023-09, ~1e12/month); > 10,000 and not backed by totalizer movement since the
-previous row (the 2024-07-22 replay, +74,367 every ~40 s with a frozen totalizer); or
-> 1,000 at over 5,000 units/min when the machine has ≥ 3 such rows in the same hour (a
-sustained burst; a lone fast row is a reconnect catch-up and is kept). Measured on 10 CPACK
-months: 2022-05, 2025-03, 2025-09, 2026-05 are byte-identical; 2024-07-22 drops from 79 M to
-4.4 M gross (a normal day is ~3.8 M). The guard uses window functions partitioned by
-enterprise/year/month, so the year/month filter still prunes (~20 s per month scanned).
-2022-08 is a known gap: legacy itself has NULL gross/net/speed for the whole month.
+## Run locally
 
-**4. Memory.** The container is capped at 2560 MB and DuckDB at 1024 MB / 2 threads per
-backend (`command:` in `compose.historian-gateway.yml`; `-c` settings override both config
-files). pg_duckdb's defaults (4 GB per backend, one thread per core) let a few wide cold
-scans ask for more than the whole shared app host.
+No dev slice and no tests in this directory. The nearest check is the integrity monitor
+(`scripts/historian-integrity-monitor.sh`, `scripts/historian-cutover-coverage-check.sh`,
+`scripts/historian-ee-coverage-check.sh`) run against staging.
 
-## Deploy
+## Operating it
 
-On the staging app host the gateway's variables live in `/opt/packiot/.env.historian-gateway`
-(`HIST_GW_PASSWORD`, `DB_HOST/PORT/NAME/USER/DB_PASSWORD`, `HISTORIAN_BUCKET`,
-`HIST_AWS_KEY`, `HIST_AWS_SECRET`, `AWS_REGION`), NOT the main `.env`, and the deploy
-workflow does not manage this container. Recreate it by hand:
+- **Deploy (staging app host):** the deploy workflow does not touch this container. Recreate it by hand:
+  ```sh
+  cd /opt/packiot && docker compose -p packiot --env-file .env.historian-gateway \
+    -f compose.historian-gateway.yml up -d historian-gateway
+  ```
+  Init SQL runs only on an empty volume; to change objects on a running gateway, apply the SQL by hand.
+- **Daily pipeline** (`scripts/install-historian-pipeline.sh` installs it; units in `systemd/`):
+  `historian-staging-append.timer` (02:30 UTC) runs `scripts/historian-staging-run-append.sh`: copy
+  legacy equipment values, production orders and shift OEE to Parquet, stamp watermarks, then run `refresh-equipment_values-cutover.sql`,
+  `refresh-ee-cutover.sql` and `refresh-po-cutover.sql`; `scripts/historian-ev-daily-rollup.sh` writes
+  the daily rollup. `historian-integrity-monitor.timer` (04:00 UTC) checks the result.
+- **Monitoring:** Prometheus job `blackbox-historian` (TCP probe `hist-gateway:5432`), alert
+  `HistorianGatewayDown` (5 min); backup alerts for `db="packiot_historian"` and `historian_parquet`
+  in `monitoring/prometheus/rules.yml`; the probe feeds the "Synthetic probes OK" stat in `grafana/dashboards/audience/02-platform-sre.json`.
+- **Rules that keep it correct and fast:**
+  1. Re-run the cutover refresh after every archive append or backfill, as a **top-level** statement:
+     pg_duckdb cannot scan Parquet inside a function. A stale boundary double-counts.
+  2. Put the tenant in the query as a literal (`id_enterprise = 3`). DuckDB has no session context, so
+     GUC-based RLS (`current_setting`) does not work on the cold side.
+  3. Add a `year`/`month` predicate: DuckDB prunes only on partition columns, not on `ts_value`
+     (measured 59 files / 171 s vs 1 file / 0.6 s for one day).
+  4. Never bound a `live.*` query with `now()`: postgres_fdw does not ship stable functions, so the
+     whole remote table is pulled (173 s vs 59 ms). Use literal timestamps; check `Remote SQL:` in
+     `EXPLAIN (VERBOSE)`.
+  5. Long windows read the daily rollup (`cold.equipment_values_daily` before
+     `ev_daily_watermark.covered_until`, `live.equipment_values_1hour` after), never per-second rows.
+  6. Use the simple query protocol for anything touching `cold.*` (pg_duckdb does not apply the S3
+     secret on the prepared-statement path).
+- **Failure modes:** DuckDB "Out of Memory … failed to offload data block" on wide cold scans (the
+  2026-09-29 refresh failure: now reads Parquet footers instead); a missing `promoted_enterprise` row →
+  tenant sees no cold history; read-api `/v1/historian/*` answers 503 when `HIST_GW_PASSWORD` is unset
+  or the gateway is down.
 
-```
-cd /opt/packiot && docker compose -p packiot --env-file .env.historian-gateway -f compose.historian-gateway.yml up -d historian-gateway
-```
+## Code layout
 
-Register in Superset as database `historian_union`
-(`postgresql://postgres:<HIST_GW_PASSWORD>@hist-gateway:5432/postgres`), then
-build datasets on `ev_all` with per-tenant RLS.
+| Path | What |
+|---|---|
+| `docker-entrypoint-initdb.d/10-historian-gateway.sh` | first-boot init: extensions, FDW server and foreign tables, S3 secret, cold views, boundaries, unions, roles |
+| `apply-hardening.sh` | bring a running gateway to the `historian_svc` / `historian_readers` role state |
+| `refresh-equipment_values-cutover.sql`, `refresh-ee-cutover.sql`, `refresh-po-cutover.sql` | recompute the per-enterprise boundaries (run after every append) |
+| `../../compose.historian-gateway.yml` | the container definition |
+| `../../terraform/staging/historian-gateway.tf` | IAM user and read-only bucket policy |
+
+## Related docs
+
+- [ADR-0036 — medallion data architecture](../../docs/adr/0036-data-architecture-medallion.md)
+- [ADR-0041 — GCP exit and lakehouse](../../docs/adr/0041-gcp-exit-lakehouse.md)
+- [ADR-0060 — local development environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
+
+<!-- wiki-links: added in cross-reference pass -->

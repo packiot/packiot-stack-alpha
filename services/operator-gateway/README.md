@@ -1,352 +1,176 @@
-# operator-adapter
+# operator-gateway
 
-The **operator twin of `ingest-shim`**. It bridges Incoplast's bespoke operator
-UI (mui_* + Hasura) into staging `user_logs` so the shadow-mirror can replay
-operator actions to the `packiot_analytics` flow and the two flows become
-comparable for enterprise 4.
+HTTPS bridge that turns a client's own operator-app actions (sent by a Node-RED tee node) into
+edge-api calls, so they land in the new stack like actions from our own operator app.
 
-## Why it exists
+## What it does
 
-Incoplast's operators justify downtimes and start POs through a custom Node-RED
-+ Hasura app that talks **directly to the DB / SparkPlug** — it never calls our
-`edge-api`. Those actions therefore never write staging `user_logs`, so
-`shadow-mirror` has nothing to replay to the analytics plane.
+Some clients run their own operator UI (Incoplast: Node-RED + Hasura) that writes to their DB and
+SparkPlug directly and never calls edge-api. A tee node in that flow POSTs each action here:
+downtime justify/edit, PO start/stop/setup/replace/status/time, and event split. For every action the
+gateway checks the shared key, checks the tenant scope, resolves the SparkPlug `packml_topic` to the
+tenant's equipment (`packml_register` → `equipments` → `areas` → `sites`), maps the body to the edge-api
+DTO and calls edge-api with its own per-tenant api key. edge-api then writes the rows and its
+`user_logs` audit row. One instance serves one enterprise. It was called `operator-adapter`; the network
+alias, cert path, metric names and `cmd/operator-adapter/` still use that name.
 
-```
-Incoplast Node-RED (operator action)
-  │  tee node → HTTPS POST  (packml_topic + action fields)
-  ▼
-operator-adapter  ── resolve packml_topic → staging ids (packml_register) ──┐
-                  ── map Incoplast shape → edge-api DTO ──►  edge-api (F1)   │
-                                                                │ writes user_logs
-                                                                ▼            │
-                                                        shadow-mirror ─► packiot_analytics
-                  read-only Postgres pool (F1 `packiot`) ◄──────────────────┘
-```
+## Where it fits
 
-The adapter's job: **authenticate → scope-check → resolve packml_topic → map
-field names → inject the enterprise-4 api key → call edge-api → translate
-status.**
-
-**Topic → id resolution (new).** Incoplast's Node-RED only holds packml
-**topics** and its **own** production ids — NOT the staging (enterprise-4) ids we
-seeded (sequence-assigned, so they differ). The link between the two worlds is
-the topic. So the adapter resolves it, exactly like `oeecloud-worker` does for
-the data path: a small **read-only** Postgres pool queries `packml_register`
-(joined to `equipments → areas → sites`) to turn the topic into the staging
-`id_equipment` / `cd_machine` / `id_area` / `id_site`. The tee node therefore
-sends the **topic it has**, not ids it can't know.
-
-Resolution fails **closed**: a topic that is unknown, inactive, **cross-tenant**
-(the join is gated on `sites.id_enterprise = INCOPLAST_ENTERPRISE_ID`), or
-ambiguous (>1 active `packml_register` row) never resolves — the handler returns
-**422** rather than guessing an id.
-
-## Endpoints
-
-| Method | Path | Maps to edge-api | user_logs eventType |
-|--------|------|------------------|---------------------|
-| POST | `/operator/downtime` | `create-manual-event` (id_param 30810/30811) or `edit-manual-event` (30812/30813/30814) | `manual-event-created` / `manual-event-edited` |
-| POST | `/operator/po` | `create-and-start` | `order-created-started` |
-| POST | `/operator/po/stop` | `stop` | `order-stopped` |
-| POST | `/operator/po/setup` | `setup` (close current + optionally open next) | `order-changed` |
-| POST | `/operator/po/replace` | `replace` | `order-replaced` |
-| POST | `/operator/po/change-status` | `change-status` | `order-status-changed` |
-| POST | `/operator/po/change-time` | `change-time` | `order-time-changed` |
-| POST | `/operator/split` | `downtimes/split` (one event → re-categorised sub-intervals) | `event-splitted` |
-| GET | `/healthz` | liveness + **DB pool reachability** (`{"healthy":true,"db":true}`; 503 if the resolver's pool is down) | — |
-| GET | `/metrics` | Prometheus (`operator_adapter_requests_total{action,outcome}`) | — |
-
-The five `/operator/po/*` routes are **action-driven**, one per edge-api
-production-orders endpoint — *not* a decoder of Incoplast's raw SparkPlug
-`Parameter[30800..30803]` convention. The adapter is an anti-corruption layer
-whose stable contract is edge-api's own semantics; each client's tee node does
-the small translation from its private flow representation to these routes. That
-keeps the adapter client-agnostic (one route == one endpoint == one eventType)
-instead of coupling it to one factory's parameter encoding. Every `/operator/po/*`
-route resolves `packml_topic` → staging ids and shares the same
-auth/scope/422/503 semantics as `/operator/downtime`.
-
-### Scrap is NOT a route here (it's data-path)
-
-In the operator flow, scrap corrections are emitted as **counter metrics**
-(`Admin/ProdDefectiveCount` / `ProdConsumedCount` / `ProdProcessedCount`, plus a
-`Parameter[30850]` marker) — raw time-series, not an edge-api call. **edge-api
-has no scrap endpoint**; final good-count corrections ride *inside* the stop /
-setup bodies (`productionOrderQuantity` / `oldProductionOrderProdFinal`). So
-scrap is bridged by the **data tee** (→ `ingest-shim` → worker → `equipment_values`),
-exactly like PLC counters — never by this adapter. If you need to mirror scrap,
-tee those counter metrics through the data path, not `/operator/*`.
-
-### Auth & scope
-
-- **Inbound**: the tee node must present `X-Ingest-Key: $OPERATOR_API_KEY`
-  (constant-time compared). Missing/wrong → **401**.
-- **Scope**: the action must belong to Incoplast. Rejected (**403**) unless the
-  body's `enterprise` equals `INCOPLAST_ENTERPRISE_ID` **or** the `topic` sits
-  under `INCOPLAST_TOPIC_PREFIX`. Fails closed if neither can be confirmed.
-- **Outbound**: the adapter calls `edge-api` internally with `x-api-key:
-  $EDGE_API_KEY` (the enterprise-4 `api_key`) plus `?idEnterprise=<id>` so
-  edge-api's audit logger attributes `user_logs` to the right tenant.
-
-### Status translation
-
-| Condition | Adapter response |
-|-----------|------------------|
-| resolved + mapped + edge-api 2xx | **202 Accepted** |
-| edge-api 4xx | **passthrough** (edge status + body) |
-| edge-api 5xx | **502 Bad Gateway** |
-| edge-api unreachable | **503 Service Unavailable** |
-| `packml_topic` missing / unknown / inactive / cross-tenant / ambiguous | **422 Unprocessable Entity** (`topic … did not resolve to a staging equipment`) |
-| required **action** field unmappable | **422 Unprocessable Entity** (names the field) |
-| resolver DB/transport error | **503 Service Unavailable** (retryable — NOT a rejection) |
-
-**422, not a guess.** A wrong downtime/PO write is worse than a rejected one, so
-any topic the adapter can't confidently resolve, or any required edge-api field
-it can't fill, stops here. A resolver **DB** error is a **503** instead (the
-topic might resolve on retry), so we never poison the negative cache with a
-transient failure.
-
-## Configuration (env)
-
-| Var | Required | Default | Notes |
-|-----|----------|---------|-------|
-| `OPERATOR_API_KEY` | yes | — | shared secret the tee node presents as `X-Ingest-Key` |
-| `EDGE_API_KEY` | yes | — | the **enterprise-4 `api_key`** edge-api authenticates. **FILL AT DEPLOY.** Never logged |
-| `INCOPLAST_ENTERPRISE_ID` | yes | — | tenant scope (no hardcoded ids in code) |
-| `INCOPLAST_TOPIC_PREFIX` | no | — | e.g. `GRANADO`; second scope gate / fallback |
-| `EDGE_API_URL` | no | `http://edge-api:8080` | internal edge-api base URL |
-| `PG_SECRET_ID` | no | `packiot/staging/db` | AWS Secrets Manager id for the read-only resolver DB creds (F1 `packiot`). Secret shape `{host,port,user,password,name}` |
-| `AWS_REGION` | no | `us-east-1` | region for the Secrets Manager lookup |
-| `CREDS_SOURCE` | no | — | set to `env` (dev only) to read DB creds from `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` instead of Secrets Manager |
-| `PORT` | no | `8443` | TLS listen port |
-| `TLS_CERT_FILE` / `TLS_KEY_FILE` | yes | — | refuses to serve plaintext |
-
-The resolver's Postgres pool is **small (max 3 conns)** and **read-only** — it
-only `SELECT`s from `packml_register`/`equipments`/`areas`/`sites`. It connects
-to **F1 `packiot`** (where edge-api writes) so the ids it resolves are exactly
-the ones edge-api accepts. Use a least-privilege DB role.
-
-## Field mappings
-
-### `/operator/downtime` — Incoplast `justify event PackML` → edge-api
-
-| Incoplast field | edge-api field | Notes |
-|-----------------|----------------|-------|
-| `packml_topic` | — | **required** — the adapter resolves it → `idEquipment` + `cdMachine` |
-| _(resolved)_ `id_equipment` | `idEquipment` | filled by the adapter from `packml_topic` (`packml_register.id_equipment`) |
-| _(resolved)_ `cd_machine` | `cdMachine` | filled by the adapter from `packml_topic` (`equipments.cd_equipment`) |
-| `category` (`set_event_categoria[0]`) | `cdCategory` | **required** |
-| `category_desc` (`set_event_categoria[3]`) | `descCategory` | **required** |
-| `subcategory` (`set_event_subcategoria[0]`) | `cdSubcategory` | |
-| `subcategory_desc` (`set_event_subcategoria[1]`) | `descSubcategory` | |
-| `txt_downtime` (`set_event_text`) | `txtDowntimeNotes` | |
-| `ts_event` | `tsEvent` (create) / `start` (edit) | **required**, ISO 8601 |
-| `ts_end` | `tsEnd` (create) / `end` (edit) | **required**, ISO 8601 |
-| `id_equipment_event` (`set_event_id`) | `idEquipmentEvent` | **required on edit path** |
-| `planned_dwt` (`set_event_categoria[1]`) | `plannedDowntime` | edit path only |
-| `change_over` (`set_event_categoria[2]`) | `changeOver` | edit path only |
-| `idle` (`set_event_categoria[4]`) | `idle` | edit path only |
-| `enterprise` + `→idEnterprise=` | `idEnterprise` | injected from config, not the body |
-| `user`, `sector`, `timezone` | — | audit-only; not part of edge DTO |
-
-Routing: `id_param` 30810/30811 → **create-manual-event**; 30812/30813/30814 →
-**edit-manual-event**.
-
-### `/operator/po` — Incoplast `start new po` → edge-api `create-and-start`
-
-| Incoplast field | edge-api field | Notes |
-|-----------------|----------------|-------|
-| `packml_topic` | — | **required** — the adapter resolves it → `idEquipment` + `idArea` + `idSite` |
-| `id_order` (`msg.payload.new_po`, the client's order number — JSON string or number, ADR-0062) | `idOrder` + `orderNumber` | **required**; forwarded as a **string**, verbatim (trimmed only: `"08396260"`, `"ORD-7"`, `834.058` → `"834.058"`) |
-| _(resolved)_ `id_equipment` | `idEquipment` | filled by the adapter from `packml_topic` |
-| _(resolved)_ `id_site` | `idSite` | filled by the adapter from the topic hierarchy (`areas → sites`) |
-| _(resolved)_ `id_area` | `idArea` | filled by the adapter from the topic hierarchy (`equipments.id_area`) |
-| `production_order_quantity` (`po.production_programmed`) | `productionOrderQuantity` | **required** |
-| `timestamp` (`msg.ts`) | `timestamp` | **required**, `YYYY-MM-DD HH:mm:ss` |
-| `nm_production_order` (`po.nm_product`) | `nmProductionOrder` | optional |
-| `notes` | `txtProductionOrderNotes` | optional |
-| `id_label` | `idLabel` | optional — omitted if absent |
-| `enterprise` + `→idEnterprise=` | `idEnterprise` | injected from config |
-
-### `/operator/po/*` — PO lifecycle → edge-api production-orders
-
-Every route below resolves `packml_topic` → `idEquipment` (and `idArea`/`idSite`
-for `setup`). The tee sends the topic + the fields it owns from flow context (the
-matched `_POs` object / `msg.payload`). Required fields (fail-closed 422 if absent):
-
-| Route | edge-api DTO | Required inbound fields (beyond `packml_topic`) | Optional |
-|-------|--------------|--------------------------------------------------|----------|
-| `stop` | `StopProductionOrderDto` | `timestamp`, `stop_type` (`pause`\|`finish` or `1`\|`2`), `id_production_order`, `production_order_quantity` | — |
-| `setup` | `SetupProductionOrderDto` | `timestamp`, `should_open_new_po`, `stop_type`, `old_id_production_order`, `old_production_order_prod_final` (+ `id_order` when `should_open_new_po`+`should_create_po`; `id_production_order` when opening an existing next PO) | `production_order_quantity`, `id_label`, `nm_production_order`, `notes` |
-| `replace` | `ReplaceProductionOrderDto` | `id_production_order` (the PO to switch to) | — |
-| `change-status` | `ChangeStatusProductionOrderDto` | `id_production_order` | — |
-| `change-time` | `ChangeTimeProductionOrderDto` | `id_production_order_runtime`, `id_production_order`, `start` | `end` |
-
-`stop_type` accepts edge-api's canonical `pause`/`finish` **or** Incoplast's
-numeric convention (`1` = interrupt→`pause`, `2` = `finish`), so the tee can
-forward `msg.payload['stop_type']` as-is. `id_enterprise` and the resolved
-`idEquipment`/`idArea`/`idSite` are never trusted from the caller — the adapter
-injects config + resolver values.
-
-Incoplast node → route: `change po - open e close` maps to **setup** when it
-opens the next PO (`new_po != no_new_po`) and to **stop** when it only closes;
-`change PO PackML` (set_po_number) maps to **replace**; the `po_manual_change_*`
-and time-correction actions map to **change-status** / **change-time**.
-
-Tee example (off `change po - open e close`, close-and-open-next → **setup**):
-
-```javascript
-// Runs off the `change po - open e close` output wire.
-// stop_type comes straight from the node (1=interrupt, 2=finish).
-msg.headers = { 'X-Ingest-Key': env.get('OPERATOR_API_KEY'), 'Content-Type': 'application/json' };
-msg.method = 'POST';
-var opensNext = msg.payload['new_po'] !== 'no_new_po';
-var nextPo = (global.get('_POs') || []).find(p => p.id_order == msg.payload['new_po']) || {};
-if (opensNext) {
-    msg.url = 'https://operator-adapter:8443/operator/po/setup';
-    msg.payload = {
-        enterprise:                     4,
-        packml_topic:                   flow.get('packml_topic_' + msg.socketid),
-        timestamp:                      new Date(msg.payload['ts_po_end']).toISOString().slice(0,19).replace('T',' '),
-        should_open_new_po:             true,
-        should_create_po:               false,               // reuse the already-created next PO row
-        stop_type:                      msg.payload['stop_type'], // 1|2 → pause|finish
-        old_id_production_order:        msg.payload['current_po'],
-        old_production_order_prod_final: msg.payload['po_manual_change_real_quantity'],
-        id_production_order:            nextPo.id_production_order,
-        production_order_quantity:      nextPo.production_programmed,
-        nm_production_order:            nextPo.nm_product
-    };
-} else {
-    msg.url = 'https://operator-adapter:8443/operator/po/stop';
-    msg.payload = {
-        enterprise:                4,
-        packml_topic:              flow.get('packml_topic_' + msg.socketid),
-        timestamp:                 new Date(msg.payload['ts_po_end']).toISOString().slice(0,19).replace('T',' '),
-        stop_type:                 msg.payload['stop_type'],
-        id_production_order:       msg.payload['current_po'],
-        production_order_quantity: msg.payload['po_manual_change_real_quantity']
-    };
-}
-return msg;
+```text
+client operator app (Node-RED tee)
+   │ HTTPS POST /operator/*   X-Ingest-Key
+   ▼
+operator-gateway ── SELECT packml_register ⋈ equipments ⋈ areas ⋈ sites ──▶ analytics DB
+   │ POST /api/downtimes/* | /api/production-orders/*   x-api-key (tenant), ?idEnterprise=
+   ▼
+edge-api ──▶ analytics DB (downtimes, production orders, user_logs)
 ```
 
-`replace` / `change-status` / `change-time` follow the same shape — set `msg.url`
-to the route and `msg.payload` to the required fields from the table above.
+Scrap is not a route: scrap corrections are counter metrics and travel the data path
+(tee → ingest-shim / sparkplug-agent → decoder), like PLC counters.
 
-## What the tee sends vs. what the adapter resolves
+## Status and environments
 
-The Incoplast operator payload works in **packml_topic strings**, but edge-api
-DTOs demand **numeric staging ids** (`idEquipment`, `idSite`, `idArea`) +
-`cdMachine`. Incoplast's Node-RED does **not** know those ids — we seeded them
-into staging sequence-assigned, so they differ from Incoplast's own production
-ids. The **only** thing that links the two worlds is the **topic**.
+| Environment | Where | Image | Ports | Health |
+|---|---|---|---|---|
+| dev (ADR-0060) | `dev/services/operator-gateway.yml` · `operator-gateway`; tenant 3 + the seed's topic prefix; self-signed cert from `dev-tls` | built from `services/operator-gateway/Dockerfile` (Go 1.25 → distroless) | `127.0.0.1:8445` → 8443 (TLS) | `GET /healthz` |
+| staging | `compose.staging.yml` · `operator-gateway` (no profile), alias `operator-adapter`, IP 172.18.0.30; enterprise 4 (Incoplast), prefix `INCOPLAST` | same, built on deploy | `127.0.0.1:8445` → 8443 (host loopback only) | `GET /healthz`; healthcheck `operator-gateway --healthcheck` |
+| production | defined in `compose.production.yml` · profile `client-ingest` (tenant from `OPERATOR_ADAPTER_*` env); new-stack production is not promoted | same | `8445` → 8443 (the security group does not admit 8445) | same |
 
-So the split of responsibility is:
+No nginx vhost routes to it; the `operator.<domain>` vhosts serve the operator SPA, a different
+container.
 
-- **The tee node sends the topic + the action fields it genuinely owns.** It no
-  longer sends `id_equipment` / `id_site` / `id_area` / `cd_machine` — it can't
-  know them.
-- **The adapter resolves the ids** from `packml_topic` against `packml_register`
-  (read-only pool, F1 `packiot`), gated on `INCOPLAST_ENTERPRISE_ID`.
+## Interfaces
 
-The adapter returns **422** when:
+### HTTP
 
-- `packml_topic` is missing, or does not resolve (unknown / inactive /
-  cross-tenant / ambiguous) → `topic … did not resolve to a staging equipment`
-- a still-missing **action** field the tee owns is absent:
-  - downtime: `category`, `category_desc`, `ts_event`, `ts_end`
-    (+ `id_equipment_event` on the edit path)
-  - PO: `id_order`, `production_order_quantity`, `timestamp`
+Spec: [`docs/api/openapi/operator-gateway.openapi.json`](../../docs/api/openapi/operator-gateway.openapi.json)
+(served live at `GET /openapi.json`; portal https://api.staging.packiot.app/docs/, cs-admin SSO).
+All action routes are POST (405 otherwise) and need `X-Ingest-Key` (constant-time compare, 401).
 
-## Node-RED tee-node spec
+| Method | Path | edge-api call | `user_logs` eventType |
+|---|---|---|---|
+| POST | `/operator/downtime` | `id_param` 30810/30811 → `/api/downtimes/create-manual-event`; 30812–30814 → `/api/downtimes/edit-manual-event` | `manual-event-created` / `-edited` |
+| POST | `/operator/po` | `/api/production-orders/create-and-start` | `order-created-started` |
+| POST | `/operator/po/stop` | `/api/production-orders/stop` | `order-stopped` |
+| POST | `/operator/po/setup` | `/api/production-orders/setup` (close current, optionally open next) | `order-changed` |
+| POST | `/operator/po/replace` | `/api/production-orders/replace` | `order-replaced` |
+| POST | `/operator/po/change-status` | `/api/production-orders/change-status` | `order-status-changed` |
+| POST | `/operator/po/change-time` | `/api/production-orders/change-time` | `order-time-changed` |
+| POST | `/operator/split` | `/api/downtimes/split` | `event-splitted` |
+| GET | `/healthz` | — | `{"healthy":true,"db":true}`; 503 when the resolver pool is down |
+| GET | `/metrics` | — | Prometheus (OpenMetrics with trace exemplars) |
+| GET | `/openapi.json` | — | the spec |
 
-Add a **function node + http request node** to Incoplast's flow, wired to the
-output of `justify event PackML` and `start new po` (tee = a second wire off the
-existing node, so the original SparkPlug path is untouched).
+The PO routes are action-driven (one route = one edge-api endpoint), not a decoder of a client's
+SparkPlug `Parameter[30800..]` encoding; each tee does the small translation. The OpenAPI spec lists
+every field per route. Key rules:
 
-Function node (`tee → operator-adapter`), downtime example:
+- **The tee sends `packml_topic` plus the fields it owns.** `id_equipment`, `id_site`, `id_area` and
+  `cd_machine` always come from the resolved topic; body values are ignored.
+- **Order number (ADR-0062):** `/operator/po` `id_order` may be a JSON string or number and is forwarded
+  as a trimmed string to `idOrder` + `orderNumber` (`834.058` → `"834.058"`).
+- **`stop_type`** accepts `pause`/`finish` or the numeric `1` (= pause) / `2` (= finish).
 
-```javascript
-// Runs off the `justify event PackML` output wire.
-// The tee sends the packml_topic + the action fields — NO id_equipment /
-// cd_machine (the adapter resolves those from the topic).
-var cat = (msg.payload['set_event_categoria']    || '').split('.|:');
-var sub = (msg.payload['set_event_subcategoria'] || '').split('.|:');
-msg.headers = { 'X-Ingest-Key': env.get('OPERATOR_API_KEY'), 'Content-Type': 'application/json' };
-msg.url = 'https://operator-adapter:8443/operator/downtime';
-msg.method = 'POST';
-msg.payload = {
-    enterprise:         4,
-    packml_topic:       flow.get('packml_topic_' + msg.socketid), // the adapter resolves → staging ids
-    id_param:           msg.metrics[0].id,               // 30810..30814
-    id_equipment_event: msg.payload['set_event_id'],     // edit path only
-    category:           cat[0], category_desc: cat[3],
-    subcategory:        sub[0], subcategory_desc: sub[1],
-    planned_dwt:        cat[1] === 'true', change_over: cat[2] === 'true', idle: cat[4],
-    txt_downtime:       msg.payload['set_event_text'] || '',
-    ts_event:           msg.metrics[0].ts_event,
-    ts_end:             msg.metrics[0].ts_end
-};
-return msg;
+**Scope (403):** the body's `enterprise` must equal `INCOPLAST_ENTERPRISE_ID`, or the topic must start
+with `INCOPLAST_TOPIC_PREFIX`. The tenant is never chosen by the caller.
+
+**Resolution:** active register rows of the configured enterprise only, exactly one match. Hits are
+cached 5 min, misses 30 s (a newly registered topic can 422 for up to 30 s).
+
+| Condition | Response |
+|---|---|
+| resolved, mapped, edge-api 2xx | 202 `{"status":"accepted"}` |
+| edge-api 4xx | same status, edge-api body passed through |
+| edge-api 5xx | 502 |
+| edge-api unreachable or > 10 s | 503 |
+| topic missing / unknown / inactive / cross-tenant / ambiguous | 422 |
+| required action field missing | 422 (names the field) |
+| resolver DB error | 503 (nothing sent; safe to retry) |
+| bad JSON | 400 |
+
+**Idempotency:** none added. A 502, or a 503 caused by the 10 s timeout, can follow a write edge-api
+already committed, so creates are not safe to replay blindly.
+
+### Messaging
+
+N/A: HTTP in, HTTP out.
+
+### Database
+
+Read-only by query (the pool runs only the resolver `SELECT`; max 3 connections) against the analytics
+DB `packiot_analytics`: `packml_register`, `equipments`, `areas`, `sites`. All writes happen in edge-api.
+
+## Configuration
+
+| Name | Default | Required | Effect |
+|---|---|---|---|
+| `OPERATOR_API_KEY` | — | yes | shared key the tee sends as `X-Ingest-Key` (staging: `.env`) |
+| `EDGE_API_KEY` | — | yes | the tenant's `enterprises.api_key` sent to edge-api (staging: `.env` `OPERATOR_EDGE_API_KEY`); never logged |
+| `INCOPLAST_ENTERPRISE_ID` | — | yes (integer) | the one enterprise this instance serves |
+| `INCOPLAST_TOPIC_PREFIX` | empty | no | second scope match on the topic |
+| `EDGE_API_URL` | `http://edge-api:8080` | no | edge-api base URL |
+| `PORT` | `8443` | no | TLS listener |
+| `TLS_CERT_FILE`, `TLS_KEY_FILE` | — | yes | the process refuses to serve plaintext |
+| `AWS_REGION` | `us-east-1` | no | Secrets Manager region |
+| `PG_SECRET_ID` | `packiot/staging/db` | no | resolver DB credentials secret (`{host,port,user,password,name}`) |
+| `CREDS_SOURCE` | unset | no | `env` = read `DB_*` from env instead of Secrets Manager |
+| `DB_HOST`, `DB_PORT`, `DB_NAME` | `postgres`, `5432`, `packiot` | with `CREDS_SOURCE=env` | resolver DB location |
+| `DB_USER`, `DB_PASSWORD` | — | with `CREDS_SOURCE=env` | resolver DB login; empty fails closed |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | no | tracing to Tempo; unset = off |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | no | trace sampling ratio |
+
+Staging sets `CREDS_SOURCE=env` with the `.env` Postgres login and `DB_HOST` = the DB EC2, database
+`packiot_analytics` (direct, not pgbouncer), so `PG_SECRET_ID` is not used there. Production uses
+`PG_SECRET_ID=packiot/production/db`.
+
+## Run locally
+
+```sh
+make dev SVC="operator-gateway"          # + edge-api (submodule) and its migrations, dev-tls
+make dev-smoke SVC="operator-gateway"    # a manual downtime written through edge-api
+curl -sk https://127.0.0.1:8445/healthz
+cd services/operator-gateway && go test -race ./...
 ```
 
-PO example (off `start new po`):
+It runs in the `edge` slice of `.github/workflows/dev-slices.yml` (needs `DEV_SUBMODULES_TOKEN`) and in
+the `go-services.yml` matrix. `openapi_completeness_test.go` checks the spec covers every route.
 
-```javascript
-// The tee sends the packml_topic + the order fields — NO id_site / id_area /
-// id_equipment (the adapter resolves the hierarchy from the topic).
-msg.headers = { 'X-Ingest-Key': env.get('OPERATOR_API_KEY'), 'Content-Type': 'application/json' };
-msg.url = 'https://operator-adapter:8443/operator/po';
-msg.method = 'POST';
-var po = (global.get('_POs') || []).find(p => p.id_order == msg.payload['new_po']) || {};
-msg.payload = {
-    enterprise:                4,
-    packml_topic:              flow.get('packml_topic_' + msg.socketid), // the adapter resolves → staging ids
-    id_order:                  msg.payload['new_po'],
-    production_order_quantity: po.production_programmed,
-    nm_production_order:       po.nm_product,
-    timestamp:                 new Date(msg.ts).toISOString().slice(0,19).replace('T',' ')
-};
-return msg;
-```
+## Operating it
 
-Then an **http request** node (method: set from msg, return: parsed JSON). A 202
-means the action landed in `user_logs`. A 422 means either the `packml_topic`
-did not resolve to a staging equipment (the topic isn't in `packml_register`,
-isn't `active`, or belongs to another tenant — fix the CS-Admin registration,
-**not** the adapter) or a required **action** field was `undefined` (fix the tee
-node). A 503 means the adapter's resolver DB was briefly unreachable — retry.
+- **Deploy:** merge to `staging` → "Deploy to Staging" (`.github/workflows/deploy-staging.yml`). The TLS
+  pair lives at `/opt/packiot/operator-adapter/certs/` on the host (mounted read-only). The container
+  exits at boot if the keys, enterprise id, TLS files or the DB pool are missing.
+- **Metrics:** `operator_adapter_requests_total{action,outcome}` and the RED histogram
+  `http_request_duration_seconds`; scraped by job `operator-gateway` (`monitoring/prometheus/prometheus.yml`).
+  Dashboards: `grafana/dashboards/library/07-operator.json` ("Operator — actions & adapter") and
+  `library/12-api.json`. Traces go to Tempo when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (staging: yes).
+- **Reading a 422:** a topic that does not resolve is a registration problem (not in `packml_register`,
+  inactive, or another tenant's) — fix it in CS-Admin, not here. A named missing field is a tee bug.
+- **ADR-0061** removes `packml_topic` from the cloud; this service's topic resolution is one of the
+  remaining consumers.
 
-> Where does `packml_topic_<socketid>` come from? It's the SparkPlug topic the
-> operator's session is already bound to in the flow. If Incoplast stores it
-> under a different flow key, point the tee at that key — the value must be the
-> exact string in `packml_register.packml_topic`.
+## Code layout
 
-## Local checks
+| Path | What |
+|---|---|
+| `cmd/operator-adapter/main.go` | boot, config, pool, TLS server, `--healthcheck` (binary `operator-gateway`) |
+| `internal/adapter/server.go` | routes, auth, scope, status translation |
+| `internal/adapter/mapping.go` | downtime and PO-start body → edge-api DTO |
+| `internal/adapter/po_lifecycle.go` | stop / setup / replace / change-status / change-time |
+| `internal/adapter/split.go` | event split |
+| `internal/adapter/ordernumber.go` | ADR-0062 order-number normalisation |
+| `internal/adapter/resolver.go` | topic → equipment resolver with TTL cache |
+| `internal/adapter/edgeclient.go` | edge-api client (10 s timeout) |
+| `internal/adapter/openapi.go`, `openapi.json` | embedded spec |
+| `internal/adapter/metrics.go`, `internal/httpmetrics/` | Prometheus collectors |
+| `internal/db/`, `internal/secrets/`, `internal/tracing/` | pool, credentials, OpenTelemetry |
 
-```bash
-cd services/operator-adapter
-go build ./... && go vet ./... && go test -race ./...
-gofmt -l .   # empty = clean
-```
+## Related docs
 
-## Deploy checklist
+- [ADR-0020 Incoplast staging test tenant](../../docs/adr/0020-incoplast-staging-test-tenant.md)
+- [ADR-0061 remove PackML from the cloud](../../docs/adr/0061-remove-packml-from-the-cloud.md)
+- [ADR-0062 production-order identity](../../docs/adr/0062-production-order-identity-and-alphanumeric-numbers.md)
+- [ADR-0060 dev environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 
-1. Issue/copy a TLS cert+key to `/opt/packiot/operator-adapter/certs/` on the
-   staging host (mounted read-only at the same path).
-2. Fill secrets in the deploy env: `OPERATOR_API_KEY` (new shared secret) and
-   `EDGE_API_KEY` = the **enterprise-4 `api_key`** (`SELECT api_key FROM
-   enterprises WHERE id_enterprise = 4`).
-2b. Ensure the EC2 IAM role can read `PG_SECRET_ID` (`packiot/staging/db`) and
-   that pgbouncer is reachable on `packiot-net` — the resolver opens a read-only
-   pool at boot and the container exits if it can't connect. Grant the DB user
-   `SELECT` on `packml_register`, `equipments`, `areas`, `sites`.
-3. `docker compose -f compose.staging.yml up -d --build operator-adapter`.
-4. Verify `GET https://<host>:8445/healthz` → `{"healthy":true,"db":true}`
-   (503 if the resolver's DB pool is down).
-5. Add the tee nodes in Incoplast Node-RED (spec above); set `OPERATOR_API_KEY`
-   in that Node-RED's env.
-6. Fire one test downtime + PO; confirm a new `user_logs` row in F1 and its twin
-   in `packiot_analytics`.
+<!-- wiki-links: added in cross-reference pass -->
