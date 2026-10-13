@@ -101,4 +101,7 @@ jobs:
       - name: golden fixture tests
         env:
           DATABASE_URL: postgres://postgres:golden@localhost:5432/golden?sslmode=disable
-        run: go test -tags golden -run Golden ./internal/rollup/ ./internal/events/ ./internal/pocontrol/
+        # -run matches by test NAME: a `golden`-tagged test whose name lacks "Golden" (or a package
+        # missing from this list) compiles but never runs. BronzeRaw = internal/writers
+        # bronze_raw_golden_test.go (ADR-0036 B1 collision + immutability).
+        run: go test -tags golden -run 'Golden|BronzeRaw' ./internal/rollup/ ./internal/events/ ./internal/pocontrol/ ./internal/writers/
