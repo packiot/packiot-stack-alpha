@@ -301,9 +301,17 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 			err := pool.QueryRow(r.Context(),
 				`SELECT config FROM identity.user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
 				cid, user, screen).Scan(&cfg)
-			if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Nothing saved yet for (tenant, user, screen): the contract is 200 {}.
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{}`)
+				return
+			}
+			if err != nil {
+				// A real DB failure is NOT "no layout": answering 200 {} here made
+				// the SPA render (and then save over) an empty layout on any outage.
+				failed.Add(1)
+				http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -321,6 +329,7 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 				http.Error(w, `{"error":"store failed"}`, http.StatusInternalServerError)
 				return
 			}
+			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"ok":true}`)
 		default:
 			http.Error(w, `{"error":"GET or PUT"}`, http.StatusMethodNotAllowed)

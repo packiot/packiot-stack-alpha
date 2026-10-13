@@ -2952,7 +2952,7 @@
     },
     "/v1/screen-config": {
       "get": {
-        "description": "Returns the stored layout JSON for (tenant, user, screen) from `identity.user_screen_config`, or `{}` when none is stored. Note: any database error is also answered with 200 `{}`. A non-GET/PUT method returns 405 `{\"error\":\"GET or PUT\"}` (after the user/screen check).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "description": "Returns the stored layout JSON for (tenant, user, screen) from `identity.user_screen_config`, or `{}` when none is stored. A database error is a 500, never `{}`. A non-GET/PUT method returns 405 `{\"error\":\"GET or PUT\"}` (after the user/screen check).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
         "operationId": "get_v1_screen_config",
         "parameters": [
           {
@@ -2997,7 +2997,7 @@
                 }
               }
             },
-            "description": "The stored layout JSON exactly as saved, or `{}`."
+            "description": "The stored layout JSON exactly as saved, or `{}` when no layout is stored."
           },
           "400": {
             "content": {
@@ -3012,6 +3012,17 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The read failed (database error)."
           }
         },
         "security": [
@@ -3077,14 +3088,25 @@
         "responses": {
           "200": {
             "content": {
-              "text/plain": {
-                "example": "{\"ok\":true}",
+              "application/json": {
+                "example": {
+                  "ok": true
+                },
                 "schema": {
-                  "type": "string"
+                  "properties": {
+                    "ok": {
+                      "description": "Always `true` on success.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "type": "object"
                 }
               }
             },
-            "description": "Stored. The body `{\"ok\":true}` is written without a Content-Type, so it is sniffed as `text/plain; charset=utf-8`."
+            "description": "Stored."
           },
           "400": {
             "content": {

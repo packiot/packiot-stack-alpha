@@ -737,10 +737,11 @@ func buildOpenAPISpec() (map[string]any, error) {
 	exLayout := map[string]any{"columns": 3, "widgets": []any{map[string]any{"id": "oee-gauge", "x": 0, "y": 0, "w": 1, "h": 1}}}
 	add("/v1/screen-config", "get", tenantOp("query", "Read a saved per-user screen layout",
 		"Returns the stored layout JSON for (tenant, user, screen) from `identity.user_screen_config`, or `{}` when none is stored. "+
-			"Note: any database error is also answered with 200 `{}`. A non-GET/PUT method returns 405 `{\"error\":\"GET or PUT\"}` (after the user/screen check)."+tenantNote,
+			"A database error is a 500, never `{}`. A non-GET/PUT method returns 405 `{\"error\":\"GET or PUT\"}` (after the user/screen check)."+tenantNote,
 		userScreen, nil, map[string]any{
-			"200": jsonResp("The stored layout JSON exactly as saved, or `{}`.", map[string]any{"description": "Any JSON value the client saved."}, exLayout),
+			"200": jsonResp("The stored layout JSON exactly as saved, or `{}` when no layout is stored.", map[string]any{"description": "Any JSON value the client saved."}, exLayout),
 			"400": errResp("`user` or `screen` is missing.", `{"error":"user and screen query params required"}`),
+			"500": errResp("The read failed (database error).", `{"error":"query failed"}`),
 		}))
 	add("/v1/screen-config", "put", tenantOp("query", "Save a per-user screen layout",
 		"Upserts the request body as the layout for (tenant, user, screen) in `identity.user_screen_config` (last write wins; idempotent for the same body). "+
@@ -751,8 +752,7 @@ func buildOpenAPISpec() (map[string]any, error) {
 			"schema":  map[string]any{"description": "Any valid JSON, ≤ 64 KB. A JSON object is recommended (dashboard overrides merge only objects)."},
 			"example": exLayout}}},
 		map[string]any{
-			"200": map[string]any{"description": "Stored. The body `{\"ok\":true}` is written without a Content-Type, so it is sniffed as `text/plain; charset=utf-8`.",
-				"content": map[string]any{"text/plain": map[string]any{"schema": strSchema(), "example": `{"ok":true}`}}},
+			"200": jsonResp("Stored.", map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean", "description": "Always `true` on success."}}, "required": []string{"ok"}}, map[string]any{"ok": true}),
 			"400": errResp("`user`/`screen` missing, or the body is not valid JSON ≤ 64 KB.",
 				`{"error":"user and screen query params required"}`, `{"error":"config must be valid JSON <= 64KB"}`),
 			"500": errResp("The upsert failed.", `{"error":"store failed"}`),
