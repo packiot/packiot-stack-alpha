@@ -2,14 +2,16 @@
 title: Barcode app (barcode-scanner-v2)
 layer: 3
 owner_area: frontends
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Barcode app (barcode-scanner-v2)
 
 > **Layer 3 · Components** — the box-scanning and label-printing station app: branch model,
 > auth, the offline outbox, samples, the line drawer, how it is built and deployed, and what
 > has broken. For barcode developers and whoever deploys it.
-> Up: [Frontends](../subsystems/frontends.md)
+> Up: [Frontends](../subsystems/frontends.md) ·
+> [README](https://github.com/packiot/barcode-scanner-v2/blob/staging/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -18,7 +20,8 @@ app prints a thermal label with a **gapless, server-allocated label number** for
 production order (PO). It also issues **sample labels**, which are counted separately from
 production. It must keep scanning and printing through an internet outage, so every scan
 goes to a durable IndexedDB outbox first. The server authority is [edge-api](edge-api.md)
-(`/api/scanned-boxes`, `/api/samples`).
+(`/api/scanned-boxes`, `/api/samples`). It serves no API of its own (static SPA + nginx);
+the endpoints it calls are in the [edge-api reference](../../reference/api/edge-api.md).
 
 ## At a glance
 
@@ -27,12 +30,12 @@ goes to a durable IndexedDB outbox first. The server authority is [edge-api](edg
 | Language / framework | TypeScript, React 19, Vite, Tailwind v4, shadcn/ui, Zustand, `react-barcode` |
 | Repo | `packiot/barcode-scanner-v2` (separate repo, not a stack submodule) |
 | Integration branch | **`staging`** (created 2026-09-28; default branch is still `main`) |
-| Images | CI publishes `ghcr.io/packiot/barcode-edge:staging` and `:staging-<sha>` (from `staging`), `:main` (from `main`); linux/amd64 + arm64 |
-| Cloud instance (staging) | compose service `barcode-app`, image **`barcode-app:staging` built by hand on the app host**, host port `127.0.0.1:8092`, static IP `172.18.0.50` |
+| Images | CI `build-edge.yml` publishes `ghcr.io/packiot/barcode-edge:staging` and `:staging-<sha>` (from `staging`), `:main` and `:main-<sha>` (from `main`); linux/amd64 + arm64 |
+| Cloud instance (staging) | compose service `barcode-app`, image tag `barcode-app:staging`, host port `127.0.0.1:8092`, static IP `172.18.0.50`, 128 MiB / 0.25 CPU. `deploy-staging.yml` pulls `ghcr.io/packiot/barcode-edge:staging` and retags it when the Secrets Manager secret `packiot/staging/ghcr-read` exists; otherwise the previously built image keeps running |
 | URL | `barcode.staging.packiot.app` (oauth2 tier `csadmin`: staff-only demo/test) |
 | Tenant on staging | the sandbox twin 2000003 (its nginx injects the sandbox api-key) |
 | On-prem | `barcode-edge` service rendered into `compose.onprem-edge.yml` when the tenant's descriptor has `barcode_edge=true` |
-| Live version (2026-09-28) | `barcode-scanner-v2@a5270e7` (PR #8); rollback tag `barcode-app:staging-20260928-3eb4f0e` |
+| Version | `staging` branch head `a5270e7` (PR #8) on 2026-10-13; the running image was last recorded as that build on 2026-09-28 (rollback tag `barcode-app:staging-20260928-3eb4f0e`) |
 
 ## Inputs & outputs
 
@@ -166,18 +169,22 @@ Runtime (container env, `compose.staging.yml`):
 | Picker showed machines only (fixed #6) | no PO found | POs run on lines | picker lists lines |
 | White page on edge build (#238) | `#root` empty | Firebase initialised with undefined config | kiosk mode |
 | Three different "produced" numbers (open, 2026-09-25) | PO net production differs between `production_orders`, operator runtime and front4 | unreconciled sources | not fixed |
-| Wired to the old scan API | scans fail | the first build targeted the Phase-0 [barcode-service](barcode-service.md) `POST /v1/scans`, which never shipped to clients | the app now writes to edge-api `/api/scanned-boxes` (task #230) |
-| Image cannot be pulled on the app host | `docker pull ghcr.io/…` unauthorized | host has no GHCR login; no `read:packages` token provisioned | build on the host (below) until a read-only token is delivered via Secrets Manager |
+| Wired to the old scan API | scans fail | the first build targeted [barcode-service](barcode-service.md) `POST /v1/scans` directly | the app writes to edge-api `/api/scanned-boxes` (task #230); barcode-service stays live for direct API clients |
+| Deploy does not update the app | deploy log `SKIP: no packiot/staging/ghcr-read` (true on the 2026-10-13 deploy) | the GHCR read secret does not exist | create it (`{"username","token"}`, classic PAT with **only** `read:packages`); until then build by hand (below) |
+| Deploy warns `GHCR login/pull failed` | previous image keeps running | token lacks `read:packages`, or is fine-grained (cannot pull GHCR) | fix the token |
 
 ## Operating it
 
-**Deploy to staging today (manual):**
+**Deploy to staging.** Merge to `staging` in barcode-scanner-v2 (CI `ci.yml` runs lint,
+vitest and build; `build-edge.yml` publishes the image). The next stack deploy
+(`deploy-staging.yml`, step "Pull barcode-app from GHCR") logs in with
+`packiot/staging/ghcr-read`, pulls `barcode-edge:staging`, retags it `barcode-app:staging`
+and logs out; `up -d` recreates the container. Without that secret, deploy by hand:
 
-1. Merge to `staging` in barcode-scanner-v2 (CI `ci.yml` runs lint, vitest and build).
+1. Tag the running image first as `barcode-app:staging-<date>-<sha>` for rollback.
 2. Build `dist/` locally (`npm ci && npm run build`), copy it to the app host (SSM, verify
    sha256), and `docker build` the runtime stage of `Dockerfile.edge` (nginx 1.27-alpine +
-   `dist/` + `nginx.edge.conf.template`) as `barcode-app:staging`. Tag the previous image
-   first as `barcode-app:staging-<date>-<sha>` for rollback.
+   `dist/` + `nginx.edge.conf.template`) as `barcode-app:staging`.
 3. Recreate: `docker compose -p stack -f compose.staging.yml up -d --no-deps barcode-app`
    (use the compose files from the container's labels).
 4. Smoke: open the drawer, pick a sandbox line, scan, check the label number and the
@@ -210,5 +217,6 @@ CI: `.github/workflows/ci.yml` (PRs and pushes to `staging`/`main`);
 | `Dockerfile.edge`, `nginx.edge.conf.template` | image, key injection |
 | `.github/workflows/ci.yml`, `build-edge.yml` | CI, image publish |
 | stack `compose.staging.yml` (`barcode-app`) | cloud instance |
+| stack `.github/workflows/deploy-staging.yml` ("Pull barcode-app from GHCR") | image pull on deploy |
 | stack `edge-api/src/usecases/scanned-boxes/`, `samples/`, `onboarding/barcode-edge/` | server side |
 | stack `edge-api/src/usecases/edge-ssm/shared/onprem-compose.ts` | on-prem `barcode-edge` service render |

@@ -2,14 +2,17 @@
 title: read-api (refdata-api)
 layer: 3
 owner_area: serving
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # read-api (refdata-api)
 
 > **Layer 3 · Components** — the Go read API that replaced Hasura: the operator's `/v1/*`
 > routes, front4's named datasets over `serving.*` SQL, the historian door, external
 > contract shims. For engineers adding a dataset or debugging a slow or empty read.
-> Up: [Serving & APIs](../subsystems/serving-apis.md)
+> Up: [Serving & APIs](../subsystems/serving-apis.md) ·
+> [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/read-api/README.md) ·
+> [API reference](../../reference/api/read-api.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -26,14 +29,14 @@ business data (the only writes are per-user layout JSON).
 |---|---|
 | Language / runtime | Go, single binary `read-api` (`services/read-api/cmd/refdata-api`), distroless |
 | Container (staging) | `read-api`, network alias `refdata-api`, IP `172.18.0.26` |
-| Port | `9104` (API, `/healthz`, `/metrics`); not host-published |
-| Public route (staging) | `https://refdata.staging.packiot.app` (nginx → `172.18.0.26:9104`, no SSO gate, CORS for `https://staging.packiot.com`); operator SPAs proxy `/v1/*` to `refdata-api:9104` with an injected key |
+| Port | `9104` (API, `/healthz`, `/metrics`, `/openapi.json`); not host-published |
+| Public route (staging) | `https://refdata.staging.packiot.app` (nginx → `172.18.0.26:9104`, no SSO gate, CORS for `https://staging.packiot.com`); nginx answers `/metrics` and `/openapi.json` with **404** there. Operator SPAs proxy `/v1/*` and `/v2/*` to `refdata-api:9104` with an injected key |
 | DB | pgbouncer → `packiot_analytics` (`REFDATA_FLOW=f3`), role **`readapi_ro`** (NOSUPERUSER, NOBYPASSRLS), pool of 5, simple query protocol |
 | Historian | optional second pool (4 conns) to `hist-gateway:5432/packiot_historian` as `historian_svc` |
 | Cache | app-redis (`REDIS_URL`), fail-open |
 | Depends on | pgbouncer, analytics DB, Cognito JWKS, app-redis (soft), hist-gateway (soft) |
 | Depended on by | front4, operator app (all tenants), csadmin/customize (some reads), edge-transformer (`/internal/resolve-device`), external integrations (`/ext/*`, `/integration/*`) |
-| Production (new stack) | `compose.production.yml` service `read-api` (single DB, keys from `REFDATA_QUERY_API_KEYS`) |
+| Production (new stack) | `compose.production.yml` service `read-api` (not promoted): single DB `${POSTGRES_DB}`, keys from `.env` `REFDATA_QUERY_API_KEYS`, and it connects as `${POSTGRES_USER}`, **not** `readapi_ro`, so RLS does not co-enforce there |
 
 ## Inputs & outputs
 
@@ -45,6 +48,8 @@ business data (the only writes are per-user layout JSON).
 | `/v1/shift-hours-by-enterprise?topic=` | GET | tenant | `piot_get_shift_hours_by_enterprise_packml_topic_2` (`?enterprise=` ignored) |
 | `/v1/day-week-begin?topic=` | GET | tenant | `piot_get_day_week_begin_by_packml_topic` |
 | `/v1/operator-po-list` | GET | tenant | `v_operator_po_list_setup_4` |
+| `/v2/operator-po-list?equipment=` | GET | tenant | `serving.operator_po_list_by_equipment($2::int[])` (ADR-0061 P3) |
+| `/v2/events-timeline`, `/v2/pending-downtime`, `/v2/downtime-reasons` (`?equipment=`) | GET | tenant | `serving.*_by_equipment($2::int[])`; identity = `id_equipment`, ≤ 500 ids |
 | `/v1/operator-po-details` | GET | tenant | `v_operator_po_details_3` |
 | `/v1/operator-entities` | GET | tenant | `v_operator_entities_2` |
 | `/v1/entities-per-user-role` | GET | tenant | `v_entities_per_user_role_operator` |
@@ -58,7 +63,7 @@ business data (the only writes are per-user layout JSON).
 | `/v1/historian/downtime-series` | POST | tenant | historian gateway, daily downtime |
 | `/internal/resolve-device?device_key=[&enterprise=]` | GET | internal (`X-Internal-Key`) | `packml_register` by `device_key` |
 | `/ext/neopac/*`, `/ext/montebello/*`, `/ext/incoplast/*`, `/integration/*/:id_enterprise` | GET | external shim (own auth) | frozen customer contracts |
-| `/healthz`, `/metrics` | GET | infra (no auth) | pool ping, Prometheus |
+| `/healthz`, `/metrics`, `/openapi.json` | GET | infra (no auth) | pool ping, Prometheus, OpenAPI 3.1 document |
 
 ## Internal design
 
@@ -66,12 +71,14 @@ business data (the only writes are per-user layout JSON).
 
 | File (`cmd/refdata-api/`) | Role |
 |---|---|
-| `main.go` | Pool, cache, route registration, the 11 legacy `/v1/*` endpoints, generic JSON row encoder |
+| `main.go` | Pool, cache, the fixed-SQL operator `endpoints` table (`/v1/*` and `/v2/*`), generic JSON row encoder, `--healthcheck` / `--dump-contract` / `--dump-openapi` |
+| `routes.go` | `registerRoutes`, the **one** place every route is mounted (tests mount it to diff against the spec) |
+| `openapi.go` | Builds the OpenAPI 3.1 document from the same route tables |
 | `auth.go` | Route manifest (every route has a class), auth middleware, exemptions |
-| `auth_firebase.go`, `auth_cognito.go` | Bearer verification (Cognito only since #159), uid → tenant lookup, link-on-login |
+| `auth_cognito.go`, `auth_firebase.go` | Cognito verifier, link-on-login; `auth_firebase.go` keeps the shared Bearer resolver (`firebaseBearerAuth`, name historical) but the Firebase verifier is no longer wired (#159) |
 | `auth_operator_superadmin.go` | Super-admin cross-tenant read escalation |
 | `query.go` | `/v1/catalog`, `/v1/query`, screen/dashboard config, `runQueryJSON` (tenant-stamped tx) |
-| `datasets.go` | The named-dataset registry (~66 datasets), windows, cache TTLs |
+| `datasets.go` | The named-dataset registry (56 datasets on 2026-10-13), windows, cache TTLs |
 | `coverage.go` | Retention-aware coverage headers from `ops.retention_policy` |
 | `historian.go`, `historian_split.go` | Historian endpoints and the hot/cold split |
 | `external*.go` | Anti-corruption shims for external contracts (ADR-0031) |
@@ -93,7 +100,8 @@ exempt classes (infra, external shims, internal):
    DB `users` resolves to **`identity.users`** through the database `search_path`. Cached 5
    min. Zero rows → first tries link-on-login (bind `id_user_cognito` by verified email),
    then 401. This is how front4 authenticates. A user linked only in the edge-api-side
-   table but not here sees "Couldn't load workspace data".
+   table but not here sees "Couldn't load workspace data". Only Cognito tokens are
+   accepted; a token from any other issuer (for example an old Firebase token) is 401.
 3. **Operator super-admin escalation** (when `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED`):
    a request with the home api-key **plus** `x-operator-superadmin-token` (Cognito ID token)
    **plus** `?idEnterprise=<target>` is re-scoped to the target only if the token verifies,
@@ -135,7 +143,7 @@ the legacy **metric composer** `{"metrics": [...], "dimensions": [...], "grain":
 | Composer window | 1min ≤ 7 days, 1hour ≤ 90 days; a window before the relation's retention floor → **422** pointing at the historian |
 | Dataset windows | analytics datasets ≤ 400 days, event datasets ≤ 90 days |
 | Row cap | 10,000 per response |
-| Body | ≤ 64 KiB |
+| Body | ≤ 64 KiB (`/v1/query`, `PUT /v1/screen-config`, historian); larger → **413** `{"error":"payload too large"}` (#1699, was 400) |
 | Timeout | **40 s** for `/v1/query` (was 20 s until 2026-09-21), 15 s legacy routes, 10 s dashboard-config, 60 s historian |
 
 Datasets are `$1`-first SQL over `serving.*` functions and views (e.g.
@@ -147,6 +155,23 @@ lists them. Every dataset is checked by tests to bind the tenant as `$1`.
 Responses of windowed datasets carry `X-Data-Hot-Floor` (earliest instant the hot store can
 fully answer, from `ops.retention_policy`) and `X-Data-Truncated: true` when the requested
 window starts earlier.
+
+### `/v1/screen-config`
+
+Per-user layout JSON in `identity.user_screen_config`, keyed `(id_enterprise, id_user,
+screen)` with the enterprise from the credential. `GET` with nothing saved → `200 {}`; a
+**DB error → 500** `{"error":"query failed"}` (#1696; it used to answer `200 {}`, so the SPA
+rendered, then saved over, an empty layout during any outage). `PUT` takes valid JSON ≤ 64 KiB.
+
+### OpenAPI
+
+`GET /openapi.json` serves an OpenAPI 3.1 document built once at boot from the same route
+tables `registerRoutes` mounts (`openapi.go`); `refdata-api --dump-openapi` prints the same
+bytes. `make openapi` writes it to `docs/api/openapi/read-api.openapi.json`, which the wiki
+renders as the [read-api reference](../../reference/api/read-api.md) and the staging API
+portal (`api.staging.packiot.app/docs/`) shows. `openapi_test.go` fails when a mounted route
+has no spec entry or the reverse; `openapi_completeness_test.go` enforces ids, summaries,
+examples and descriptions.
 
 ### Cache-aside (ADR-0035)
 
@@ -162,6 +187,7 @@ never the body). TTL per dataset group:
 | `mission-control`, `overview-detail`, `events-timeline`, `machine-speed`, `production-orders` | 20 s |
 | `oee`, `downtimes-analytics`, `single-period`, `total-production`, `production-flow`, `home` | 30 s |
 | `downtimes-events`, `downtimes-events-legacy` (override) | 120 s |
+| `sap-report` (override) | 60 s |
 | anything else | 20 s |
 
 Redis down or `REDIS_CACHE_ENABLED=false` → every read goes to the DB. Errors are never
@@ -195,10 +221,9 @@ See [Historian gateway](historian-gateway.md).
 | `REFDATA_FLOW` | `f1` | `f3` | `f3` → `DB_NAME_F3` |
 | `DB_NAME` / `DB_NAME_F3` | `packiot` / `packiot_analytics` | `packiot` / `packiot_analytics` | |
 | `HEALTH_PORT` | `9104` | `9104` | Serving port |
-| `QUERY_API_KEYS` | empty | per-tenant staging keys (demo keys for ent 2, 3, 4, 5, 2000003) | api-key → enterprise map; production keys belong in Secrets Manager |
+| `QUERY_API_KEYS` | empty | static demo keys for ent 2, 3, 4, 5 and 2000003, **inline in `compose.staging.yml`** | api-key → enterprise map |
 | `COGNITO_AUTH_ENABLED` | on | `true` | Bearer path |
-| `COGNITO_ISSUER`, `COGNITO_CLIENT_ID`, `COGNITO_JWKS_URL` | staging pool | same | Public identifiers |
-| `FIREBASE_PROJECT_ID` | `fbpackiot` | not used | Firebase retired (#159) |
+| `COGNITO_ISSUER`, `COGNITO_CLIENT_ID`, `COGNITO_JWKS_URL` | staging pool | issuer + client id; JWKS derived | Public identifiers |
 | `OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED` | off | `true` | Read escalation |
 | `OPERATOR_SUPERADMIN_ALLOWLIST` | `dev@packiot.com` | default | |
 | `REDIS_CACHE_ENABLED`, `REDIS_URL` | `true`, app-redis | same | Cache-aside |
@@ -207,6 +232,13 @@ See [Historian gateway](historian-gateway.md).
 | `INTERNAL_API_KEY` | — | `.env` | Empty → `/internal/*` 401 |
 | `EXTERNAL_NEOPAC_CUSTOMER_ID`, `EXTERNAL_MONTEBELLO_CUSTOMER_ID`, `EXTERNAL_INCOPLAST_CUSTOMER_ID` | 0 | not in compose | Owner binding per shim; 0 → shim returns 401 for everyone |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | `http://alloy:4317` | Tracing |
+
+`FIREBASE_PROJECT_ID` is no longer read (compose.production.yml still sets it; harmless).
+
+!!! note "Pending change: read keys out of compose"
+    PR #1697 (open on 2026-10-13) moves the staging `QUERY_API_KEYS` out of
+    `compose.staging.yml` into Secrets Manager and makes the service fail closed without
+    them. Until it merges, the keys above are what staging runs.
 
 ## Data & invariants
 
@@ -225,7 +257,8 @@ See [Historian gateway](historian-gateway.md).
   `refdata_cache_requests_total`, `refdata_internal_resolve_device_total`, Go runtime.
   Prometheus job `read-api` (`read-api:9104`).
 - Traces: `otelhttp` server span per request, `otelpgx` span per query, exported to Alloy.
-- `/healthz` pings the pool: `{"healthy":true,"served":N,"failed":M}`.
+- `/healthz` pings the pool: `{"healthy":true,"served":N,"failed":M}`; the container
+  healthcheck is `read-api --healthcheck`.
 - Logs: `query failed` (path + DB error for legacy routes), `historian query failed`,
   `read-plane flow resolved`, `external shim owner unset`, `cache ping failed`.
 
@@ -245,6 +278,8 @@ See [Historian gateway](historian-gateway.md).
 | Historian 503 | `HIST_GW_PASSWORD` missing or gateway down at boot | Fix and restart read-api (the pool is built once) |
 | Historian slow / OOM on the host (2026-09-28 audit) | Mixed DuckDB+FDW plans; unbounded DuckDB memory | #1474 split + gateway memory caps |
 | Stale number after an edit | Cache TTL | Wait ≤ TTL, or flush the `refdata:ds:v1:*e<N>*` keys |
+| Saved layout wiped after a DB blip (before 2026-10-13) | screen-config GET answered `200 {}` on a DB error | #1696: now 500 |
+| Client gets 400 on a big body (before 2026-10-13) | body cap reported as a bad request | #1699: now 413 |
 | Mission Control "loading forever" (2026-09-25) | `serving.mission_control` joined a real-time cagg on a computed id (18-25 s) | Fixed in SQL (#1454); time per-line subqueries with a correlated id |
 
 ## Operating it
@@ -257,6 +292,9 @@ See [Historian gateway](historian-gateway.md).
 - Adding a dataset: add an entry in `datasets.go` with `$1` = enterprise, a `group` (for
   TTL and coverage), a window cap if windowed, then refresh the contract golden
   (`UPDATE_GOLDEN=1 go test ./cmd/refdata-api/ -run TestContractGolden`).
+- Adding a route: mount it in `routes.go`, describe it in `openapi.go`, run `make openapi`
+  and commit `docs/api/openapi/read-api.openapi.json` (CI `openapi-export.yml` fails on a
+  stale copy). See [Add an API endpoint](../../build/develop/add-an-api-endpoint.md).
 - Prod drift gate before a production flip:
   `AWS_REGION=us-east-1 bash services/read-api/scripts/refdata-contract-drift-check.sh`.
 
@@ -267,13 +305,16 @@ See [Historian gateway](historian-gateway.md).
 (`tenancy_isolation_test.go`), `TestWorkstreamADatasetsAreTenantFenced`,
 `TestWorkstreamADatasetsCompileDisjointAcrossTenants`, `TestDashboardConfigSQLFencesTenant`,
 `TestBearerAuthResolveDerivesTenantFromUID`, the super-admin `TestResolveTarget_*` tests,
-external golden tests, and `historian_split_test.go` for the split planner and merge.
+external golden tests, `historian_split_test.go` for the split planner and merge,
+`openapi_test.go` / `openapi_completeness_test.go` (route ↔ spec parity), `bodylimit_test.go`
+(413) and `screen_config_test.go`.
 
 ## Source map
 
 | Path | What's there |
 |---|---|
-| `services/read-api/cmd/refdata-api/main.go` | Boot, legacy `/v1/*` endpoints |
+| `services/read-api/cmd/refdata-api/main.go`, `routes.go` | Boot, operator endpoints table, route registration |
+| `services/read-api/cmd/refdata-api/openapi.go` | OpenAPI 3.1 document |
 | `services/read-api/cmd/refdata-api/auth*.go` | Authentication, route manifest, super-admin escalation |
 | `services/read-api/cmd/refdata-api/query.go` | `/v1/query`, catalog, config routes, tenant-stamped tx |
 | `services/read-api/cmd/refdata-api/datasets.go` | Dataset registry and cache TTLs |
@@ -283,6 +324,7 @@ external golden tests, and `historian_split_test.go` for the split planner and m
 | `services/read-api/cmd/refdata-api/coverage.go` | Coverage headers |
 | `services/read-api/internal/cache/cache.go` | Redis cache-aside |
 | `services/read-api/internal/httpmetrics/`, `internal/tracing/` | RED metrics, OTel |
-| `services/read-api/README.md` | Service notes (partly historical: Firebase text) |
+| `services/read-api/README.md` | How to run and change it |
+| `docs/api/openapi/read-api.openapi.json` | Committed spec (`make openapi`) |
 | `db/migrations/t276-readapi-ro-nobypassrls/` | `readapi_ro` role |
 | `compose.staging.yml` (`read-api`), `terraform/staging/user_data/nginx_setup.sh` (`refdata.conf`) | Deployment and routing |

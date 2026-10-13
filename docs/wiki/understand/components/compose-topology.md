@@ -2,32 +2,35 @@
 title: Compose topology
 layer: 3
 owner_area: platform
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Compose topology
 
 > **Layer 3 · Components** — every container defined in the Compose files: image, ports,
 > dependencies, healthchecks, volumes and host. For anyone deploying, debugging a container
-> or adding a service. Up: [Platform & operations](../subsystems/platform.md)
+> or adding a service. Up: [Platform & operations](../subsystems/platform.md) ·
+> [Services index](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
 The Compose files are the single definition of what runs where. `compose.staging.yml` is the
 staging app host's entire application stack; overlays and sibling files add Superset, the
 historian gateway, on-prem edge boxes and new-stack production. If a container is not in one
-of these files (or started by a host script named below), it is drift.
+of these files (or started by a host script named below), it is drift. Per-service APIs are
+in the [API reference](../../reference/api/index.md); this page is only about containers.
 
 ## At a glance
 
 | Item | Value |
 |---|---|
-| Files | `compose.staging.yml` (3,544 lines), `compose.superset.yml`, `compose.historian-gateway.yml`, `compose.production.yml`, `compose.onprem-edge.yml`, `the dev/ environment (ADR-0060; formerly compose.development.yml)` |
-| Staging project name | `stack` (passed as `-p stack` by `deploy-staging.yml`) |
+| Files | `compose.staging.yml` (3,625 lines on 2026-10-13), `compose.superset.yml`, `compose.historian-gateway.yml`, `compose.production.yml`, `compose.onprem-edge.yml`, and the `dev/` environment (ADR-0060; replaced `compose.development.yml`) |
+| Staging project name | `stack` (top-level `name: stack`, and `-p stack` in `deploy-staging.yml`) |
 | Staging network | `packiot-net` → Docker name `stack_packiot-net`, bridge `172.18.0.0/24`; dynamic IPs confined to `172.18.0.128/26` |
 | Host (staging) | all services in `compose.staging.yml` + overlay run on `packiot-staging-app`; the DB (`timescaledb`) runs on `packiot-staging-db`, outside Compose |
 | Port policy | every published port binds `127.0.0.1` except the Alloy relays (`${ALLOY_GATEWAY_BIND}`); nginx on the host terminates TLS |
 | Secrets | `${VAR}` substitution and `env_file: .env` → symlink to `/opt/packiot/.env` |
-| Validated by | `pr-validation.yml` (`docker compose config --no-interpolate -q`) and the deploy service-state gate |
+| Validated by | `pr-validation.yml` ("Validate compose files", a required check) and the deploy service-state gate |
 
 !!! warning "The file header is stale"
     The comment block at the top of `compose.staging.yml` still lists `hasura` and `oeecloud`.
@@ -70,10 +73,13 @@ deploy gate ignores them.
 | `legacy-sim` | `edge-nodered`, `simulator` | retired Node-RED path |
 | `legacy-comparator` | `mirror-worker-go` | retired prod→staging mirror |
 
-!!! warning "Unverified: which profiles are on"
-    The active list lives only in `/opt/packiot/.env` on the host. Incidents in September 2026
-    show Superset, `sparkplug-agent-shared` (Bispharma) and `sparkplug-agent-cpack` running on
-    staging. Check with `grep COMPOSE_PROFILES /opt/packiot/.env` before relying on it.
+The deploy builds one profile set for every compose call ("Resolve compose profiles" in
+`deploy-staging.yml`): `shared-tee` always, plus `COMPOSE_PROFILES` from `/opt/packiot/.env`,
+plus `alerting` when the Slack webhook file was materialized from Secrets Manager
+`packiot/staging/app` key `slack_api_url`. An explicit `--profile` would *replace* the `.env`
+list (that silently dropped `superset` from deploys between 2026-09-29 and 2026-10-06). The
+2026-10-13 deploy logged `compose profiles: shared-tee,superset`, so `alerting`,
+`cpack-tee`, `plc-sim`, `s7`, `legacy-sim` and `legacy-comparator` were off.
 
 ### Services in `compose.staging.yml`
 
@@ -88,10 +94,10 @@ ports are metrics/health ports reachable only on `stack_packiot-net`. **HC** = h
 | `rabbitmq` (`stack-rabbitmq-1`) | `rabbitmq:3.13-management` | 5672, 15672 | — | `rabbitmq-diagnostics ping` | `rabbitmq-data`, `monitoring/rabbitmq/{enabled_plugins,rabbitmq.conf}`, `/opt/packiot/rabbitmq/definitions.json` | `load_definitions` re-imports users on every boot; plugins: management, prometheus (:15692) |
 | `mosquitto` (`stack-mosquitto-1`) | `eclipse-mosquitto:2` | 1883 | — | `mosquitto_pub` ping | `configs/mosquitto/mosquitto.conf`, `mosquitto-data` | retained NBIRTHs survive restart (ADR-0011) |
 | `sparkplug-decoder` | build `services/sparkplug-decoder` | internal 9102 (metrics), 9105 (onboard API) | rabbitmq ✓healthy, mosquitto ✓healthy | `--healthcheck` | `docs/clients/cpack.yaml`, `edge_transformer_outbox` | alias `edge-transformer`; writes Postgres directly at `10.10.10.89` (not pgbouncer); SQLite outbox cap 100,000 |
-| `sparkplug-agent-cpack` | build `services/sparkplug-decoder` | internal 9103 health, 9104 ingest | mosquitto ✓healthy | `sparkplug-agent --healthcheck` | `docs/clients/cpack-agent.yaml`, `edge_transformer_agent_outbox` | profile `cpack-tee`; nginx `cpack-ingest.staging:8447` → 9104; 128 MB, 0.25 CPU |
-| `sparkplug-agent-shared` | build `services/sparkplug-decoder` | internal 9103, 9104 | mosquitto ✓healthy | `sparkplug-agent --healthcheck` | `docs/clients/tenants`, `docs/clients/tenant-profiles`, `edge_transformer_agent_outbox` | profile `shared-tee`; nginx `ingest.staging:8449` → 9104; routes by envelope group_id; 192 MB |
+| `sparkplug-agent-cpack` | build `services/sparkplug-decoder` | internal 9103 health, 9104 ingest | mosquitto ✓healthy | `sparkplug-agent --healthcheck` | `docs/clients/cpack-agent.yaml`, `edge_transformer_agent_outbox` | profile `cpack-tee` (off); no longer the `cpack-ingest` target; 128 MB, 0.25 CPU |
+| `sparkplug-agent-shared` | build `services/sparkplug-decoder` | internal 9103, 9104 | mosquitto ✓healthy | `sparkplug-agent --healthcheck` | `docs/clients/tenants`, `docs/clients/tenant-profiles`, `edge_transformer_agent_outbox` | profile `shared-tee` (always on); IP `.44`; nginx `ingest.staging:8449` and `cpack-ingest.staging:8447` (`/v2/tags`, `X-Ingest-Group: CPACK`) → 9104; 192 MB |
 | `ingest-shim` | build `services/ingest-shim` | 8444 → 8444; internal 9105 | rabbitmq ✓healthy | `--healthcheck` | `/opt/packiot/ingest-shim/certs` | HTTPS → RabbitMQ for Incoplast (`sparkplug.data.incoplast`) |
-| `oeecloud-fanout` | build `services/oeecloud-fanout` | internal 9102 | rabbitmq ✓healthy | `--healthcheck` | — | copies CPACK traffic to the sandbox group SBXCPACK; flag `FANOUT_CPACK_TO_SBXCPACK_ENABLED` |
+| `oeecloud-fanout` | build `services/oeecloud-fanout` | internal 9102 | rabbitmq ✓healthy | `--healthcheck` | — | copies CPACK traffic to the sandbox group SBXCPACK; flag `FANOUT_CPACK_TO_SBXCPACK_ENABLED`; 128 MB |
 | `bispharma-twin` | build `services/sparkplug-decoder` | — | mosquitto ✓healthy | none | `docs/clients/tenants`, `bispharma-twin-state` | synthetic BISPHARMASTAGING producer; off unless `BISPHARMA_TWIN_ENABLED=true` |
 | `plc-sim` | build `services/sparkplug-decoder` | — | mosquitto ✓healthy | none | — | profile `plc-sim`; IP `.200` |
 | `s7-softplc`, `s7-reader` | build `services/sparkplug-decoder` | — | reader → mosquitto ✓, softplc started | none | — | profile `s7` |
@@ -103,13 +109,13 @@ ports are metrics/health ports reachable only on `stack_packiot-net`. **HC** = h
 | `stream-engine` | build `services/stream-engine` | internal 9101 | rabbitmq ✓healthy, pgbouncer, db-migrate ✓completed | `--healthcheck` | — | alias `oeecloud-worker` (Prometheus job still uses it); DB `10.10.10.89` direct; 256 MB, 0.5 CPU |
 | `pgbouncer` (`stack-pgbouncer-1`) | `edoburu/pgbouncer:1.22.1-p0` | — (5432 on the network) | — | none | — | transaction pooling, pool 20, max clients 200, query timeout 60 s; adds a `packiot_analytics` entry at start |
 | `db-migrate` (`stack-db-migrate-1`) | build `./edge-api` | — | — | none | — | one-shot (`restart: "no"`); edge-api DB migrations against `packiot_analytics` |
-| `app-redis` | `redis:7-alpine` | — | — | `redis-cli ping` | — | 256 MB LRU cache, no persistence; db 0 = app cache, db 1 = oauth2-proxy sessions |
+| `app-redis` | `redis:7-alpine` | — | — | `redis-cli ping` | — | `--maxmemory 256mb allkeys-lru`, no persistence (`mem_limit` 320 MB); db 0 = app cache, db 1 = oauth2-proxy sessions |
 
 #### Legacy bridge
 
 | Service | Image / build | Ports | Depends on | HC | Notes |
 |---|---|---|---|---|---|
-| `legacy-replicator` | build `services/analytics-sync` (`Dockerfile.replicator`) | internal 9104 | — | `legacy-replicator --healthcheck` | legacy ent 1 → analytics ent 3; PO reconcile every 300 s |
+| `legacy-replicator` | build `services/analytics-sync` (`Dockerfile.replicator`) | internal 9104 | — | `legacy-replicator --healthcheck` | legacy ent 1 → analytics ent 3; replay + PO/base-event/manual-event reconcilers |
 | `legacy-replicator-sbx` | same | internal 9114 | — | same | legacy ent 1 → sandbox 2000003; off unless `REPLICATE_SBX_ENABLED=true` |
 | `analytics-sync` | build `services/analytics-sync` | internal 9103 | — | `analytics-sync --healthcheck` | alias `shadow-mirror`; `SHADOW_MIRROR_ENABLED=false` |
 | `mirror-worker-go` | build `services/mirror-worker-go` | internal 9102 | pgbouncer, edge-api | `--healthcheck` | profile `legacy-comparator` (retired) |
@@ -122,7 +128,7 @@ ports are metrics/health ports reachable only on `stack_packiot-net`. **HC** = h
 | `edge-session-broker` | build `services/edge-session-broker` | internal 8090 (ws), 8091 (http) | — | TCP connect 8090 | browser-native SSM sessions (ADR-0057) |
 | `read-api` | build `services/read-api` | internal 9104 | app-redis | `--healthcheck` | alias `refdata-api`; vhost `refdata.staging`; also reads the historian gateway |
 | `operator-gateway` | build `services/operator-gateway` | 8445 → 8443 | edge-api, pgbouncer | `--healthcheck` | alias `operator-adapter`; Incoplast operator adapter (TLS) |
-| `barcode-service` | build `services/barcode-service` | internal 8446 | pgbouncer | `--healthcheck` | vhost `scan.staging` (`/v1/scans`), own Cognito-JWT auth |
+| `barcode-service` | build `services/barcode-service` | internal 8446 | pgbouncer | `--healthcheck` | vhost `scan.staging` (`/v1/scans`, `/v1/scans/stream`, `/healthz`), own Cognito-JWT auth |
 | `bispharma-box-scan-mock` | `postgres:15-alpine` | — | pgbouncer | none | loops `scripts/mock-bispharma-box-scans.sql`; off unless `BISPHARMA_BOX_SCAN_MOCK_ENABLED=true` |
 
 #### Frontends (nginx-served SPAs)
@@ -134,7 +140,7 @@ ports are metrics/health ports reachable only on `stack_packiot-net`. **HC** = h
 | `operator-bispharma` | same | 8087 → 80 | same | none | Bispharma 5 |
 | `csadmin` | `./csadmin` (submodule, `Dockerfile.staging`) | 8084 → 80 | edge-api | `wget /` | own Cognito login |
 | `customize` | `./customize` (in-repo, `Dockerfile.staging`) | 8086 → 80 | edge-api | `wget /` | Customization Hub |
-| `barcode-app` | image `barcode-app:staging` (**no build stanza**) | 8092 → 80 | edge-api | `wget /` | image is built by hand on the host; a deploy does not rebuild it |
+| `barcode-app` | image `barcode-app:staging` (**no build stanza**) | 8092 → 80 | edge-api | `wget /` | the deploy pulls `ghcr.io/packiot/barcode-edge:staging` and retags it only when the `packiot/staging/ghcr-read` secret exists; otherwise the hand-built image stays |
 
 `front4` is not in any compose file; it deploys from its own repository.
 
@@ -178,7 +184,7 @@ Detail on each is in [observability.md](observability.md).
 
 Applied with `-f compose.staging.yml -f compose.superset.yml`; every service has
 `profiles: ["superset"]` so nothing starts without the profile. It joins `packiot-net` and
-uses `.42`–`.45`.
+uses `.42`, `.43`, `.45`, `.46`, `.47` (volume `superset-redis-data`).
 
 | Service | Image | Notes |
 |---|---|---|
@@ -278,7 +284,8 @@ docker compose -p stack -f compose.staging.yml -f compose.superset.yml ps -a
 | Duplicate stack / "Pool overlaps" | two sets of containers | built/started with a different project name | always `-p stack` on staging |
 | Build reused an old image | Fix "deployed" but not live | built under a different `-p` than the running stack (edge-api Stop-PO fix, 2026-09) | rebuild with `-p stack` |
 | RabbitMQ bind source became a directory | rabbitmq exit 127 after reboot | generated file lived in the CI workspace (2026-09-25) | now under `/opt/packiot/rabbitmq/` |
-| `barcode-app` not updated by deploy | old SPA served | image tag without a `build:` stanza | rebuild/tag on the host; rollback tag noted in ops notes |
+| `barcode-app` not updated by deploy | old SPA served; deploy log `SKIP: no packiot/staging/ghcr-read` | image tag without a `build:` stanza and no GHCR read secret | create the secret, or rebuild/tag on the host (see [barcode app](barcode-app.md)) |
+| Superset not managed by deploys (2026-09-29 → 10-06) | state gate red once Superset one-shots were gone | an explicit `--profile shared-tee` replaced `.env` `COMPOSE_PROFILES` | one resolved profile set via `$GITHUB_ENV` |
 
 ## Operating it
 
@@ -289,7 +296,7 @@ docker compose -p stack -f compose.staging.yml -f compose.superset.yml ps -a
 
 ## Tests
 
-- `pr-validation.yml`: `docker compose config --no-interpolate -q` on staging and development files.
+- `pr-validation.yml` ("Validate compose files", required): `docker compose -f compose.staging.yml config --no-interpolate -q` and `docker compose -f dev/compose.yml --env-file dev/.env.dev config -q`; plus the ADR-0061 `packml ratchet` job.
 - `superset-rls-isolation.yml` `validate-overlay` job: overlay is profile-gated and parses.
 - Deploy service-state gate: every expected service running/healthy, one-shots exited 0.
 
@@ -297,6 +304,7 @@ docker compose -p stack -f compose.staging.yml -f compose.superset.yml ps -a
 
 | Path | What's there |
 |---|---|
+| `services/README.md` | index of the stack's services and their READMEs |
 | `compose.staging.yml` | staging app host stack, IP registry in header comments |
 | `compose.superset.yml` | Superset overlay (profile `superset`) |
 | `compose.historian-gateway.yml` | historian gateway (`hist-gateway`) |

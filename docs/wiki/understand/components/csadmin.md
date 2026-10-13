@@ -2,7 +2,7 @@
 title: CS Admin (csadmin)
 layer: 3
 owner_area: frontends
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # CS Admin (csadmin)
 
@@ -10,7 +10,9 @@ last_verified: 2026-09-28
 > create and configure client tenants: pages, auth and tenant targeting, API calls, build
 > and deploy, and known failures. For csadmin developers and CS engineers who need to know
 > what a button really does.
-> Up: [Frontends](../subsystems/frontends.md)
+> Up: [Frontends](../subsystems/frontends.md) ·
+> [README](https://github.com/packiot/csadmin/blob/staging/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -21,7 +23,8 @@ generates and deploys the edge config and cuts the tenant over; to operate the b
 Ops); and to manage users, roles, login accounts and translations. It **does not** author
 customizations (derive rules, Node-RED flows, OEE profile): since 2026-09-25 (csadmin #110)
 those live only in the [Customization Hub](customize.md). Every action is an
-[edge-api](edge-api.md) call on the selected tenant.
+[edge-api](edge-api.md) call on the selected tenant; it serves no API itself (see the
+[edge-api reference](../../reference/api/edge-api.md)).
 
 ## At a glance
 
@@ -29,9 +32,9 @@ those live only in the [Customization Hub](customize.md). Every action is an
 |---|---|
 | Language / framework | TypeScript, React 19, Tailwind v4, shadcn/Radix, react-hook-form + Zod, Zustand, `aws-amplify` 6, axios, sonner |
 | Repo | `packiot/csadmin` (submodule `./csadmin`, branch `staging`) |
-| Container | `csadmin` (nginx :80), host port `127.0.0.1:8084`, static IP `172.18.0.40` |
+| Container | `csadmin` (nginx :80), host port `127.0.0.1:8084`, static IP `172.18.0.40`, 128 MiB / 0.25 CPU |
 | Image | built by `docker compose build` from `csadmin/Dockerfile.staging` |
-| URL | staging `csadmin.staging.packiot.app`; the new-stack production compose also runs `csadmin` |
+| URL | staging `csadmin.staging.packiot.app`; the (not promoted) new-stack production compose also defines `csadmin`, passing only Firebase build args, so it builds with the Dockerfile's Cognito defaults (the staging pool) |
 | Edge gate | `none-originverify`: CloudFront origin lock only, no oauth2 gate; the app has its own Cognito login |
 | Depends on | edge-api (`/api/*`), read-api (`/v1/*`), Cognito |
 | Sibling | Customization Hub (`customize.<env>`), linked with `?idEnterprise=` |
@@ -54,8 +57,8 @@ apply-register, validate, capture/*, readiness, cutover, reset, apply-line-meter
 onprem-offline, operator-edge, barcode-edge, mark-deployed, artifacts, simulate),
 `edge-ssm/*` (activation, status, deploy-bundle, deploy-onprem, health, logs, restart,
 session, webui, …), `edge-bundle/*`, `promote/{plan,bundle,apply}`, `teardown/*`, `users`,
-`user-roles`, `cognito-users`, `i18n/*`, `language-packs`. See
-[API endpoints](../../reference/api/index.md).
+`user-roles`, `cognito-users`, `i18n/*`, `language-packs`. See the
+[edge-api reference](../../reference/api/edge-api.md).
 
 ## Internal design
 
@@ -94,9 +97,12 @@ csadmin is cross-tenant. The Bearer token of a `cs-admin` group member plus
 
 ### Onboarding wizard
 
-Eight steps (`ONBOARDING_STEPS`): **Set up the client box**, **Review the plant**,
-**Connect the PLCs**, **Set up shifts**, **Go live (dry run)**, **Confirm counts are real**,
-**Flip it on**, **Promote to production**. The lifecycle status on the descriptor is
+Eight steps (`ONBOARDING_STEPS` in `src/lib/onboarding.ts`): **Set up the factory box**,
+**Review the plant**, **Connect the PLCs**, **Set up shifts**, **Install on the factory box**,
+**Confirm counts are real**, **Go live**, **Copy to production**. Since csadmin #118
+(ADR-0061 key-first onboarding, 2026-10-07) the build step shows a device-keys gate: "Build
+the setup" stays disabled until every machine has its permanent device key (readiness issue
+`equipment_without_device_key`). The lifecycle status on the descriptor is
 `draft → generated → deployed → captured → validated → cutover`. The step procedure is in
 [Onboarding a client](../../build/operate/onboarding-a-client.md).
 
@@ -150,10 +156,13 @@ wizard shows a disabled state), `EDGE_API_COGNITO_AUTH_ENABLED=true`,
 | Mission Control grey for new equipment | NULL thresholds | form defaulted 40/35 (inverted) | defaults 30/85 (csadmin #106) + backfill |
 | Customization lost on save (2026-09-25) | derive rules vanish after an onboarding save | onboarding save overwrote `equipment[].derived` / `customizations` | re-read the latest descriptor before saving (`withLatestCustomizations`) |
 | Wizard "disabled" | wizard shows a disabled panel | `EDGE_API_ONBOARDING_ENABLED` false | enable on edge-api |
+| "Build the setup" disabled | device-keys gate lists machines | a machine has no device key (ADR-0061) | add the keys, then build |
+| Enterprise edit wiped fields | Save after a failed prefetch sent empty values | edit form saved without loaded data | Save blocked when the prefetch fails (csadmin #120) |
 
 ## Operating it
 
-- **Deploy**: merge to csadmin `staging` (no CI, no bump workflow), then in the stack:
+- **Deploy**: merge to csadmin `staging` (its only workflow is the ADR-0061 `packml-ratchet.yml`;
+  there is no build CI and no bump workflow), then in the stack:
   `git update-index --cacheinfo 160000,<sha>,csadmin`, open a PR to `staging`, wait for
   "Validate compose files", merge. `deploy-staging.yml` rebuilds the image.
 - **Recreate only csadmin**: `docker compose -p stack -f compose.staging.yml -f compose.superset.yml up -d --build --no-deps csadmin`
@@ -172,12 +181,14 @@ wizard shows a disabled state), `EDGE_API_COGNITO_AUTH_ENABLED=true`,
 
 | Path | What's there |
 |---|---|
+| `csadmin/README.md` | How to run, build and deploy it |
 | `csadmin/Dockerfile.staging`, `csadmin/nginx.staging.conf.template` | image, same-origin proxy |
 | `csadmin/src/App.tsx`, `src/components/app-shell.tsx` | routes, nav |
 | `csadmin/src/lib/api-client.ts` | Bearer + tenant targeting |
 | `csadmin/src/api/*.ts` | one client module per edge-api resource |
 | `csadmin/src/schemas/index.ts` | form validation |
 | `csadmin/src/pages/onboarding/*`, `src/lib/onboarding.ts` | wizard |
-| `csadmin/docs/API-CONTRACT.md`, `ARCHITECTURE.md` | in-repo design notes |
+| `csadmin/docs/API-CONTRACT.md`, `ARCHITECTURE.md` | in-repo design notes (partly stale, per the README) |
+| `csadmin/src/components/onboarding/device-keys-gate.tsx` | ADR-0061 device-key gate |
 | `compose.staging.yml` (`csadmin`) | build args, ports |
 | `edge-api/src/middleware/auth.middleware.ts` | `bearer-cs` escalation |

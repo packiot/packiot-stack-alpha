@@ -2,14 +2,17 @@
 title: edge-api
 layer: 3
 owner_area: serving
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # edge-api
 
 > **Layer 3 · Components** — the NestJS write and control-plane API: operator actions (POs,
 > downtimes, scans), CS-Admin configuration and onboarding, edge box operations over AWS SSM,
 > BI token brokering. For engineers changing an endpoint or chasing a 401/403/404/400.
-> Up: [Serving & APIs](../subsystems/serving-apis.md)
+> Up: [Serving & APIs](../subsystems/serving-apis.md) ·
+> [README](https://github.com/packiot/edge-api/blob/staging/README.md) ·
+> [API reference](../../reference/api/edge-api.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -29,10 +32,10 @@ row in `user_logs`. It does not compute OEE and does not serve the dashboards' r
 | Repo path | `edge-api/` (git submodule, own repo `packiot/edge-api`, deploys via submodule bump) |
 | Container (staging) | `stack-edge-api-1`, compose service `edge-api`, IP `172.18.0.3` |
 | Build | `edge-api/Dockerfile`, target `production` |
-| Host (staging) | app host `i-06c9547a2c7091ab7` |
+| Host (staging) | app host (`packiot-staging-app`) |
 | Port | `8080`, published on `127.0.0.1:8080` only; public via nginx `api.staging.packiot.app` (`/api/*`, `/session*`) and each SPA's nginx |
 | Health | `GET /health` (outside `/api`, no auth) → `{status: ok}`; docker healthcheck every 30 s |
-| Docs | Swagger UI at `/packiot/docs` |
+| Docs | OpenAPI document at `/packiot/docs-json`, read-only Swagger UI at `/packiot/docs` (both behind the cs-admin SSO gate on `api.staging.packiot.app`); 188 operations, rendered as the [edge-api reference](../../reference/api/edge-api.md) |
 | Metrics | `GET /metrics` (OpenMetrics, `http_request_duration_seconds{method,route,status}` with exemplars) |
 | Depends on | pgbouncer → `packiot_analytics`; Cognito JWKS; AWS SSM + Cognito + Secrets Manager (instance role); `edge-session-broker`; `sparkplug-decoder` onboard server; Superset; RabbitMQ (commands, optional); GitHub API (edge bundles) |
 | Depended on by | operator app, front4, csadmin, customize, barcode app, operator-gateway, (retired) mirror-worker |
@@ -42,7 +45,7 @@ row in `user_logs`. It does not compute OEE and does not serve the dashboards' r
 
 | Kind | Object |
 |---|---|
-| HTTP in | `/api/*` (authenticated), `/session*` (own Cognito auth), `/health`, `/metrics`, `/packiot/docs`, WebSocket upgrade for box shells |
+| HTTP in | `/api/*` (authenticated), `/session*` (own Cognito auth), `/health`, `/metrics`, `/packiot/docs` + `/packiot/docs-json`, WebSocket upgrade for box shells |
 | DB writes | `core.production_orders`, `gold.production_orders_runtime`, `silver.equipment_events`, `equipment_events_man`, `bronze.box_scans`, `gold.po_box_counter`, `scanned_boxes`, `sample_boxes`, hierarchy/config tables, `identity.users`/roles, `config.production_targets`, `user_logs`, `idempotency_keys` |
 | DB reads | the same plus `enterprises` (api-key lookup), `packml_register`, live telemetry for `plc-status` |
 | Out | AWS SSM `CreateActivation`/`SendCommand`/`StartSession`; Cognito admin APIs; Superset guest-token API; Power BI; GitHub workflow dispatch; RabbitMQ command exchange; `sparkplug-decoder:9105/v1/onboard/*` |
@@ -52,12 +55,13 @@ row in `user_logs`. It does not compute OEE and does not serve the dashboards' r
 ### Module map (vertical slices)
 
 Each feature is `src/usecases/<domain>/<feature>/{controller,service,module,dto}` with a DAO
-in `src/data/DAO/<entity>/`. `src/app.module.ts` imports about 130 feature modules.
+in `src/data/DAO/<entity>/`. `src/app.module.ts` imports about 120 feature modules.
 
 | Domain (`src/usecases/…`) | Routes (prefix) | Who calls it |
 |---|---|---|
 | `session/login` | `/session`, `/session/switch`, `/session/enterprises` | operator app login and super-admin tenant switch |
 | `production-orders` | `/api/production-orders/{create,create-and-start,start,stop,setup,change-status,change-time,replace,delete,current}`, `/api/admin/production-orders/csv/{validate,import}` | operator app, barcode app (`current`), operator-gateway, ERP connector (CSV import) |
+| `out-of-service` | `/api/out-of-service` (+ `/edit`, `/delete`) | csadmin (planned not-in-use windows) |
 | `downtimes` | `/api/downtimes` (upsert base event), `/justify`, `/split`, `/split-manual-downtime`, `/create-manual-event`, `/edit-manual-event`, `/delete-manual-event`, `GET /pending`, `/justified`, `/line-member-stops` | operator app, operator-gateway |
 | `scanned-boxes`, `samples`, `labels` | `/api/scanned-boxes`, `/api/samples/*`, `/api/labels` | barcode app |
 | `enterprises`, `sites`, `areas`, `equipments`, `lines`, `entities`, `teams` | `/api/<entity>` (GET), `/api/<entity>/{create,edit,delete}` (POST), `/api/equipments/:id/{reasons,move}`, `/api/entities/tree` | csadmin, customize, front4 settings |
@@ -76,12 +80,26 @@ in `src/data/DAO/<entity>/`. `src/app.module.ts` imports about 130 feature modul
 | `promote` | `/api/promote/{plan,bundle,apply}` | staging → production config promotion (dark) |
 | `teardown` | `/api/teardown/{plan,telemetry,config,shifts,hierarchy,identity,box}` | csadmin (client removal) |
 
-The full list with methods is in [API endpoints](../../reference/api/edge-api.md).
+The full list with methods, bodies and errors is the generated
+[edge-api reference](../../reference/api/edge-api.md).
+
+### OpenAPI contract
+
+The document (tags, security schemes, servers) is built once in `src/openapi/` and shared by
+three consumers: the served `/packiot/docs(-json)`, `npm run openapi:export` (writes
+`openapi/edge-api.openapi.json`), and the completeness test `src/openapi/openapi.spec.ts`,
+which builds the real document from `AppModule` with stubbed DB adapters and fails when an
+operation lacks an id, summary, tag, security, examples or error descriptions, or when the
+committed export is stale. The stack repo's `make openapi` copies that file from the
+**pinned** submodule commit into `docs/api/openapi/edge-api.openapi.json`, which the wiki
+and the staging API portal (`/docs/`, proxied from `/packiot/docs-json`) render. Swagger UI
+runs with `supportedSubmitMethods: []`, so it never sends requests.
 
 ### Request pipeline
 
 ```text
  request ─▶ MetricsMiddleware ─▶ AuthMiddleware ─▶ RequestLoggerMiddleware   (only /api/*)
+          ─▶ OperatorWriteBlockMiddleware (staging mirror tenant; listed write routes only)
           ─▶ CsAdminRouteGuard (global) ─▶ per-route guards (CsAdminGuard, feature flags)
           ─▶ ValidationPipe (transform, whitelist) ─▶ IdempotencyInterceptor (global)
           ─▶ controller: tenant = callerEnterpriseId(res); TenantFence.assert…()
@@ -115,6 +133,19 @@ injects the tenant key instead.
   `assertProductionOrder`, `assertEquipment`, `assertEquipmentEvent` (on the analytics
   adapter, joined through `equipments`), `assertManualEvent`, role fences. Zero rows → **404**,
   not 403, so another tenant's rows do not even appear to exist.
+- **Mirror-tenant write block** (`src/shared/operator-write-block/`, edge-api #298/#299,
+  staging only). For enterprises in `OPERATOR_WRITE_BLOCKED_ENTERPRISES` (staging: `3`, which
+  the legacy replicator owns), every PO, downtime, out-of-service and shift/shift-hour write
+  route answers **403 `MIRROR_TENANT_WRITE_BLOCKED`** (pointing at the sandbox
+  `OPERATOR_WRITE_BLOCK_SANDBOX_ENTERPRISE`). Reads and other tenants are untouched; the spec
+  discovers every mutating route of those domains so a new one cannot bypass it. Unset = off.
+- **Downtime upsert fence** (edge-api #302, 2026-10-13). `POST /api/downtimes` rejects the
+  whole batch with **403** when any event's `idEquipment` is not the caller's, and the
+  insert itself re-checks the equipment's tenant. Before, events were stamped with the
+  caller's enterprise but could land on a foreign machine and surface in that tenant's
+  pending downtimes.
+- **Settings grants** (`src/shared/settings-grants/`, #296): Bearer users need the
+  per-settings-page edit grant from `user_roles.permissions` for settings mutations.
 - **`CsAdminRouteGuard`** (global) returns 403 unless `isCsAdmin` for paths under
   `/api/enterprises`, `/api/i18n/upsert`, `/api/i18n/import`, `/api/i18n/export`.
 - **`CsAdminGuard`** (per controller) on `edge-ssm`, `edge-bundle`, `cognito-users`, and via
@@ -135,16 +166,12 @@ packiot_analytics`, `POSTGRES_HOST: pgbouncer`). Code comments that say "primary
 process-wide singletons (`@Global` `DatabaseModule`). pg-promise type parsers are installed
 globally: int2/int4/int8 → JS number, `timestamptz`/`timestamp` → ISO-8601 UTC strings.
 
-Transactions come in two styles: `query(sql, params, true)` queues a statement on the
-adapter and `executeTransactions()` replays the queue in one transaction (any statement
-returning zero rows throws a plain `Error` → 500); `tx(callback)` is a real pg-promise
-transaction for data-dependent multi-step writes (used by scans and imports).
-
-!!! warning "Unverified concurrency risk"
-    The statement queue is an instance field on a singleton adapter, and DAOs `await` between
-    queuing and executing. Two concurrent requests that both use the queued style could, in
-    principle, interleave statements into one transaction. No incident is recorded; prefer
-    `tx(callback)` for new code.
+Transactions come in two styles: `createTransaction()` returns a call-owned batch whose
+`execute()` runs the queued statements in one transaction (a statement returning zero rows
+throws → 500); `tx(callback)` is a real pg-promise transaction for data-dependent multi-step
+writes (scans, imports). Until 2026-10-08 the queue lived on the singleton adapter, so
+concurrent requests could replay each other's statements (bug 202, fixed in edge-api #294);
+`query(sql, params, true)` now throws instead of queueing.
 
 ### Audit log (`src/middleware/logger.middleware.ts`)
 
@@ -157,10 +184,11 @@ nothing; logins are never logged. The `category` values (`order-started`,
 `event-justified`, `event-splitted`, …) are the same strings the legacy platform writes,
 which is what the [legacy bridge](analytics-sync.md) replays on the other side.
 
-!!! warning "Logged headers"
-    The request logger prints the full request headers and body for every `/api/*` call,
-    which includes `x-api-key` and `Authorization`. Treat edge-api container logs as
-    sensitive.
+The request logger prints method, URL, status, headers and body for every `/api/*` call,
+**redacted** since 2026-09-28 (`src/middleware/redact.ts`): credential headers
+(`authorization`, `cookie`, `x-api-key`, `x-ingest-key`, `x-operator-superadmin-token`, …),
+`?token=` and body keys that look like secrets become `[REDACTED]`. Since #294 an audit row
+whose `idEnterprise` is NaN falls back to the authenticated tenant instead of being dropped.
 
 ### Validation (`src/main.ts`)
 
@@ -178,8 +206,8 @@ Global `ValidationPipe({ transform: true, whitelist: true })`, `forbidNonWhiteli
 ### Idempotency (`src/interceptors/idempotency.interceptor.ts`)
 
 A `POST` with `Idempotency-Key` returns the stored 2xx response if the key was seen in the
-last 24 h (`idempotency_keys`); errors are not cached. Built for mirror-worker replays; SPAs
-do not send it.
+last 24 h (`idempotency_keys`); errors are not cached. Built for mirror-worker replays; the SPAs and
+operator-gateway do not send one.
 
 ### PO staleness gate
 
@@ -232,32 +260,35 @@ not listed.
 | `EDGE_API_TEARDOWN_ENABLED` | off | `true` | Teardown slice |
 | `TEARDOWN_PROTECTED_ENTERPRISES` | protected floor | default | Extra protected tenants |
 | `EDGE_API_PROMOTE_ENABLED`, `EDGE_API_PROMOTE_APPLY_ENABLED` | off | not set | Promotion slice |
-| `ONBOARD_GENERATE_URL`, `ONBOARD_SIMULATE_URL`, `ONBOARD_API_KEY` | — | decoder `:9105` | Onboarding proxy |
+| `ONBOARD_GENERATE_URL`, `ONBOARD_SIMULATE_URL`, `ONBOARD_API_KEY` | — | generate URL on decoder `:9105`, key from `.env`; simulate URL not set | Onboarding proxy |
 | `PO_STALENESS_GATE_ENABLED`, `PO_STALENESS_GATE_ENTERPRISES` | off, empty | `true`, `3,4` | PO 409 gate |
+| `OPERATOR_WRITE_BLOCKED_ENTERPRISES`, `OPERATOR_WRITE_BLOCK_SANDBOX_ENTERPRISE` | empty (off) | `3`, `2000003` | Mirror-tenant 403 write block (staging only) |
 | `AWS_REGION` | `us-east-1` | same | SSM / Cognito |
 | `SSM_HYBRID_INSTANCE_ROLE` | — (503 without) | `packiot-edge-ssm-hybrid-role` | Box activation role |
-| `SSM_SHARED_AGENT_INSTANCE_ID`, `SSM_SHARED_AGENT_DIR` | empty (503) | app host id, runner workspace | `apply-agent-config` target |
+| `SSM_SHARED_AGENT_INSTANCE_ID`, `SSM_SHARED_AGENT_DIR` | empty (503) | app host instance id, runner workspace path | `apply-agent-config` target |
 | `SSM_EDGE_INGEST_URL`, `SSM_EDGE_INGEST_KEY` | prod ingest URL, empty | staging ingest URL, `.env` | Baked into pushed reader bundles |
 | `SSM_SANDBOX_ENTERPRISE_IDS` | — | see code | Mock mutating box ops for twins |
 | other `SSM_*` | see `edge-ssm.config.ts` | defaults | Timeouts, session caps, deploy paths |
-| `EDGE_SESSION_BROKER_WS_URL` / `_HTTP_URL` / `_TOKEN` | — | broker `:8090`/`:8091`, `.env` | Box shells |
+| `EDGE_SESSION_BROKER_WS_URL` / `_HTTP_URL` / `_TOKEN` | — | broker `:8090`/`:8091`; token from `.env` with a compose fallback | Box shells |
 | `COMMANDS_ENABLED`, `COMMANDS_ALLOWED` | `false`, `po_setup,param_write` | not set in compose | Command channel (503 when off) |
 | `RABBITMQ_*`, `EDGE_API_INGEST_TOPOLOGY_PROVISION_ENABLED` | — | `.env` | Command publisher, tenant topology |
 | `SUPERSET_BASE_URL`, `SUPERSET_GUESTTOKEN_ADMIN_*`, `SUPERSET_OEE_DASHBOARD_UUID(_PT)` | — | `.env` | Guest-token minting |
 | `POWERBI_*` | — | `.env` | Power BI broker |
 | `GITHUB_DISPATCH_*`, `GITHUB_DEPLOY_WORKFLOW` | — | `.env` | Edge bundle builds |
 | `CORS_ALLOWED_ORIGINS` | built-in list (localhost, `*.packiot.com`, `front/operator/csadmin.{staging,prod}.packiot.app`) | default | Browser origins |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (off) | `http://tempo:4317` | Tracing |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | unset (off) | `http://tempo:4317`, `edge-api` | Tracing |
+| `NEW_RELIC_ENABLED` | — | `false` | Legacy APM agent off |
 | `REDIS_URL` | — | app-redis | Plumbed, not used by code |
 
 ## Data & invariants
 
 - The tenant is **always** `res.locals.callerEnterpriseId`; client-sent enterprise ids are
   selectors at most, honoured only for CS-Admin and verified super-admins.
-- Operator-plane mutations (POs, downtimes, scans, samples) and users, roles, teams,
-  equipment edit/delete and targets are fenced to the caller before they run (404 on
-  mismatch). Some control-plane writes are not yet (see
-  [review candidates](#failure-modes)).
+- Mutations are fenced to the caller before they run: the target row by `TenantFence`
+  (404 on mismatch) and every referenced id by `assertRefs` (sites, areas, shifts,
+  packml-register and equipment create/edit since the 2026-09-28 cross-tenant write fence).
+  Controllers that still declare `?idEnterprise=` keep it only for the Swagger contract and
+  read the tenant from `callerEnterpriseId`.
 - Mutations address rows by their true key **and** tenant. `id_equipment_event` is not
   unique across tenants (PK is `(id_equipment, ts_event)`); the 2026-09-21 sandbox split
   wrote into CPACK because of it (fixed by tenant-pinning, edge-api #266).
@@ -277,7 +308,7 @@ not listed.
   operator-gateway's `traceparent` continues into edge-api.
 - Logs worth grepping: `Deprecated auth: request used ?token=`, `audit row skipped`,
   `status: 4`/`status: 5` request lines, `Unauthorized!`.
-- Staging board "v2-po-staleness-gate": the 409 rate must stay 0.
+- Grafana board "PO staleness gate" (uid `v2-po-staleness-gate`): the 409 rate must stay 0; edge-api RED metrics are on "API — RED" (`v2-api`).
 
 ## Failure modes
 
@@ -291,29 +322,32 @@ not listed.
 | Cross-tenant super-admin write lands in home tenant | Super-admin token not verified (#188, fixed around 2026-09-06: an HS256 verifier was fed an RS256 Cognito token) | `x-operator-superadmin-token` must be the Cognito ID token |
 | Split wrote into another tenant (2026-09-21) | Mutation keyed by non-unique `id_equipment_event` | Tenant-pin every mutating SQL (#266) |
 | `GET /api/lines` returned other tenants' lines (until 2026-09-28) | Controller read `req.query.idEnterprise` | edge-api #272; grep new controllers for `req.query.idEnterprise` |
+| Concurrent writes replayed each other's statements (bug 202, until 2026-10-08) | Statement queue on the singleton adapter | #294 per-call `createTransaction()` |
+| Audit rows silently missing for api-key callers (bug 203) | `Number(undefined)` = NaN enterprise id failed the NOT NULL insert | #294 logger falls back to `callerEnterpriseId` |
+| 403 `MIRROR_TENANT_WRITE_BLOCKED` on staging CPACK | Enterprise 3 is mirror-owned; writes would fight the replicator (2026-10-08: test POs stole ~74k net) | Expected; test on the sandbox 2000003 |
+| Downtime upsert 403 | An event's `idEquipment` is not the caller's (#302) | Send only your own equipment |
+| Submodule bump PR never appears (from 2026-10-13) | `bump-stack-submodule.yml` fails at "Checkout parent repo": `PARENT_REPO_TOKEN` expired | Rotate the secret in the edge-api repo; until then bump the submodule by hand |
 | Box op 503 "not configured" | Missing `SSM_*` target env | Set it; the 503 is the safe failure |
 | Every AWS call AccessDenied | A static `AWS_ACCESS_KEY_ID` in `.env` overrode the instance role | Remove static keys |
 
-!!! warning "Review candidates (found while writing this page, 2026-09-28)"
-    - **Controllers that take the tenant from the request.** A code scan found non-CS
-      controllers that read `?idEnterprise=` or a body `idEnterprise` instead of
-      `callerEnterpriseId`: sites, areas, shifts, shift-hours and packml-register
-      create/edit/delete, equipment create, `GET /api/equipments/:id/reasons`,
-      `GET /api/production-targets`, downtime-reasons upload/download, PO CSV
-      validate/import, `plc-probe`. The middleware checks `?idEnterprise=` against an
-      **api-key**, but not a body value and not for a **Bearer** user. Spot check: the areas
-      DAO edits and soft-deletes `WHERE id_area = $n` with no tenant predicate. This is the
-      same class as `GET /api/lines` (#272). Marked `request ⚠` in
-      [API endpoints](../../reference/api/index.md).
-    - `GET /api/plc-status/:idEnterprise/agent-health?host=` takes the enterprise from the
-      path and makes edge-api fetch `http://<host>/healthz` and `/metrics` for any
-      authenticated caller, a server-side request to a caller-chosen host.
+The 2026-09-28 review candidates are closed: the controllers that took the tenant from
+`?idEnterprise=` or the body (sites, areas, shifts, shift-hours, packml-register, equipment
+reasons, targets, downtime-reason upload/download, PO CSV, `plc-probe`) now use
+`callerEnterpriseId` and `assertRefs`, and `GET /api/plc-status/:idEnterprise/agent-health`
+ignores a foreign path enterprise and only fetches hosts matching
+`sparkplug-agent[-name]:9103` (SSRF guard).
 
 ## Operating it
 
-- **Deploy:** merge to edge-api `staging` → its `bump-stack-submodule.yml` opens a PR on the
-  stack repo → merge → `deploy-staging.yml` rebuilds `edge-api` on the app host. See
-  [CI/CD](ci-cd.md).
+- **Deploy:** merge to edge-api `staging` → its `bump-stack-submodule.yml` (secret
+  `PARENT_REPO_TOKEN`) opens an auto-merge PR on the stack repo → merge →
+  `deploy-staging.yml` rebuilds `edge-api` on the app host. The token stopped working on
+  2026-10-13 (every bump run fails at checkout), so bumps need a manual stack PR until it is
+  rotated. See [CI/CD](ci-cd.md).
+- **Change the API contract:** edit the controller decorators/DTOs, run
+  `npm run openapi:export`, commit `openapi/edge-api.openapi.json` (the spec test fails on a
+  stale copy); after the bump, `make openapi` in the stack repo vendors it. See
+  [Add an API endpoint](../../build/develop/add-an-api-endpoint.md).
 - **Recreate one container** with the compose labels on the running container:
   `docker compose -p stack -f <config_files> up -d --no-deps edge-api`. `docker restart`
   keeps the old environment; recreate to apply `.env` changes.
@@ -321,15 +355,17 @@ not listed.
   flag above is designed to go inert.
 - **Safe to retry:** reads; POSTs with `Idempotency-Key`; scans (by `scan_uuid`). **Not
   safe blindly:** PO start/stop/setup (use the staleness gate), teardown stages.
-- Swagger at `https://api.staging.packiot.app/packiot/docs` sits behind the SSO gate
-  (only `/api/*` and `/session*` bypass it).
+- Swagger at `https://api.staging.packiot.app/packiot/docs` and the portal at `/docs/` sit
+  behind the cs-admin SSO gate (only `/api/*` and `/session*` bypass it).
 
 ## Tests
 
 - Unit and contract specs: `cd edge-api && npm test` (Jest, `*.spec.ts` next to the code).
   Notable: `src/middleware/auth.middleware.spec.ts`, `src/shared/tenant-fence/*.spec.ts`,
   `src/usecases/operator-actions-smoketest.contract.spec.ts`,
-  `src/usecases/write-plane-smoketest.contract.spec.ts`,
+  `src/usecases/write-plane-smoketest.contract.spec.ts`, `src/openapi/openapi.spec.ts`
+  (OpenAPI completeness + stale-export check),
+  `src/shared/operator-write-block/operator-write-block.middleware.spec.ts`,
   `downtimes/split/split.dto.whitelist.spec.ts`,
   `data/DAO/downtimes/downtimes-dao.tenant-pin.spec.ts`.
 - E2E: `npm run test:e2e` (`test/jest-e2e.json`).
@@ -340,7 +376,11 @@ not listed.
 
 | Path | What's there |
 |---|---|
+| `edge-api/README.md` | How to run and change it |
 | `edge-api/src/main.ts` | Bootstrap, CORS, ValidationPipe, Swagger, WebSocket shell relay, Node-RED webui proxy |
+| `edge-api/src/openapi/`, `scripts/openapi/export.ts`, `openapi/edge-api.openapi.json` | OpenAPI document, export, committed spec |
+| `edge-api/src/shared/operator-write-block/` | Staging mirror-tenant write block |
+| `edge-api/src/middleware/redact.ts` | Log redaction |
 | `edge-api/src/app.module.ts` | Module registry, global guard/interceptor, middleware binding |
 | `edge-api/src/middleware/auth.middleware.ts` | All authentication paths |
 | `edge-api/src/middleware/logger.middleware.ts`, `src/repositories/user-logs.repository.ts` | Audit trail |
@@ -355,4 +395,5 @@ not listed.
 | `edge-api/src/usecases/production-orders/shared/po-staleness-gate.ts` | PO staleness gate |
 | `edge-api/src/data/DAO/` | SQL per entity |
 | `compose.staging.yml` (`edge-api`), `compose.production.yml` (`edge-api`) | Deployment and env |
-| `terraform/staging/user_data/nginx_setup.sh` (`api.conf`) | Public routing and SSO bypass |
+| `edge-api/.github/workflows/bump-stack-submodule.yml` | Submodule bump PR on the stack repo |
+| `terraform/staging/user_data/nginx_setup.sh` (`api.conf`) | Public routing, SSO bypass, API docs portal |

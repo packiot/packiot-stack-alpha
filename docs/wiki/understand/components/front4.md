@@ -2,14 +2,16 @@
 title: front4 (product app)
 layer: 3
 owner_area: frontends
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # front4 (product app)
 
 > **Layer 3 · Components** — the customer-facing OEE web app: its pages, how it
 > authenticates and fetches data, how it is built and hosted, and what breaks. For front4
 > developers and for whoever is asked "why is the dashboard empty".
-> Up: [Frontends](../subsystems/frontends.md)
+> Up: [Frontends](../subsystems/frontends.md) ·
+> [README](https://github.com/packiot/front4/blob/staging/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -17,18 +19,21 @@ front4 shows a client's managers what their factory is doing: live line status (
 Control), OEE and its three factors, downtimes, production orders, targets, and embedded
 Superset reports. It also lets them edit a few things (justify or split downtimes, change or
 delete production orders, set production targets, manage users and roles). It owns no data;
-every read goes to [read-api](read-api.md) and every write to [edge-api](edge-api.md).
+every read goes to [read-api](read-api.md) and every write to [edge-api](edge-api.md). It
+serves no API itself; the contracts it calls are in the
+[read-api](../../reference/api/read-api.md) and [edge-api](../../reference/api/edge-api.md)
+references.
 
 ## At a glance
 
 | | |
 |---|---|
-| Language / framework | JavaScript + some TypeScript, React 17, MUI 4 and 5, Vite 3, `aws-amplify` 6, axios |
+| Language / framework | JavaScript + a TypeScript seed, React 17, MUI 5 (+ MUI X), Vite 3.2, `aws-amplify` 6, axios |
 | Repo | `packiot/front4` (submodule `./front4`; the stack pins it but **does not build it**) |
-| Integration branch | `staging` (the `./front4` checkout in the stack may lag; compare with `origin/staging`) |
-| Hosting | AWS Amplify app `d3l999ijeqpc2y` (us-east-1) |
+| Integration branch | `staging`. The stack's submodule pin lags far behind it (120 commits on 2026-10-13); always read `origin/staging` |
+| Hosting | AWS Amplify app `front4`, id `d3l999ijeqpc2y` (us-east-1) |
 | Branch → domain | `staging` → `front.staging.packiot.app` and `staging.packiot.com` (+`www`); `production` → `front.prod.packiot.app`; `master` → `go.packiot.com` (legacy, frozen); `development` → `dev.packiot.com` |
-| Auto-build | `staging` and `production`: on; `master`, `development`: off |
+| Auto-build | `staging` and `production`: on; `master`, `development`: off, released by their GitHub workflows (`master.yml`, `development.yml` → `scripts/amplify-deploy.sh`, `aws amplify start-job`) |
 | Build command | `yarn build:staging` → `vite build --mode staging` → `build/` (not `dist/`) |
 | Depends on | read-api (`refdata.staging.packiot.app`), edge-api (`api.staging.packiot.app`), Superset (`bi.staging.packiot.app`), Cognito |
 | Depended on by | client users, CS demos |
@@ -48,11 +53,12 @@ every read goes to [read-api](read-api.md) and every write to [edge-api](edge-ap
 
 | Area | Endpoints |
 |---|---|
-| Downtimes | `POST /api/downtimes/justify`, `/split`, `/split-manual-downtime`, `/edit-manual-event` |
+| Downtimes | `POST /api/downtimes/justify`, `/split`, `/split-manual-downtime`, `/edit-manual-event`; `GET /api/downtimes/line-member-stops` |
+| Downtime reasons (Settings) | `POST /api/admin/downtime-reasons/upload`, `GET /api/admin/downtime-reasons/download/:idEquipment` |
 | Production orders | `POST /api/production-orders/change-status`, `/change-time`, `/delete`, `/replace` |
 | Targets | `POST /api/production-targets`, `/api/production-targets/scrap`, `PUT /api/production-targets/custom`, `POST …/custom/delete` |
-| Users and roles | `GET /api/users`, `/api/user-roles`, `/api/pages`; `POST /api/users/{create,edit,delete}`, `/api/user-roles/{create,edit,delete}` |
-| BI | `POST /api/superset/guest-token?lang=…`; `POST /api/admin/integrations/powerbi/embed-token` (legacy PowerBI page) |
+| Users and roles | `GET /api/users`, `/api/user-roles`, `/api/pages`; `POST /api/users/{create,edit,delete,external}`, `/api/user-roles/{create,edit,delete}`. Settings mutations need the page's edit grant (edge-api #296) |
+| BI | `POST /api/superset/guest-token?lang=…`; `POST /api/admin/integrations/powerbi/{embed-token,refresh-dataset}` (legacy Power BI page) |
 | Super-admin | `GET /session/enterprises` |
 
 Every write carries `?idEnterprise=` in the URL, but edge-api ignores it for a normal user
@@ -65,7 +71,7 @@ and uses the tenant resolved from the Bearer token.
 | Path | Role |
 |---|---|
 | `src/routes.jsx` | route table (lazy pages) |
-| `src/pages/*` | `Home`, `_MissionControl`, `Downtimes`, `OEE`, `ProductionOrders`, `TotalProductionUNS`, `SinglePeriod`, `ScrapPeriod`, `MachineSpeed`, `ProductionFlow`, `DashboardRoute` (Overview v1–v6), `SupersetReport`, `ReportsPowerBi`, `Settings/*`, `Login`, `ForgotPassword`, `ResetPassword` |
+| `src/pages/*` | `Home`, `_MissionControl`, `Downtimes`, `OEE`, `ProductionOrders`, `TotalProductionUNS`, `SinglePeriod`, `ScrapPeriod`, `MachineSpeed`, `ProductionFlow`, `SapReport`, `DashboardRoute` (Overview), `SupersetReport`, `ReportsPowerBi`, `CustomPages`, `Settings/*`, `Login`, `ForgotPassword`, `ResetPassword` |
 | `src/Context/VariablesContext.jsx` | bootstrap: fans out the six refdata datasets and rebuilds the shape the app used to get from Hasura |
 | `src/Context/AuthContext.jsx`, `src/cognito.js` | Amplify sign-in, session, sign-out |
 | `src/services/authToken.js` | the single "which token do I attach" provider (Cognito ID token; Firebase fallback only when Cognito is off) |
@@ -81,7 +87,8 @@ and uses the tenant resolved from the Bearer token.
 (anonymous), then under the authenticated layout: `/home`, `/mission-control` (also
 `/MissionControl`, `/NewMissionControl`), `/downtimes`, `/OEE`, `/production-orders`,
 `/total-production`, `/single-period`, `/scrap-period`, `/machine-speed`,
-`/production-flow`, `/overview/v{1,3,4,5,6}/:lineId`, `/overview/d/:lineId/:dashboardId`,
+`/production-flow`, `/sap-report[/:lineCode]` (also `/custom/neopac/sap/:lineCode`, read-api
+dataset `sap-report`), `/overview/v{1,3,4,5,6,7}/:lineId`, `/overview/d/:lineId/:dashboardId`,
 `/report`, `/reports`, `/report/:dataset/:reportId`; and `/settings/{targets,
 users-and-permissions, production-orders, downtime-reasons}`. The menu shown is filtered by
 the `menu-per-user-role` dataset, which is built from `identity.user_roles.permissions`
@@ -127,13 +134,14 @@ Build-time only (`.env.staging`, read by Amplify's `yarn build:staging`):
 | `VITE_AUTH_COGNITO_ENABLED` | `true` | Cognito login; Firebase off |
 | `VITE_COGNITO_USER_POOL_ID`, `VITE_COGNITO_USER_POOL_CLIENT_ID` | pool `us-east-1_0T9t1sTwt`, `front4-amplify` client | public ids |
 | `VITE_COGNITO_LINK_ENABLED` | `false` | client-side link call off; linking is server-side self-heal |
-| `VITE_SUPERSET_URL`, `VITE_SUPERSET_DASHBOARD_UUID` | `https://bi.staging.packiot.app`, embed uuid | BI embed |
+| `VITE_SUPERSET_URL`, `VITE_SUPERSET_DASHBOARD_UUID` | `https://bi.staging.packiot.app`, the staging embed uuid | BI embed |
 | `VITE_POSTHOG_*` | unset | analytics wrapper is a no-op when the key is unset |
 
-!!! warning "Production build points at legacy"
-    `.env.production` sets `VITE_API_URL=https://api4.packiot.com/` and
-    `VITE_EDGE_API=https://edge.api4.packiot.com` (legacy platform). What
-    `front.prod.packiot.app` serves end-to-end was not re-verified for this page.
+!!! warning "Production build config is split"
+    The committed `.env.production` still sets `VITE_API_URL=https://api4.packiot.com/` and
+    `VITE_EDGE_API=https://edge.api4.packiot.com` (legacy platform); the README says the
+    `production` branch build adds variables set in the Amplify console, which override
+    them. What `front.prod.packiot.app` serves end-to-end was not re-verified for this page.
 
 ## Data & invariants
 
@@ -167,9 +175,11 @@ Build-time only (`.env.staging`, read by Amplify's `yarn build:staging`):
 
 ## Operating it
 
-- **Deploy staging**: merge to front4 `staging`; Amplify builds and publishes both domains.
-  The repo's `staging.yml` workflow (FTP upload) is legacy.
-- **Deploy `go.packiot.com` (legacy master)** without burning GitHub Actions minutes:
+- **Deploy staging**: merge to front4 `staging`; Amplify auto-builds and publishes both
+  domains. The repo's `staging.yml` workflow (FTP upload) is legacy. Bumping the stack's
+  `front4` submodule deploys nothing.
+- **Deploy `go.packiot.com` (legacy master)**: `master.yml` runs `scripts/amplify-deploy.sh`
+  (plus an FTP sync); by hand, without GitHub Actions minutes:
   `aws amplify start-job --app-id d3l999ijeqpc2y --branch-name master --job-type RELEASE`.
 - **Test a local build against real staging APIs**: `yarn build:staging`, then serve
   `build/` in Playwright with `page.route('https://front.staging.packiot.app/**', …)`.
@@ -180,8 +190,8 @@ Build-time only (`.env.staging`, read by Amplify's `yarn build:staging`):
 ## Tests
 
 - `yarn test` (vitest; `src/**/*.spec.jsx`, MSW handlers in `src/mocks/`), `yarn typecheck`.
-- CI: `.github/workflows/ci.yml` runs typecheck, staging build and vitest on PRs to
-  `staging` and `production`.
+- CI: `.github/workflows/ci.yml` runs typecheck, staging build, vitest and lint on PRs and
+  pushes to `staging` and `production`.
 - Cypress (`cypress/`) legacy suite; the maintained end-to-end tests are the stack's
   Playwright projects `front4` and `sandbox-front4` (`e2e/tests/front4.spec.ts`).
 
@@ -195,5 +205,6 @@ Build-time only (`.env.staging`, read by Amplify's `yarn build:staging`):
 | `src/services/refdata.js`, `src/services/edgeApi.js`, `src/services/enterpriseSwitch.js` | transports, super-admin |
 | `src/Context/VariablesContext.jsx` | bootstrap datasets |
 | `src/pages/SupersetReport/index.jsx` | Superset embed |
-| `.github/workflows/ci.yml` | CI |
+| `README.md` | How to run, build and deploy it |
+| `.github/workflows/ci.yml`, `master.yml`, `development.yml`, `scripts/amplify-deploy.sh` | CI and legacy-branch releases |
 | stack `terraform/staging/user_data/nginx_setup.sh` (refdata vhost) | CORS allowlist for front4 origins |

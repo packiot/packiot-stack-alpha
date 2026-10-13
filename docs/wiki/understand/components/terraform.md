@@ -2,20 +2,23 @@
 title: Terraform
 layer: 3
 owner_area: platform
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Terraform
 
 > **Layer 3 · Components** — the AWS infrastructure-as-code under `terraform/`: what each
 > file creates, where state lives, how to plan and apply without hurting a live environment.
-> For anyone changing AWS resources. Up: [Platform & operations](../subsystems/platform.md)
+> For anyone changing AWS resources. Up: [Platform & operations](../subsystems/platform.md) ·
+> [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/terraform/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
 Terraform is accountable for the AWS resources the stack runs on: network, EC2 hosts and their
 IAM, DNS, the CloudFront/WAF edge, Cognito, Secrets Manager entries, backup buckets and plans,
 and the historian's S3/Glue/Athena pieces. It does **not** deploy containers (that is
-[CI/CD](ci-cd.md)) and it does not manage what happens on a host after first boot.
+[CI/CD](ci-cd.md)) and it does not manage what happens on a host after first boot. It
+serves no API.
 
 ## At a glance
 
@@ -44,36 +47,44 @@ estimate. `edge_origin_verify_secret` is `sensitive`.
 ### Boot model (why hosts are "cattle")
 
 EC2 `user_data` is a tiny bootstrapper (`user_data/*_bootstrap.sh`) that downloads the real
-init script from S3 (`aws_s3_object.app_init`, `nginx_setup`, `db_init`; user_data has a
-16 KB limit). `app_init.sh` installs Docker, nginx, certbot, Go, the SSM agent and the
+init script from S3 (`aws_s3_object.app_init`, `nginx_setup`, `db_init`, each rendered with
+`templatefile()`, so `$${…}` escaping applies; user_data has a 16 KB limit). `app_init.sh` installs Docker, nginx, certbot, Go, the SSM agent and the
 GitHub runner, fetches secrets, writes `/opt/packiot/.env` (only if absent), clones the repo
 to `/opt/packiot/stack`, and runs `docker compose up`. Instances carry
 `lifecycle { ignore_changes = [ami, user_data] }`, so **editing an init script never changes a
 running host**; it only affects a replacement.
+
+**nginx is the same.** `nginx_setup.sh` (every host vhost, the oauth2 snippets, the
+`api.<domain>/docs/` API portal page, the refdata CORS allow-list) reaches the host only when
+`app_init.sh` runs it at first boot, or when someone applies the S3 object and re-runs it by
+hand over SSM. The deploy workflow never touches nginx. The procedure is
+[Change the host nginx config](../../build/operate/nginx-config-changes.md): a **targeted**
+apply of `aws_s3_object.nginx_setup` only, then a re-run on the host.
 
 ### terraform/staging, by file
 
 | File | Creates |
 |---|---|
 | `main.tf` | providers (default + `us_east_1` alias), S3 backend stub, caller/region data |
-| `variables.tf` | sizing and names: VPC `10.10.0.0/16`, public `10.10.0.0/24`, private `10.10.10.0/24`, AZ `us-east-1c`; app `t4g.large` 64 GB; DB `r7g.large` 128 GB; domain `staging.packiot.app`; `services` vhost→port map; `service_auth` tier map |
+| `variables.tf` | sizing and names: VPC `10.10.0.0/16`, public `10.10.0.0/24`, private `10.10.10.0/24`, AZ `us-east-1c`; app `t4g.large` 128 GB (grown 2026-10-06); DB `r7g.large` 128 GB; domain `staging.packiot.app`; `services` vhost→port map; `service_auth` tier map |
 | `vpc.tf` | VPC, IGW, subnets, route tables, app EIP + association |
 | `nat.tf` | `t4g.nano` NAT instance (fck-nat-style MASQUERADE) + SG |
 | `security_groups.tf` | app SG: 80, 443 (world, or CloudFront prefix list when `edge_origin_lock`), 5671 and 8447 (CPACK egress /32), 8449 (per-box /32 allowlist), 3101/3102 (from DB SG); DB SG: 5432 from app SG only |
 | `ec2.tf` | S3 init objects, IAM roles/policies/profiles for app and DB (`app_custom` statements: read/write staging secrets, read init scripts, certbot DNS challenge, CloudWatch metrics, CS-Admin Cognito user management, SSM SendCommand to the shared agent; other policies such as edge SSM control and historian write are attached separately), key pair, `aws_instance.db` (private IP `10.10.10.89`), `aws_instance.app` (tag `managed-by=packiot-edge-api`, required by edge-api's SendCommand policy), CloudWatch `app_disk_used_percent` alarm |
-| `secrets.tf` | `packiot/staging/{db,hasura,app,agent-ingest,nodered-auth,nginx-auth,authentik,github-runner,ec2-rescue}` with generated passwords; `recovery_window_in_days = 0` |
+| `secrets.tf` | `packiot/staging/{db,hasura,app,agent-ingest,nodered-auth,nginx-auth,authentik,github-runner,ec2-rescue}` with generated passwords; `recovery_window_in_days = 0`. Secrets the deploy and services read but Terraform does **not** create (made by CLI): `packiot/staging/github-pat`, `packiot/staging/historian-svc`, `packiot/staging/e2e-test-creds`, and the optional `packiot/staging/ghcr-read` |
 | `dns.tf` | child zone `staging.packiot.app` delegated from `packiot.app`; per-service A records (only when `edge_cutover=false`); `amqp`, `auth`, `bi`, `cpack-ingest`, `ingest`, `scan` records |
 | `edge.tf` | ACM wildcard cert + validation, WAFv2 web ACL (rate limit + managed groups), CloudFront distribution (CachingDisabled, AllViewer), `origin` record, ALIAS records for services, `bi`, `operator-sbx`, `operator-bispharma` (an `import {}` block adopts the hand-made `operator-sbx` record) |
 | `cognito.tf` | user pool `packiot-staging` (custom attrs `id_enterprise`, `firebase_uid`), client `front4-amplify`, hosted-UI domain, `oauth2-proxy-*` clients |
 | `cognito_migration_lambda.tf` | JIT user-migration Lambda (Firebase → Cognito) + `packiot/staging/firebase-web-api-key` secret |
+| `cognito_dev.tf` | separate dev pool `packiot-dev` + `dev-spa` client, seeded dev users, `cs-admin` group (ADR-0060 local dev) |
 | `appsync.tf` | near-empty Cognito-authed GraphQL API (`_ping` only) + dev API key |
 | `historian.tf` | bucket `packiot-staging-historian-<account>`, lifecycle, Glue DB `packiot_historian_staging` with `equipment_values` / `equipment_events` / `production_orders` tables, Athena workgroup, write policy for the app role |
 | `historian-gateway.tf` | IAM user `svc-historian-gateway` with read-only policy `historian-ro` (static key, rotated by `scripts/rotate-historian-s3-key.sh`) |
-| `backups.tf` | bucket `packiot-staging-db-backups-<account>`, lifecycle guard, writer policy |
-| `snapshots.tf` | AWS Backup vault + plan (daily 03:00 UTC, delete after 7 days) selecting the app EC2 |
+| `backups.tf` | bucket `packiot-staging-db-backups-<account>`, lifecycle guard, writer policy, and the app role's `packiot-staging-app-backup-ops` policy (historian backup paths; live) |
+| `snapshots.tf` | AWS Backup vault `packiot-staging-ec2-snapshots` + plan (daily 03:00 UTC, delete after 7 days) with two tag selections: the app EC2 **and** the DB EC2 (`packiot-staging-db`, added after the 2026-09-30 backup audit; both selections are live) |
 | `outputs.tf` | see above |
 | `scripts/` | DB backup/restore scripts and `packiot-db-backup.{service,timer}` for the DB host |
-| `user_data/` | `app_bootstrap.sh`, `app_init.sh`, `nginx_setup.sh`, `db_bootstrap.sh`, `db_init.sh` |
+| `user_data/` | `app_bootstrap.sh`, `app_init.sh` (also writes the runner's `/root/.gitconfig` PAT rewrite from `packiot/staging/github-pat`), `nginx_setup.sh`, `db_bootstrap.sh`, `db_init.sh` |
 | `EDGE-PROTECTION-RUNBOOK.md` | staged CloudFront/WAF rollout |
 
 Current edge settings in `edge.tf`: `edge_cutover = true` (since 2026-08-05),
@@ -88,15 +99,15 @@ Same shape as staging with prod sizing and `prod.packiot.app`:
 |---|---|
 | `variables.tf` | VPC `10.20.0.0/16`; app `t4g.large`; DB `r7g.large` at `10.20.10.89`; runner labels `self-hosted,production,linux,arm64` |
 | `database.tf` | dedicated DB EC2 + IAM + disk alarm + AWS Backup selection |
-| `ec2.tf`, `vpc.tf`, `nat.tf`, `security_groups.tf`, `dns.tf`, `edge.tf`, `backups.tf`, `snapshots.tf` | as staging; `edge.tf` adds a `dash.packiot.app` record |
+| `ec2.tf`, `vpc.tf`, `nat.tf`, `security_groups.tf`, `dns.tf`, `edge.tf`, `backups.tf`, `snapshots.tf` | as staging; `edge.tf` adds a `dash.packiot.app` record. Live AWS Backup selections for production: app, DB and Superset EC2 |
 | `secrets.tf` | `packiot/production/{db,hasura,app,rabbitmq-oeecloud-creds,rabbitmq-edge-transformer-creds,refdata-query-keys,nginx-auth,authentik,github-runner,ec2-rescue}` (7-day recovery). A comment documents a durability gap: the DB `host` in the secret is not reconciled if the DB instance is replaced |
 | `oidc.tf` | IAM role for GitHub OIDC, trust scoped to this repo + `production` branch/dispatch (reuses the account's existing OIDC provider) |
 | `github_runner.tf` | `packiot-production-github-runner` box + `github-runner-pat` secret |
 | `ci_runner.tf` | `packiot-ci-runner` (x64, labels `packiot-ci`) + `packiot/production/ci-runner-github-pat` |
 
 !!! warning "The `production` branch is authoritative for production Terraform"
-    On 2026-09-28, `origin/production:terraform/production/` contains `bi_edge.tf`,
-    `historian.tf` and `superset.tf`, which are **not** on `staging`/`main`; `staging` has
+    On 2026-10-13, `origin/production:terraform/production/` still contains `bi_edge.tf`,
+    `historian.tf` and `superset.tf`, which are **not** on `staging`; `staging` has
     `ci_runner.tf`, which `production` does not. Planning prod from the wrong branch shows
     destroys of live resources. Run production Terraform only from a worktree of
     `origin/production`.
@@ -170,9 +181,11 @@ terraform plan -var 'waf_managed_rules_mode=block'
 ```
 
 Rules: prefer committing config then a full apply over `-target`; use `-target` only to
-sequence inside already-committed config; codify every CLI change (or import it); growing a
-volume is done with `aws ec2 modify-volume` + on-host `growpart`/`xfs_growfs`, then the
-variable is raised to match.
+sequence inside already-committed config, or for the documented narrow changes (the nginx
+S3 object; a single IAM policy such as `aws_iam_role_policy.app_backup_ops`), always from a
+saved, reviewed plan; codify every CLI change (or import it); growing a volume is done with
+`aws ec2 modify-volume` + on-host `growpart`/`xfs_growfs`, then the variable is raised to
+match.
 
 ## Tests
 
@@ -185,7 +198,7 @@ no CI job that plans Terraform.
 |---|---|
 | `terraform/README.md` | layout overview (partly stale on production status) |
 | `terraform/staging/*.tf` | staging resources (table above) |
-| `terraform/staging/user_data/` | first-boot scripts incl. nginx vhosts |
+| `terraform/staging/user_data/` | first-boot scripts incl. nginx vhosts and the API docs portal page |
 | `terraform/staging/bootstrap/` | state-bucket creation |
 | `terraform/staging/EDGE-PROTECTION-RUNBOOK.md`, `terraform/production/EDGE-PROTECTION-RUNBOOK.md` | CloudFront/WAF rollout |
 | `terraform/production/` | new-stack production (authoritative copy on `origin/production`) |
