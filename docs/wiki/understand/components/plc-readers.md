@@ -2,14 +2,17 @@
 title: PLC readers (s7, modbus, opcua)
 layer: 3
 owner_area: edge
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # PLC readers (s7, modbus, opcua)
 
 > **Layer 3 · Components** — the three Go binaries that poll factory PLCs and emit named
 > readings for the sparkplug-agent. For engineers writing a `client.yaml` tag map or debugging
 > "the reader is up but no values arrive".
-> Up: [Edge subsystem](../subsystems/edge.md)
+> Up: [Edge subsystem](../subsystems/edge.md) · How to build/run:
+> [sparkplug-decoder README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/sparkplug-decoder/README.md)
+> · [Service catalog](../../reference/service-catalog.md). The readers serve no HTTP, so there is
+> no API reference page.
 
 ## Responsibility
 
@@ -26,6 +29,7 @@ canonical metric suffix**. The readers know nothing about SparkPlug in their def
     to the HTTP front-door (comment in `edge-api/src/usecases/edge-ssm/shared/reader-bundle.ts`).
     That reader is described in [edge-box](edge-box.md#the-thin-reader-packiot-edge-reader).
     On staging, `s7-reader` only runs under compose profile `s7` against the soft-PLC.
+    Production (`compose.production.yml`) runs no reader.
 
 ## At a glance
 
@@ -34,16 +38,18 @@ canonical metric suffix**. The readers know nothing about SparkPlug in their def
 | Language | Go 1.25, `CGO_ENABLED=0` | same | same |
 | Source | `services/sparkplug-decoder/cmd/s7-reader` | `.../cmd/modbus-reader` | `.../cmd/opcua-reader` |
 | Protocol library | `gos7` (pure Go) | `goburrow/modbus` (pure Go) | `gopcua/opcua` (pure Go) |
-| Image | `packiot-sparkplug-decoder` (main `Dockerfile`, binary `/usr/local/bin/<name>`) | same | same |
+| Image | Main `services/sparkplug-decoder/Dockerfile` (all binaries, `/usr/local/bin/<name>`); not in `Dockerfile.agent` | same | same |
 | PLC port | ISO-on-TCP :102 | :502 | `opc.tcp://host:port/path` |
 | Config file | `client.yaml` → `s7_tag_map` | `modbus_tag_map` | `opcua_tag_map` |
 | Output (default) | MQTT `edge/raw/<tenant>` | same | same |
 | Depends on | an MQTT broker (the box mosquitto) | same | same |
 | Depended on by | sparkplug-agent (single-file mode, MQTT raw subscriber) | same | same |
 
-Staging (`compose.staging.yml`, profile `s7`): `s7-reader` at 172.18.0.34, reading
-`s7-softplc:102` (172.18.0.33), `mem_limit: 64m`. No Modbus/OPC-UA reader runs on staging.
-Production (`compose.production.yml`) excludes all readers.
+Staging (`compose.staging.yml`, profile `s7`, off by default): `s7-reader` at 172.18.0.34,
+reading `s7-softplc:102` (172.18.0.33), `mem_limit: 64m`, demo tags (no `CLIENT_CONFIG`). No
+Modbus/OPC-UA reader runs on staging. Production (`compose.production.yml`) excludes all readers.
+Client boxes run them from `docs/clients/edge-deployment/compose.edge.yml` (profiles `reader`,
+`reader-s7`, `reader-modbus`, `reader-opcua`).
 
 ## Inputs & outputs
 
@@ -67,6 +73,10 @@ to `edge/raw/<tenant>` where `<tenant>` = `--tenant` or lower-cased `--group`. B
 `metric` is the **suffix**: `packml_topic + tag.metric` with the file's `canonical_prefix`
 stripped (`internal/rawemit/rawemit.go` `toOutTags`). The agent resolves by exact suffix, so
 this strip is load-bearing (ADR-0045 §C).
+
+The Go readers do **not** send the envelope's optional `link` field (`{ok, err, ms}`), so PLC
+link health (`silver.plc_link_minutes`, written by the agent) is recorded only for boxes running
+the generated Python reader. A failed read simply sends nothing for that tick.
 
 **Output (legacy, `--raw-emit=false`):** direct SparkPlug B on the same broker —
 retained NBIRTH `spBv1.0/<group>/NBIRTH/<edge-node>` (QoS 0) with the full name↔alias table
@@ -102,12 +112,15 @@ endpoint only; the endpoint must be pinned with `--endpoint` for Modbus/OPC-UA.
   next tick. There is no reader-side buffering: a skipped tick is simply not sent.
 - **Logging.** JSON (`slog`), `service=<reader>`. "raw envelope published" is logged on the
   first publish and whenever the tag count changes, not every tick.
+- **Switched-off PLCs.** A PLC connection turned off in csadmin (`plc.endpoints[].enabled:
+  false`) is dropped, with its tag-map entries, when `onboard-gen` renders `client.yaml`
+  (`clientdescriptor/plc_active.go`). The reader never sees it; regenerate and redeploy to apply.
 
 ### Value decoding
 
 | Protocol | Rule | Source |
 |---|---|---|
-| S7 | Big-endian. `int` = int16 (2 B), `dint` = int32 (4 B), `real` = IEEE-754 float32 (4 B), `bool` = bit `bit` of byte `offset`, LSB-first (bit 0 = `0x01`) | `internal/s7/decode.go` |
+| S7 | Big-endian. `int` = **signed** int16 (2 B), `dint` = int32 (4 B), `real` = IEEE-754 float32 (4 B), `bool` = bit `bit` of byte `offset`, LSB-first (bit 0 = `0x01`). An unsigned 16-bit counter declared `int` reads negative above 32,767; the cloud decoder credits that wrap for descriptor-declared `int` counters (commit `8fa83566`, 2026-09-29) | `internal/s7/decode.go` |
 | Modbus | Registers are big-endian 16-bit (fixed by the protocol). For 32-bit types, `word_swap: false` = ABCD (first register is the high word), `true` = CDAB (first register is the low word). Coils/discrete inputs are packed bits, LSB-first | `internal/modbus/decode.go` |
 | OPC-UA | Server Variant coerced to float64; `bool` → 0/1; `string` parsed as a number (for servers exposing numbers as strings); a nil / bad-status value fails the whole sample | `internal/opcua/poller.go` |
 
@@ -215,32 +228,37 @@ hand-edit it.
 - No metrics endpoint and no health port: the readers are observed through the agent
   (`raw_tag_subscriber` component on `/healthz`: "no raw tags received in …", and
   `sparkplug_agent_unmapped_tags_total`).
-- Log lines worth grepping: `endpoint compiled` (boot, one per endpoint, `tags=` count),
-  `PLC read failed — skipping tick`, `nothing to drive`, `no host for S7 endpoint`,
-  `initial OPC-UA connect failed`.
+- Log lines worth grepping: `endpoint driving` (boot, one per endpoint, with `tick_sec`),
+  `opcua endpoint compiled` (OPC-UA, with `tags` count), `raw envelope published`,
+  `PLC read failed — skipping tick`, `nothing to drive`, `no host for S7 endpoint`
+  (`no host for Modbus endpoint`, `no URL for OPC-UA endpoint`), `none had a host`,
+  `initial OPC-UA connect failed — will retry on tick`.
 
 ## Failure modes
 
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
 | Reader exits 0 immediately | Container `Exited (0)` | Its protocol has no endpoints in `client.yaml`, or `READER_ENDPOINT` names another protocol's endpoint | Expected; use the per-protocol profile |
-| Reader exits 1 at boot | "none had a host" | No `PLC_HOST_<NAME>` and no protocol fallback | Fill `.env` with the per-endpoint hosts |
+| Reader exits 1 at boot | "none had a host" (OPC-UA: "none had a URL") | No `PLC_HOST_<NAME>` and no protocol fallback | Fill `.env` with the per-endpoint hosts |
+| Reader exits with "exec … no such file" | Container restarts on failure | In `compose.edge.yml` the readers (`x-reader-base`, main `Dockerfile`) and the agent (`Dockerfile.agent`) share one image name, `${AGENT_IMAGE:-packiot/sparkplug-agent:local}`. If `AGENT_IMAGE` pins the agent-only artifact, or the agent build overwrites the tag, the reader binaries are missing | Give the readers their own image tag. Code-derived; not reproduced live |
 | Values arrive but agent maps 0 | `accepted:0`, unmapped counter climbs | Suffix mismatch between `client.yaml` (`canonical_prefix`/`packml_topic`) and the agent `raw_tag_map` | Regenerate reader + agent config as a pair from the same descriptor (CPACK, 2026-08-18: reader emitted `/L5/...`, generated agent expected `/LINHAS/L5/...`) |
 | Counter jumps by ~65,536 multiples | Huge increments at low-word rollover | Wrong `word_swap` | Flip `word_swap` for that tag |
 | Modbus read error every tick | `modbus read holding[...]` exception | Span from min to max address too wide for one request (Modbus limits a register read to 125 registers) or includes unmapped addresses the device rejects | Keep one kind's addresses clustered or split across endpoints |
 | S7 PLC becomes unresponsive | Reads time out for several PLCs | Too many concurrent S7 clients on a fragile CPU (CPACK box ran both the legacy reader and the new reader against the same S7s, noted 2026-09-07) | Run one reader per PLC; stagger ticks |
-| Staging `s7` profile shows no data downstream | No SparkPlug from `s7-reader` | Staging compose does not set `RAW_EMIT`, so it defaults to raw-emit and publishes to `edge/raw/incoplast`, which no staging agent subscribes to | Set `RAW_EMIT=false` on the staging service, or run an agent subscribed to that topic |
+| Staging `s7` profile shows no data downstream | No SparkPlug from `s7-reader` | Staging compose does not set `RAW_EMIT`, so it defaults to raw-emit and publishes to `edge/raw/incoplast`. The shared agent (multi-tenant) has no MQTT raw subscriber and the CPACK agent subscribes `edge/raw/cpack/#`, so nothing consumes it | Set `RAW_EMIT=false` on the staging service, or run an agent subscribed to that topic |
 
 !!! warning "Unverified"
-    The staging `s7` profile finding above is derived from the code and compose file
-    (`compose.staging.yml` comments still describe the reader as publishing NBIRTH/NDATA). It
-    has not been re-run live.
+    The staging `s7` profile finding above is derived from the code and compose file; it has
+    not been re-run live. The `compose.staging.yml` comment above `s7-softplc` still says the
+    reader publishes NBIRTH/NDATA to "edge-transformer"; both parts are stale (raw-emit is the
+    default, and the decoder service is `sparkplug-decoder`).
 
 ## Operating it
 
 - **Start on a box (bundle):**
   `docker compose -f compose.edge.yml --env-file .env --profile reader up -d`
   (or `reader-s7` / `reader-modbus` / `reader-opcua`).
+- **Onboarding a box end to end:** [Onboarding a client](../../build/operate/onboarding-a-client.md).
 - **Probe a PLC without deploying:** edge-api's plc-probe slice
   (`edge-api/src/usecases/plc-status/plc-probe/`) calls `EdgeSsmService.probePlc`, which runs a
   one-shot TCP reachability check of `host:port` on the box through SSM RunCommand.

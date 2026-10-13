@@ -2,14 +2,18 @@
 title: Superset
 layer: 3
 owner_area: serving
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Superset
 
 > **Layer 3 · Components** — the embedded BI stack: Apache Superset containers, the `bi`
 > schema it reads, the tenant fence (Superset RLS + Postgres RLS), the guest-token embed
 > flow into front4, and the gotchas that broke it. For engineers touching reports,
-> dashboards or BI access. Up: [Analytics DB](../subsystems/analytics-db.md)
+> dashboards or BI access. Up: [Analytics DB](../subsystems/analytics-db.md) ·
+> [db/superset README](https://github.com/packiot/packiot-stack-alpha/blob/staging/db/superset/README.md) ·
+> [assets README](https://github.com/packiot/packiot-stack-alpha/blob/staging/configs/superset/assets/README.md) ·
+> [edge-api API reference](../../reference/api/edge-api.md) (the guest-token broker; Superset's own
+> REST API is upstream Apache Superset's) · [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -26,7 +30,8 @@ the separate `superset` database.
 |---|---|
 | Image | `packiot/superset:4.1.1-w2`, built from `docker/superset/Dockerfile` on `apache/superset:4.1.1` (adds the Postgres driver, flask-cors, Authlib, flask-talisman) |
 | Compose | `compose.superset.yml` overlay; every service has `profiles: ["superset"]`, so it starts only when `COMPOSE_PROFILES` includes `superset` |
-| Containers | `superset` (gunicorn :8088, 4 workers × 20 threads, 2 GB, 1.5 CPU), `superset-worker` (Celery, 1 GB), `superset-redis` (noeviction, 256 MB), one-shots `superset-db-init` and `superset-init`; `superset-beat` commented out |
+| Containers | `superset` (gunicorn :8088, 4 gthread workers × 20 threads, 2 GB, 1.5 CPU), `superset-worker` (Celery prefork, concurrency 2, 1 GB, 1 CPU), `superset-redis` (`maxmemory 256mb`, noeviction, AOF on, container 320 MB), one-shots `superset-db-init` (`postgres:16-alpine`) and `superset-init`; `superset-beat` commented out |
+| Production | not in `compose.production.yml`; staging only |
 | Host (staging) | app host; `127.0.0.1:8088` behind nginx `superset.conf` at `bi.staging.packiot.app` (no oauth2 gate: it would break the iframe and the OIDC redirect) |
 | Metadata DB | `superset` on the DB host, connected upstream-direct (`POSTGRES_HOST_UPSTREAM`) |
 | Analytics connection | `superset_ro@<POSTGRES_HOST_UPSTREAM>:5432/<SUPERSET_ANALYTICS_DB>` — **direct, not pgbouncer**; staging 10.10.10.89/`packiot_analytics`, production must set `packiot` |
@@ -49,19 +54,23 @@ speed, live status, scanned boxes.
 
 ### The `bi` schema
 
-Created by `db/superset/01-superset-ro-role.sql` (views), `02-tenant-rls.sql` (policies),
+Created by `db/superset/01-superset-ro-role.sql` (roles, views), `02-tenant-rls.sql` (policies),
+`03-authoring-rls-mapping.optional.sql` (optional per-tenant authoring RLS),
 `04-bi-oee-spike-guard.sql` (NULLs gross/net above 1e8 per equipment-shift in `bi.oee_shift`
 so float4 sums cannot overflow on the 2026-06/07 CPACK totalizer spikes),
 `05-bi-scanned-boxes.sql` (barcode views). These files are applied **by hand**, staging first;
-nothing runs them automatically. The repo SQL was written against the pre-medallion
-`public` names; the live views read `gold.*`, `silver.*`, `core.*` (see
-[Analytics DB schemas](analytics-db-schemas.md)).
+nothing runs them automatically. The SQL uses unqualified table names that the analytics DB's
+`search_path` resolves to `gold.*`, `silver.*`, `core.*` (see
+[Analytics DB schemas](analytics-db-schemas.md)); the OEE tables were renamed to
+`equipment_oee_shift` / `equipment_oee_hourly` in the repo SQL on 2026-09-28 (deeca6af), after a
+fresh apply failed with 42P01.
 
 Ownership is the security mechanism. Each view is owned by `bi_owner` (NOLOGIN, NOSUPERUSER,
 NOBYPASSRLS) and is **not** `security_invoker`, so base-table access runs as `bi_owner`, and
 because the base tables have `FORCE ROW LEVEL SECURITY`, the tenant policy applies to the
-owner. `superset_ro` has `USAGE` on `bi` (plus `serving`, `silver`, `ops` schema usage) and
-`SELECT` on the `bi` views only — no base-table grants.
+owner. In the repo SQL `superset_ro` gets `USAGE` on `bi` and `SELECT` on the `bi` views only — no
+base-table grants. (Any extra schema `USAGE` on the live role is not in the repo; check
+`\dn+` before relying on it.)
 
 ### Two tenant fences
 
@@ -126,10 +135,16 @@ guest token or an authoring role with the tenant rule.
 
 `superset db upgrade` → `superset init` → create the human admin (if `SUPERSET_ADMIN_*`) →
 create the minter account → `bootstrap_guest_role.py` → `import_bundle.py` (stages assets and
-injects `SUPERSET_DB_RO_PASSWORD` into the URI) → `superset import-dashboards` (overwrite on
-stable UUIDs) → `sync_databases.py` (applies every database asset, including ones no dashboard
-references, and logs the resolved `user@host/db`) → `normalize_query_context.py` (rebuilds
-chart `query_context` lost by import) → `harden_dashboard_roles.py` → `register_embed.py`.
+injects the passwords and analytics host/db into the URIs) → `superset import-dashboards` (as the
+minter; creates missing assets) → `sync_databases.py` (applies every database asset, including ones
+no dashboard references, and logs the resolved `user@host/db`) → `sync_assets.py` (re-imports
+every dataset, chart and dashboard YAML with `overwrite=True` **as an Admin**, then verifies
+columns, metrics, viz types and dashboard membership; any drift exits 1 and fails the init) →
+`normalize_query_context.py` (rebuilds chart `query_context` lost by import) →
+`harden_dashboard_roles.py` → `register_embed.py`. The init runs under `set -e`.
+
+The YAML is authoritative: a UI edit to an asset that has a YAML is overwritten on the next
+deploy of the profile.
 
 ## Configuration
 
@@ -143,9 +158,10 @@ Names only; values come from Secrets Manager `packiot/<env>/app` via `app_init.s
 | `POSTGRES_HOST_UPSTREAM`, `SUPERSET_ANALYTICS_DB` | analytics host/db for the URI template (`__ANALYTICS_HOST__`, `__ANALYTICS_DB__`); default db `packiot_analytics`, production `packiot` |
 | `SUPERSET_GUESTTOKEN_ADMIN_USER` / `_PASSWORD` | minter service account (shared with edge-api) |
 | `SUPERSET_ADMIN_USER` / `_PASSWORD` | durable human admin |
-| `SUPERSET_FRAME_ANCESTOR` | comma-separated front4 origins (staging: `https://staging.packiot.com,https://front.staging.packiot.app`) |
+| `SUPERSET_FRAME_ANCESTOR` | comma-separated front4 origins; code default `https://front.prod.packiot.app`; staging (`app_init.sh`): `https://staging.packiot.com,https://front.staging.packiot.app` |
 | `SUPERSET_OEE_DASHBOARD_UUID`, `SUPERSET_EMBED_TARGET_DASHBOARD` | embed UUID and which dashboard carries it |
-| `SUPERSET_COGNITO_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `SUPERSET_AUTH_MODE` | OIDC login for authors (`oauth` mode) |
+| `SUPERSET_COGNITO_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `SUPERSET_AUTH_MODE` | OIDC login for authors; default mode `db`; Cognito is used only when the mode is `oauth` **and** a client id is set |
+| `SUPERSET_ASSET_SYNC_USER` | Admin identity for `sync_assets.py` (else `SUPERSET_ADMIN_USER`, else the oldest active Admin) |
 | `HIST_GW_SVC_PASSWORD` | `historian_svc`, for the historian connection |
 
 In `superset_config.py`: `ROW_LIMIT = 50000`, `SQL_MAX_ROW = 100000`, feature flags
@@ -174,9 +190,10 @@ In `superset_config.py`: `ROW_LIMIT = 50000`, `SQL_MAX_ROW = 100000`, feature fl
 | Empty charts for every tenant | 0 rows everywhere | GUC not stamped (connection routed through pgbouncer, or DB name not in `_ANALYTICS_DB_NAMES`) | direct connection; check the name tuple |
 | "Empty" when probing as superuser | a DBA sees 0 rows through `bi.*` | definer view + FORCE RLS + no GUC | test as `superset_ro` with `-c app.tenant_id=<n>` |
 | Admin sees blank dashboards | admin session without sentinel | not a native `Admin` role | grant Admin or use a guest token |
+| Asset YAML never applied (found 2026-10-07) | 31 of 55 charts and 1 of 13 datasets differed from their YAML; `live_status` `*_total` columns never landed | `import-dashboards` imports dependencies with `overwrite=False`, and the minter (scoped to `GuestTokenMinter`) cannot write, so imports silently kept the old objects | `sync_assets.py` re-imports as Admin with overwrite and verifies (#1578) |
 | `historian_union` broken silently (found 2026-09-24) | historian dataset errors | the connection was hand-made (`postgres@…/postgres`) and never imported; DB later renamed | `sync_databases.py` (#1411) |
 | Charts error after import | `GET /chart/<id>/data/` fails | `import-dashboards` drops `query_context`; raw table `params.all_columns` must equal `query_context.columns` (2026-09-21, #1370) | `normalize_query_context.py` |
-| float overflow in KPI sums | `NumericValueOutOfRange` | CPACK totalizer spikes (1e15–1e23) in `gold.equipment_oee_shift` summed as float4 | `04-bi-oee-spike-guard.sql` |
+| float overflow in KPI sums | `NumericValueOutOfRange` | CPACK totalizer spikes (1e15–1e23) in `gold.equipment_oee_shift` summed as float4 | `04-bi-oee-spike-guard.sql` NULLs gross/net above 1e8 per equipment-shift in `bi.oee_shift` (the stored rows are untouched) |
 | New env not applied | old CSP/origins still served | `docker restart` keeps creation-time env | recreate with `docker compose … up -d` |
 | Stale config file (P7, 2026-09-24) | edited config ignored | single-file bind mount pinned the old inode | whole-directory mount `./configs/superset:/app/pythonpath:ro` |
 | Recreating a `bi` view as superuser | tenant fence changes | owner becomes `postgres` (BYPASSRLS) | `ALTER VIEW bi.<v> OWNER TO bi_owner` after every recreate |
@@ -220,7 +237,8 @@ Runbook for first go-live: `docs/superset-golive-runbook.md`.
 | `configs/superset/superset_config.py` | auth, CSP/CORS, cookies, RLS mutator |
 | `configs/superset/bootstrap_guest_role.py`, `harden_dashboard_roles.py` | roles and RBAC |
 | `configs/superset/register_embed.py` | embed UUID and `allow_domain_list` |
-| `configs/superset/import_bundle.py`, `sync_databases.py`, `normalize_query_context.py` | dashboards-as-code import |
+| `configs/superset/import_bundle.py`, `sync_databases.py`, `sync_assets.py`, `normalize_query_context.py` | dashboards-as-code import |
+| `configs/superset/custom_sso_security_manager.py` | Cognito OIDC security manager |
 | `configs/superset/assets/` | databases, datasets, charts, dashboards |
 | `db/superset/01…05-*.sql`, `db/superset/README.md` | `bi` schema, roles, RLS |
 | `tests/superset/` | isolation gate |

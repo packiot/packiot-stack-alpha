@@ -2,20 +2,24 @@
 title: Message brokers (Mosquitto and RabbitMQ)
 layer: 3
 owner_area: ingestion
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Message brokers (Mosquitto and RabbitMQ)
 
 > **Layer 3 · Component** — the two brokers on the staging app host: Mosquitto (MQTT, carries
 > Sparkplug B from edge publishers to the decoder) and RabbitMQ (AMQP, carries decoded envelopes
 > from the decoder to the stream-engine). For people who operate or debug the ingest path.
-> Up: [Ingestion subsystem](../subsystems/ingestion.md)
+> Up: [Ingestion subsystem](../subsystems/ingestion.md) · Canonical queue list:
+> [docs/ops/rabbitmq-topology.md](https://github.com/packiot/packiot-stack-alpha/blob/staging/docs/ops/rabbitmq-topology.md)
+> · [Service catalog](../../reference/service-catalog.md). Both are stock images with no repo
+> README and no OpenAPI spec.
 
 ## Responsibility
 
 Mosquitto is the **MQTT hop**: every Sparkplug B publisher inside the stack (the sparkplug-agents,
-`plc-sim`, `bispharma-twin`, `s7-reader`) publishes to it and the
-[sparkplug-decoder](sparkplug-decoder.md) subscribes to all of it. RabbitMQ is the **durable bus**
+`plc-sim`, `bispharma-twin`) publishes to it and the
+[sparkplug-decoder](sparkplug-decoder.md) subscribes to all of it. It also carries the readers'
+raw-tag topic `edge/raw/<tenant>` (not SparkPlug; see [PLC readers](plc-readers.md)). RabbitMQ is the **durable bus**
 between the decoder (and [ingest-shim / oeecloud-fanout](ingest-shim-and-fanout.md)) and the
 [stream-engine](stream-engine.md): one topic exchange `oee`, one queue triple per tenant, a retry
 loop and a dead-letter path. Neither broker transforms data. Their job is to hold messages until a
@@ -36,10 +40,11 @@ consumer takes them.
 | Healthcheck | `mosquitto_pub` of a `healthcheck/ping` message, 30 s | `rabbitmq-diagnostics ping`, 30 s |
 | Depended on by | sparkplug-decoder, agents, plc-sim, bispharma-twin, s7-reader | sparkplug-decoder, stream-engine, ingest-shim, oeecloud-fanout |
 
-Both brokers exist in `compose.production.yml` too (the new-stack production host). Production
-Mosquitto uses `configs/mosquitto/mosquitto.prod.conf`, which adds a mutual-TLS listener on 8883
-(`require_certificate true`, `use_identity_as_username true`). The legacy production platform uses
-Google Cloud Pub/Sub instead, not these brokers.
+Both brokers are also defined in `compose.production.yml` (the new-stack production host, which
+no client feeds yet). Production Mosquitto uses `configs/mosquitto/mosquitto.prod.conf`, which
+adds a mutual-TLS listener on 8883 (`require_certificate true`, `use_identity_as_username true`)
+published on the host. Production clients still run on the legacy platform, which uses Google
+Cloud Pub/Sub, not these brokers.
 
 ## Inputs & outputs
 
@@ -49,7 +54,8 @@ Google Cloud Pub/Sub instead, not these brokers.
 |---|---|---|
 | `spBv1.0/<GROUP>/<N-type>/<edge_node>`, N-type = `NBIRTH`, `NDATA`, `NDEATH` | agents, `plc-sim`, twins | sparkplug-decoder |
 | `spBv1.0/<GROUP>/<D-type>/<edge_node>/<device>`, D-type = `DBIRTH`, `DDATA`, `DDEATH` | agents / readers | sparkplug-decoder |
-| `spBv1.0/<GROUP>/NCMD/<edge_node>` (`Node Control/Rebirth`) | sparkplug-decoder, only if `ET_REQUEST_REBIRTH_ENABLED=true` (off on staging) | the edge node |
+| `spBv1.0/<GROUP>/NCMD/<edge_node>` (`Node Control/Rebirth`) | sparkplug-decoder, only if `ET_REQUEST_REBIRTH_ENABLED=true` (default `false`; not set in `compose.staging.yml`) | the edge node |
+| `edge/raw/<tenant>` | Go PLC readers in raw-emit mode (staging: `s7-reader` → `edge/raw/incoplast`) | a single-file agent subscribed to it (none on staging) |
 | `spBv1.0/<GROUP>/DCMD/<edge_node>` | sparkplug-decoder command channel (`EDGE_COMMANDS_ENABLED`, off) | the PLC-side node |
 | `healthcheck/ping` | the container healthcheck | nobody |
 
@@ -63,20 +69,23 @@ Publishers on staging and how each is switched on:
 |---|---|---|
 | `plc-sim` | CPACK (synthetic) | compose profile `plc-sim` |
 | `sparkplug-agent-cpack` | CPACK (real tee, HTTP front-door `:9104`) | compose profile `cpack-tee` |
-| `sparkplug-agent-shared` | one pipeline per `docs/clients/tenants/*.yaml` | compose profile `shared-tee` |
+| `sparkplug-agent-shared` | one pipeline per `docs/clients/tenants/*.yaml` | compose profile `shared-tee`, always added by `deploy-staging.yml` |
 | `bispharma-twin` | BISPHARMASTAGING | `BISPHARMA_TWIN_ENABLED` in the host `.env` (default false) |
-| `s7-reader` (+ `s7-softplc`) | INCOPLAST (demo tags) | compose profile `s7` |
+| `s7-reader` (+ `s7-softplc`) | none: publishes raw tags to `edge/raw/incoplast`, not SparkPlug (raw-emit is the default) | compose profile `s7` |
 
-Which profiles are active is set by `COMPOSE_PROFILES` in `/opt/packiot/.env` on the host, not in
-git. The publishers themselves are described in [sparkplug-agent](sparkplug-agent.md) and
-[simulators and twins](simulators-and-twins.md). `plc-sim` and `sparkplug-agent-cpack` publish the same CPACK namespace under different edge
-nodes: running both double-sources ent 3. The compose file comments call this out.
+Which other profiles are active is set by `COMPOSE_PROFILES` in `/opt/packiot/.env` on the host,
+not in git; the deploy workflow prepends `shared-tee`. The publishers themselves are described in [sparkplug-agent](sparkplug-agent.md) and
+[simulators and twins](simulators-and-twins.md). `plc-sim` and the real CPACK feed (now the
+shared agent's `CPACK` pipeline, formerly `sparkplug-agent-cpack`) publish the same CPACK
+namespace under different edge nodes: running both double-sources ent 3. The shared agent and
+`sparkplug-agent-cpack` both declare `CPACK/cpack-tee`, so those two must never run together
+either.
 
 ### RabbitMQ exchanges and queues (`/` vhost)
 
 | Exchange | Type | Declared by | Purpose |
 |---|---|---|---|
-| `oee` | topic, durable | stream-engine (and fanout) at connect | the main bus |
+| `oee` | topic, durable | stream-engine (and fanout) at connect; also in `definitions.json` so boot-time bindings import on an empty volume | the main bus |
 | `oee-retry` | topic | stream-engine | dead-letter target of every main queue |
 | `oee-failed` | topic | stream-engine | terminal; stream-engine publishes here after `MAX_RETRIES` |
 | `oee-unroutable` | fanout | `definitions.json` | alternate exchange of `oee` (policy `oee-ae`) |
@@ -86,18 +95,21 @@ nodes: running both double-sources ent 3. The compose file comments call this ou
 | Queue | Arguments | Bound to | Consumer |
 |---|---|---|---|
 | `stream-engine-q` | DLX `oee-retry` | `oee` / `sparkplug.data` (exact) | stream-engine |
-| `stream-engine-q-retry-30s` | TTL 30 000 ms, DLX `oee` | `oee-retry` / `#` | nobody (expires back to `oee`) |
-| `stream-engine-q-failed` | none | `oee-failed` / `#` | humans |
+| `stream-engine-q-retry-30s` | TTL 30 000 ms, DLX `oee` | `oee-retry` / `sparkplug.data` (exact; was `#` until #1567) | nobody (expires back to `oee`) |
+| `stream-engine-q-failed` | none | `oee-failed` / `sparkplug.data` (exact; was `#`) | humans |
 | `stream-engine-q-<t>` | DLX `oee-retry` (+ `x-single-active-consumer` if `WORKER_POOL_SAC_ENABLED`) | `oee` / `sparkplug.data.<t>` | stream-engine |
 | `stream-engine-q-<t>-retry-30s` | TTL 30 000 ms, DLX `oee` | `oee-retry` / `sparkplug.data.<t>` | nobody |
 | `stream-engine-q-<t>-failed` | none | `oee-failed` / `sparkplug.data.<t>` | humans |
 | `oeecloud-fanout-cpack-to-sbxcpack` | none | `oee` / `sparkplug.data`, `sparkplug.data.cpack` | oeecloud-fanout |
-| `oee-unroutable-q` | none | `oee-unroutable` | humans (alert) |
+| `oee-unroutable-q` | policy `oee-unroutable-cap`: max 50,000 messages, TTL 14 days | `oee-unroutable` | humans (alert) |
+| `e2efixture-sink-q` | policy `e2efixture-sink-cap`: max 200, TTL 1 day | `oee` / `sparkplug.data.e2efixture` | nobody (absorbs the CI fixture) |
 
 `<t>` is every tenant that is **both** active in `packml_register` **and** listed in
-`WORKER_TENANT_ALLOWLIST` (staging: `cpack,sbxcpack,bispharmastaging`). Queue names come from code
+`WORKER_TENANT_ALLOWLIST` (staging: `cpack,sbxcpack,bispharmastaging,incoplast`; `incoplast`
+added 2026-10-09). Queue names come from code
 (`services/stream-engine/internal/amqp/topology.go`), so there is nothing to create by hand.
-`docs/ops/rabbitmq-topology.md` lists the canonical 14-queue set.
+`docs/ops/rabbitmq-topology.md` describes the canonical per-tenant set and the 2026-09-14
+cleanup (44 → 14 queues, before `incoplast` and the fixture sink were added).
 
 Routing keys in use:
 
@@ -106,7 +118,7 @@ Routing keys in use:
 | `sparkplug.data.<tenant>` | sparkplug-decoder (`F3_PER_TENANT_ROUTING=true` on staging) |
 | `sparkplug.data` | sparkplug-decoder when per-tenant routing is off |
 | `sparkplug.data.sbxcpack` | oeecloud-fanout (CPACK clone) |
-| `sparkplug.data.incoplast` | ingest-shim (staging config) |
+| `sparkplug.data.incoplast` | ingest-shim (staging `ROUTING_KEY`; `SCOPE_GROUP=INCOPLAST`, required since #1695) |
 
 ## Internal design
 
@@ -140,7 +152,7 @@ the file.
 |---|---|
 | admin (name from `.env`) | `.*` |
 | `stream-engine` | `oee`, `oee-retry`, `oee-failed`, `stream-engine-q.*`, `oeecloud-fanout.*` |
-| `sparkplug-decoder` | configure `edge-transformer.*`, `outbox.*`, `edge.plc-normalized.*`; write also `oee`; read also `oee` |
+| `sparkplug-decoder` | configure `edge-transformer.*`, `outbox.*`, `edge.plc-normalized.*`, `dlx.edge.plc-normalized.*`; write also `oee`; read also `oee` |
 
 oeecloud-fanout authenticates with the `stream-engine` secret. ingest-shim authenticates with the
 `sparkplug-decoder` secret (it only publishes).
@@ -164,8 +176,10 @@ counted**, not retried, so they never loop.
 ### Retention
 
 There is no TTL or length limit on main queues: a message stays until it is acked. Retry queues
-hold a message for 30 s. `*-failed` queues and `oee-unroutable-q` keep messages until a human purges
-them. Messages are published persistent (`DeliveryMode: Persistent` in the decoder and ingest-shim
+hold a message for 30 s. `*-failed` queues keep messages until a human purges them.
+`oee-unroutable-q` is capped by policy (50,000 messages, 14 days) and `e2efixture-sink-q` by
+200 messages / 1 day (2026-10-09, `e836f992`); the caps are policies because queue arguments
+cannot change on an existing queue. Messages are published persistent (`DeliveryMode: Persistent` in the decoder and ingest-shim
 publishers) to durable queues, so they survive a broker restart. The decoder's SQLite outbox
 (see [sparkplug-decoder](sparkplug-decoder.md#outbox)) covers the time the broker is down.
 
@@ -176,9 +190,9 @@ publishers) to durable queues, so they survive a broker restart. The decoder's S
 | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS` | rabbitmq env ← `.env` | from `.env` | ignored once `definitions.json` loads |
 | `monitoring/rabbitmq/enabled_plugins` | mount | `[rabbitmq_management,rabbitmq_prometheus]` | management UI + `:15692/metrics` |
 | `monitoring/rabbitmq/rabbitmq.conf` | mount | `load_definitions = /etc/rabbitmq/definitions.json` | re-applies users/policies each boot |
-| `/opt/packiot/rabbitmq/definitions.json` | host file | generated at deploy | users, permissions, `oee-ae` policy |
+| `/opt/packiot/rabbitmq/definitions.json` | host file | generated at deploy | users, permissions, policies `oee-ae`, `oee-unroutable-cap`, `e2efixture-sink-cap`, the unroutable and fixture-sink queues |
 | `configs/mosquitto/mosquitto.conf` | mount | listener 1883, anonymous, persistence | see above |
-| `WORKER_TENANT_ALLOWLIST` | stream-engine env | `cpack,sbxcpack,bispharmastaging` | which tenant queue triples exist |
+| `WORKER_TENANT_ALLOWLIST` | stream-engine env | `cpack,sbxcpack,bispharmastaging,incoplast` (compose default) | which tenant queue triples exist |
 | `WORKER_POOL_SAC_ENABLED` | stream-engine env | `false` | adds `x-single-active-consumer`; immutable, needs `services/stream-engine/scripts/migrate-tenant-queues-sac.sh` |
 | `F3_PER_TENANT_ROUTING` | decoder env | `true` | `sparkplug.data.<t>` vs `sparkplug.data` |
 
@@ -220,15 +234,9 @@ Dashboards and the rest of the monitoring stack: [observability](observability.m
 | **Mosquitto zombie PIDs (2026-07-09)** | deploys blocked ~1 day: mosquitto unhealthy, dependants never start | mosquitto ran as PID 1 and never reaped `docker exec` healthcheck children; 4578 zombies hit `pids.max` | `init: true` (tini) |
 | **Per-listener anonymous (2026-08-03, production)** | prod deploy failed; `:1883` refused anonymous clients | adding an `allow_anonymous false` 8883 listener changed `:1883` too | `mosquitto.prod.conf` sets anonymous globally and secures 8883 with client certificates |
 | **Tenant not allowlisted** | data for a new client never reaches silver; `oee-unroutable-q` grows | no queue bound for `sparkplug.data.<t>` | add the lowercased group to `WORKER_TENANT_ALLOWLIST` and redeploy |
+| **Tenant messages retried twice (fixed 2026-10-06, #1567)** | a nacked tenant message came back to its queue twice per retry cycle | the legacy `stream-engine-q-retry-30s` / `-failed` queues were bound with `#`, so a dead-lettered `sparkplug.data.<t>` message matched both them and the tenant's own retry queue | topology now binds the legacy queues to `sparkplug.data` only (bind-exact, then unbind `#`); integration-tested |
+| **Fixture parked in unroutable (fixed 2026-10-09)** | `OeeUnroutableMessages` firing permanently; 1,074 of 1,076 parked messages were the CI fixture | `sparkplug.data.e2efixture` had no binding | `e2efixture-sink-q` + caps on both queues (`e836f992`) |
 | **Deploy chaos test** | RabbitMQ stops for a short time during every staging deploy | the step *Chaos test — kill RMQ, prove outbox durability* stops and restarts `stack-rabbitmq-1` | expected; the decoder outbox absorbs it. Do not deploy during a data-sensitive test |
-
-!!! warning "Unverified: duplicate retries on tenant queues"
-    From the code, the shared `stream-engine-q-retry-30s` is bound to `oee-retry` with `#`, and
-    each `stream-engine-q-<t>-retry-30s` is bound with `sparkplug.data.<t>`. A message
-    dead-lettered from a tenant queue therefore matches **both** retry queues and returns to the
-    tenant queue twice. The same applies to `oee-failed`. Silver writes are idempotent upserts,
-    so values are not doubled, but Bronze (`*_raw`, append-only) would get extra rows. Not
-    checked against the live broker.
 
 The deploy step *Extend RMQ perms for edge-transformer* still targets the old user name
 `edge-transformer` and is `continue-on-error`. The live users come from `definitions.json`.

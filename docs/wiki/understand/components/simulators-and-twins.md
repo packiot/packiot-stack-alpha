@@ -2,7 +2,7 @@
 title: Simulators, twins and edge tools
 layer: 3
 owner_area: edge
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Simulators, twins and edge tools
 
@@ -10,7 +10,10 @@ last_verified: 2026-09-28
 > PLCs, tenant twins, test fixtures) plus the onboarding/capture CLIs that live next to them.
 > Which are test-only, where they publish, and how they have hurt real data. For anyone about
 > to run one of them on staging.
-> Up: [Edge subsystem](../subsystems/edge.md)
+> Up: [Edge subsystem](../subsystems/edge.md) · How to build/run the Go tools:
+> [sparkplug-decoder README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/sparkplug-decoder/README.md)
+> · Python simulator: [simulator/README.md](https://github.com/packiot/packiot-stack-alpha/blob/staging/simulator/README.md)
+> · [Service catalog](../../reference/service-catalog.md). None of these serve an HTTP API.
 
 ## Responsibility
 
@@ -29,13 +32,14 @@ feed, so anything that publishes under a real group is a second writer on real t
 | `bispharma-twin` | Long-running Bispharma twin, counters only | `spBv1.0/BISPHARMASTAGING/{NBIRTH,NDATA}/bispharmastaging-twin` | Staging, always in the stack, idles unless `BISPHARMA_TWIN_ENABLED=true` | Staging-only; **real tenant group** |
 | `bispharma-box-scan-mock` | Appends box-scan rows every 30 s | Analytics DB via pgbouncer (`scripts/mock-bispharma-box-scans.sql`) | Staging, idles unless `BISPHARMA_BOX_SCAN_MOCK_ENABLED=true` | Staging-only; **real tenant data** |
 | `inject-counter-fixture` | One-shot NBIRTH + NDATA | `spBv1.0/E2EFIXTURE/{NBIRTH,NDATA}/inject-test` | CI (deploy + manual workflow) | Yes, synthetic group |
+| `seed-replay` | Replays the dev seed's own week as SparkPlug at wall-clock pace (ADR-0060 D7) | `spBv1.0/DEV/{NBIRTH,NDATA}/seed-replay` on the dev broker | Local dev only (`dev/services/seed-replay.yml`) | Yes, dev-only group |
 | `simulator/` (Python) | PLC + operator simulator for the legacy Node-RED path | `POST edge-nodered:1880/plc-data` + edge-api operator calls | Staging profile `legacy-sim` (retired 2026-08-16) | Yes, retired |
 | `capture-fixtures` | Records live SparkPlug messages as JSON golden-test inputs | Files under `testdata/fixtures/<scenario>/` | Manual CLI | Read-only |
 | `onboard-gen`, `onboard`, `onboard-capture`, `onboard-import` | Onboarding generator / orchestrator / capture reconciler / Node-RED importer | Files only | Manual CLI | Read-only against the world |
 | `derive-replay` | Runs raw-tag samples through the production derive stage | stdout | Manual CLI | Read-only |
 
 Built into the `packiot-sparkplug-decoder` image (main `Dockerfile`): `plc-sim`, `s7-softplc`,
-`bispharma-twin` (plus the readers, agent and dashboard). Everything else is run with
+`bispharma-twin`, `seed-replay` (plus the readers, agent and dashboard). Everything else is run with
 `go run ./cmd/<name>` from `services/sparkplug-decoder`, or built ad hoc in CI.
 
 ## Inputs & outputs
@@ -43,7 +47,7 @@ Built into the `packiot-sparkplug-decoder` image (main `Dockerfile`): `plc-sim`,
 ### plc-sim (`cmd/plc-sim`)
 
 - Group `CPACK` (constant), edge node `PLC_SIM_EDGE_NODE` (default `plc-sim`).
-- Topology (verified against staging `packml_register`): line own-streams L8 (eq 51, 120/min),
+- Topology (the `lines` table in `cmd/plc-sim/main.go`): line own-streams L8 (eq 51, 120/min),
   L5 (47, 147), L3 (48, 140), L4 (49, 147); members L5/BREYER (idx 61, eq 53), L5/TEXA (65,
   eq 57), L3/PTH (81, eq 61), L4/TEXA (63, eq 63).
 - Per line metrics: `…/Admin/Prod{Consumed,Processed,Defective}Count/<idx>/Unit`,
@@ -110,6 +114,21 @@ Used by `.github/workflows/deploy-staging.yml` (post-deploy smoke, and the outbo
 that stops RabbitMQ and injects 5 messages) and by the manual
 `.github/workflows/inject-counter-fixture.yml`.
 
+Downstream, the decoder publishes these with routing key `sparkplug.data.e2efixture`. Since
+2026-10-09 (`e836f992`) that key is bound to `e2efixture-sink-q` (policy cap 200 messages,
+1 day) in the RabbitMQ definitions; before, every deploy parked the fixture in
+`oee-unroutable-q` and kept the `OeeUnroutableMessages` alert firing. See [brokers](brokers.md).
+
+### seed-replay (`cmd/seed-replay`)
+
+Dev-environment producer (ADR-0060 D7), not used on staging. It reads the dev seed's silver
+rows from `DATABASE_URL` for the window *now − 7 days*, and publishes them as cumulative
+counters plus `StateCurrent` / `MachSpeed`, each with its declared `device_key` and counter
+role, so the real decoder and stream-engine produce fresh rows. Env: `MQTT_BROKER_URL`,
+`REPLAY_GROUP_ID` (`DEV`), `REPLAY_EDGE_NODE` (`seed-replay`), `REPLAY_TICK` (5 s),
+`REPLAY_LAG` (7 days), `REPLAY_ENTERPRISES`. It answers a Rebirth NCMD like a real edge agent
+(2026-10-09), so a decoder-only restart in dev recovers without restarting the replay.
+
 ## Internal design
 
 All Go producers share `internal/sparkplug` (encode, `SimMetric`, `EncodeSim`) and publish via
@@ -129,10 +148,12 @@ the real feed except by `edge_node_id` in decoder logs.
 
 ## Configuration
 
-Covered per tool above. The staging selector for the CPACK source is `COMPOSE_PROFILES`
-(GitHub Actions env / `/opt/packiot/.env`): `plc-sim` (sim on) **or** the real tee. Never both:
-the two scopes are the same eight equipments `{47,48,49,51,53,57,61,63}`
-(`compose.staging.yml` comment).
+Covered per tool above (`seed-replay`: see its section). `plc-sim` runs only when
+`COMPOSE_PROFILES` in `/opt/packiot/.env` includes `plc-sim`. The real CPACK feed today enters
+through `sparkplug-agent-shared` (tenant file `docs/clients/tenants/cpack.yaml`, group `CPACK`),
+whose `shared-tee` profile every staging deploy forces on. So enabling `plc-sim` on staging
+double-sources CPACK: the sim covers the same equipments `{47,48,49,51,53,57,61,63}` as the
+real feed (`compose.staging.yml` comment). Leave it off unless the real feed is stopped.
 
 ## Data & invariants
 
@@ -161,7 +182,7 @@ the two scopes are the same eight equipments `{47,48,49,51,53,57,61,63}`
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
 | **Synthetic writers on real CPACK topics (found 2026-09-25)** | CPACK L5 PO 897120 showed 278,483 produced vs legacy 43,286; line net = gross; L5 net rows 123/day vs TEXA 3,127 | (a) a `twin-injector` container running the fixture binary, `+7` every 30 s from 2026-08-31 to 2026-09-25; (b) the deploy/manual inject steps publishing values 100–600 on the real `CPACK/SC/LINHAS/L5/BREYER` topics; (c) an earlier July synthetic stream. Each fake value reset BREYER's totalizer state, so the next real reading became a huge increment (~6× inflation); the fixture's `Parameter30700="61"` also overrode the register seed so L5 net was metered from BREYER (gross-only) | PR #1460 moved the fixture to group `E2EFIXTURE` with the guard test; the twin-injector was stopped and later reaped by `--remove-orphans`; silver was repaired from backups on 2026-09-27 (`ops._bkp_l5_injector_20260925`, `ops._bkp_texa_injector_20260927`, `ops._bkp_sbx_l5_injector_20260927`) |
-| Double-sourced CPACK (ent 3) | Counts roughly doubled | `plc-sim` resurrected by a deploy while the real tee/agent also ran | `plc-sim` is profile-gated; pick exactly one source in `COMPOSE_PROFILES` |
+| Double-sourced CPACK (ent 3) | Counts roughly doubled | `plc-sim` resurrected by a deploy while the real tee/agent also ran | `plc-sim` is profile-gated; keep `plc-sim` out of `COMPOSE_PROFILES` while the shared agent serves CPACK |
 | Bispharma twin + real box both live | Doubled totalizers for ent 5 | Twin left enabled after the real feed returned | Set `BISPHARMA_TWIN_ENABLED=false` and recreate |
 | Twin restart makes a one-time spike | Big delta row | Totalizers reset to 0 | `TWIN_STATE_FILE` on the named volume (configured on staging) |
 | Twin OEE availability pinned at 100 % | No downtime events | Counters never stop | `TWIN_STOP_PROB > 0` (default 0.03) |
@@ -173,7 +194,8 @@ its line ⇒ look for a second writer on the same topic before blaming decoder m
 
 ## Operating it
 
-- CPACK sim on staging: set `COMPOSE_PROFILES` to include `plc-sim` (and not the tee), deploy.
+- CPACK sim on staging: only with the real CPACK feed stopped; then add `plc-sim` to
+  `COMPOSE_PROFILES` and deploy.
 - S7 end-to-end: `docker compose -f compose.staging.yml --profile s7 up -d s7-softplc s7-reader`.
 - Bispharma twin: set `BISPHARMA_TWIN_ENABLED=true` in `/opt/packiot/.env`, then
   `docker compose -f compose.staging.yml up -d --force-recreate bispharma-twin`
@@ -207,6 +229,7 @@ go test ./cmd/plc-sim/... ./cmd/bispharma-twin/... ./cmd/inject-counter-fixture/
 | `services/sparkplug-decoder/cmd/numeric-sim/` | Numeric tee simulator |
 | `services/sparkplug-decoder/cmd/bispharma-twin/` | Bispharma twin |
 | `services/sparkplug-decoder/cmd/inject-counter-fixture/` | CI fixture + group guard test |
+| `services/sparkplug-decoder/cmd/seed-replay/`, `dev/services/seed-replay.yml` | Dev live-replay producer |
 | `services/sparkplug-decoder/cmd/capture-fixtures/` | Golden-fixture capture |
 | `services/sparkplug-decoder/cmd/onboard*/`, `cmd/derive-replay/` | Onboarding and derive tooling |
 | `simulator/` | Retired Python simulator (`simulator.py`, `devctl.py`) |
