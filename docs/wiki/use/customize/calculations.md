@@ -2,7 +2,7 @@
 title: Calculations
 layer: guide
 owner_area: frontends
-last_verified: 2026-09-29
+last_verified: 2026-10-13
 ---
 # Calculations
 
@@ -26,20 +26,27 @@ Typical examples:
 
 ## Step by step
 
-1. Open **Customize → Calculations** for the client.
-2. **Where does the result go?** Pick the line or machine that owns the new value.
-3. **What is the result?** Scrap / rejects, Everything that went in, or Good parts made.
-4. **Which values does it use?** Each value gets a letter (**a**, **b**, …). For each one
-   pick a machine and a counter. It can be **this** machine or **another** one — for a line
-   total, pick the two packing machines.
-5. **Formula.** Type it, or press one of the example buttons (`a - b`, `a + b`,
+1. Open **Calculations** in the Customize menu. **Your calculations** lists the ones this
+   client already has.
+2. Under **New calculation**, **1. Where does the result go?** Pick the line or machine that
+   owns the new value. Then **What is the result?**: **Scrap / rejects**, **Everything that
+   went in**, or **Good parts made**.
+3. **2. Which values does it use?** Each value gets a letter (**a**, **b**, … up to **f**;
+   **Add a value** adds one). For each letter pick a machine and a counter (**Good parts
+   made**, **Everything that went in**, **Scrap / rejects**). It can be **this** machine
+   ("— this one") or **another** one: for a line total, pick the two packing machines. The
+   page starts you with a = everything that went in, b = good parts made.
+4. **3. Formula.** Type it, or press one of the example buttons (`a - b`, `a + b`,
    `(a + b) * 12`, `a / 12`, `max(a, b)`). You can use `+ - * /`, brackets, numbers, and
    `max`, `min`, `abs`, `round`, `floor`, `ceil`.
-6. **Try it.** Type example numbers for each letter (for example a = 500, b = 470) and press
-   **Try**. You see the result (30). Nothing is saved yet.
-7. **Add calculation**, then **Save**.
-8. **Apply now.** This restarts the data collector for a few seconds so it starts using the
-   calculation. No data is lost while it restarts.
+5. **4. Try it with example numbers.** Type a number for each letter (for example a = 500,
+   b = 470) and press **Try**. You see **Result: 30**. Nothing is saved yet.
+6. **Add calculation**. It appears under **Your calculations**. To remove one, press the bin
+   icon next to it.
+7. **Save**. The page says "Everything is saved".
+8. **Apply now**. This restarts Packiot's data collector in the cloud for a few seconds so it
+   starts using the calculation. No data is lost while it restarts. (Apply now is greyed out
+   while you have unsaved changes.)
 
 !!! info "What changes and when"
     New results start **from the moment you press Apply now**. Past data is not changed.
@@ -49,9 +56,11 @@ Typical examples:
 | Message | What it means | What to do |
 |---|---|---|
 | "… has no counter number yet" | That machine's counters were never confirmed | Confirm them in CS Admin (step **Confirm counts are real**) |
-| "“c” isn't one of your values" | The formula uses a letter you did not add | Add value **c**, or fix the formula |
-| "Someone else saved changes while you were editing" | Another person saved first | Reload the page and add yours again |
-| Try shows "no result" | A value had no number | Fill every letter, then Try again |
+| "“c” isn't one of your values (a, b)" | The formula uses a letter you did not add | Add value **c**, or fix the formula |
+| "Use only numbers, your letters, + − × ÷ and brackets." | The formula has a sign that is not allowed (for example `%`) | Remove it |
+| "Someone else saved changes while you were editing" | Another person saved something for this client first | Reload the page and add yours again |
+| "Could not apply right now" | Apply now failed | Try again in a minute, or ask the platform team |
+| Try shows "no result — check that every value has a number" | A value had no number | Fill every letter, then Try again |
 
 ## Calculation or Node-RED?
 

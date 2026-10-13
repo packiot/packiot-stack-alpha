@@ -2,23 +2,26 @@
 title: Connecting to an ERP or other systems
 layer: guide
 owner_area: frontends
-last_verified: 2026-09-29
+last_verified: 2026-10-13
 ---
 # Connecting to an ERP or other systems
 
 > For the **automation team**. Recipes to send a client's production data to another
 > system with a [Node-RED flow](node-red-flows.md). Up: [Customizing a client](index.md)
 
-Every recipe starts the same way: **Receive: Normalized tags** gives your flow every batch
-of values (`msg.payload.tags` is a list of `{ metric, value, ts }`). Keep only the values you
+Every recipe starts the same way: in **Insert a flow**, **Connect to the PLC reader** =
+**Receive: Normalized tags** gives your flow every batch of values (`msg.payload.tags` is a
+list of `{ metric, value, ts }`). Keep only the values you
 need with a **function** or **switch** node, then send them.
 
 !!! warning "Before you start"
     - The node you use must be **installed on the factory box**. If it isn't, Preview shows it
       and Apply refuses (a missing node would stop all flows). Ask the platform team to add it.
     - Put **addresses and passwords in the node's settings**, never inside a function.
-    - Node-RED flows need a box that reads PLCs with Node-RED (see
-      [Node-RED flows](node-red-flows.md)); a helper for Python-reader boxes is **coming soon**.
+    - The box must run Node-RED: either the generated Node-RED PLC reader, or the
+      **Node-RED helper** next to the Python reader (see
+      [Which boxes can run flows](node-red-flows.md#which-boxes-can-run-flows)). Every recipe
+      here uses **Normalized tags**, which both have.
 
 ## Recipes
 

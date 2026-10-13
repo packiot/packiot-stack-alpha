@@ -2,7 +2,7 @@
 title: Use Packiot — start here
 layer: guide
 owner_area: platform
-last_verified: 2026-09-29
+last_verified: 2026-10-13
 ---
 # Use Packiot — start here
 
@@ -42,7 +42,8 @@ Check: at full speed for the whole shift the line could make 48,000 good parts. 
 !!! tip "If a number looks too high"
     If Performance shows more than 100 %, the rated speed configured for that line is lower
     than what the line really does. Packiot shows the real number instead of hiding it at
-    100 %, so you can fix the setting.
+    100 %, so you can fix the setting. See
+    [Performance above 100 %](troubleshooting-oee.md#performance-above-100).
 
 ## Who uses which app
 
@@ -50,8 +51,8 @@ Check: at full speed for the whole shift the line could make 48,000 good parts. 
 |---|---|---|
 | **front4** (the dashboards) | Client managers, and our team to check a client | OEE by line, shift, day; downtimes; production; reports |
 | **Operator app** | Machine operators, on a tablet next to the line | Start and finish production orders, give the reason for each stop |
-| **CS Admin** | Customer Success | Set up a new client: factory structure, shifts, PLC connections, the factory box, go live. See [Setting up a new client](setting-up-a-client.md) |
-| **Customize** | The automation team | Adjust a client that is already set up: calculations, Node-RED flows, OEE settings. See [Customizing a client](customize/index.md) |
+| **CS Admin** | Customer Success | Set up a new client: factory structure, shifts, PLC connections, the factory box, go live; user logins. See [Setting up a new client](setting-up-a-client.md) |
+| **Customize** (the Customization Hub) | The automation team | Adjust a client that is already set up: calculations, Node-RED flows, OEE settings. Opened from CS Admin. See [Customizing a client](customize/index.md) |
 
 There is also a **barcode app** for factories that scan the boxes they pack.
 
@@ -63,6 +64,8 @@ There is also a **barcode app** for factories that scan the boxes they pack.
 | Make a new value from counters (scrap, line totals) | [Calculations](customize/calculations.md) |
 | Add logic on the factory box (alerts, extra processing) | [Node-RED flows](customize/node-red-flows.md) |
 | Send production data to an ERP, a database or another system | [Connecting to an ERP / other systems](customize/connecting-other-systems.md) |
+| Choose how a line's OEE is measured (its own signals or its lead machine) | [OEE settings](customize/oee-settings.md) |
+| Leave days out of OEE for a line that is not in use on purpose | [Out of service](setting-up-a-client.md#step-4-lines-and-machines) |
 | Find out why a number looks wrong (OEE 0, no data, Performance above 100 %) | [Troubleshooting OEE](troubleshooting-oee.md) |
 | Understand a word | [Glossary](../reference/glossary.md) |
 | See how the system is built | [For engineers](../understand/index.md) |
