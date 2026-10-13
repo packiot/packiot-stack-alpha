@@ -201,7 +201,7 @@ func (s *Server) handleDowntime(w http.ResponseWriter, r *http.Request) {
 		s.handleMapErr(w, action, err)
 		return
 	}
-	s.forward(w, r.Context(), action, call)
+	s.forward(w, r, action, call)
 }
 
 func (s *Server) handlePO(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +224,7 @@ func (s *Server) handlePO(w http.ResponseWriter, r *http.Request) {
 		s.handleMapErr(w, action, err)
 		return
 	}
-	s.forward(w, r.Context(), action, call)
+	s.forward(w, r, action, call)
 }
 
 // resolve maps a packml_topic to staging ids, writing the correct error
@@ -278,8 +278,20 @@ func (s *Server) handleMapErr(w http.ResponseWriter, action string, err error) {
 //	edge 2xx              -> 202 Accepted (the write landed in user_logs)
 //	edge 4xx              -> passthrough (same status + body)
 //	edge 5xx              -> 502 Bad Gateway
-func (s *Server) forward(w http.ResponseWriter, ctx context.Context, action string, call *edgeCall) {
-	res, err := s.edge.post(ctx, call)
+//
+// Before posting it attaches the Idempotency-Key (idempotency.go), so a client
+// retry after a 503/502 whose write edge-api had already committed is answered
+// from edge-api's key store instead of writing twice. A malformed caller key is
+// a 400 and nothing is sent.
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, action string, call *edgeCall) {
+	key, err := idempotencyKeyFor(r, call)
+	if err != nil {
+		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, err.Error())
+		return
+	}
+	call.idempotencyKey = key
+
+	res, err := s.edge.post(r.Context(), call)
 	if err != nil {
 		s.failed.Add(1)
 		s.metrics.observe(action, outcomeEdgeUnreachable)
