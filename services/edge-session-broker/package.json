@@ -6,9 +6,13 @@
   "description": "ADR-0057 SSM session data-plane bridge (session-manager-plugin ↔ WebSocket)",
   "main": "server.mjs",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

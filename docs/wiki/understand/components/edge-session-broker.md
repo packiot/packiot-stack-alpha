@@ -28,8 +28,8 @@ edge-api's image is Alpine (musl).
 
 | | |
 |---|---|
-| Language / runtime | Node.js 18 (`node:18-bookworm-slim`), ESM, one dependency (`ws@^8.18`) |
-| Repo path | `services/edge-session-broker/` (`server.mjs`, `Dockerfile`, `package.json`) |
+| Language / runtime | Node.js 18 (`node:18-bookworm-slim`), ESM, one dependency (`ws@^8.18`, pinned by `package-lock.json`, installed with `npm ci`) |
+| Repo path | `services/edge-session-broker/` (`server.mjs`, `server.test.mjs`, `Dockerfile`, `package.json`, `package-lock.json`) |
 | Image | Built in compose (`build: ./services/edge-session-broker`); installs `session-manager-plugin` `.deb` for amd64 or arm64 at build time |
 | Container | compose service `edge-session-broker` (no `container_name`, so the container is `stack-edge-session-broker-1`; DNS name `edge-session-broker` on `packiot-net`) |
 | Ports | `8090` WebSocket `/shell` (`BROKER_PORT`), `8091` HTTP (`BROKER_HTTP_PORT`); **not published** — reachable only on `packiot-net` |
@@ -43,9 +43,9 @@ edge-api's image is Alpine (musl).
 
 | Interface | Caller | Auth | Behaviour |
 |---|---|---|---|
-| `ws://edge-session-broker:8090/shell?token=<BROKER_TOKEN>` | edge-api | query `token` must equal `BROKER_TOKEN` (and be non-empty), else close `1008` | First text frame = JSON handle `{SessionId, StreamUrl, TokenValue, Target, region}`; later frames = terminal bytes to plugin stdin; plugin stdout → ws |
-| `POST http://edge-session-broker:8091/forward` | edge-api | header `x-broker-token` must equal `BROKER_TOKEN` (plain `!==`; with an empty `BROKER_TOKEN` an empty header would pass) | Body `{sessionId, response:{SessionId,StreamUrl,TokenValue}, target, boxPort, localPort}`; starts an `AWS-StartPortForwardingSession` plugin binding `127.0.0.1:<localPort>` in the broker; 200 once the port accepts TCP, 502 otherwise |
-| `ANY http://edge-session-broker:8091/p/<sessionId>/<path>` | edge-api reverse proxy | **none at the broker** (edge-api authorises first; the session id is the only key) | Proxies to `127.0.0.1:<localPort>/<path>` with the caller's request headers unchanged (cookies included); strips `X-Frame-Options` and `Content-Security-Policy` so the SPA can iframe the UI; 404 `no active forward` for an unknown id |
+| `ws://edge-session-broker:8090/shell?token=<BROKER_TOKEN>` | edge-api | query `token` must equal `BROKER_TOKEN` (constant-time compare), else close `1008` | First text frame = JSON handle `{SessionId, StreamUrl, TokenValue, Target, region}`; later frames = terminal bytes to plugin stdin; plugin stdout → ws |
+| `POST http://edge-session-broker:8091/forward` | edge-api | header `x-broker-token` must equal `BROKER_TOKEN` (constant-time), else `401` | Body `{sessionId, response:{SessionId,StreamUrl,TokenValue}, target, boxPort, localPort}`; starts an `AWS-StartPortForwardingSession` plugin binding `127.0.0.1:<localPort>` in the broker; 200 once the port accepts TCP, 502 otherwise |
+| `ANY http://edge-session-broker:8091/p/<sessionId>/<path>` | edge-api reverse proxy | header `x-broker-token` must equal `BROKER_TOKEN`, else `401` (edge-api also authorises the user first; it sends the header since packiot/edge-api#304) | Proxies to `127.0.0.1:<localPort>/<path>`. Before the box: drops `x-broker-token`, the `_oauth2_proxy*` and `pk_webui_*` cookies (other cookies kept) and oauth2-proxy / ALB identity headers (`x-auth-request-*`, `x-amzn-oidc-*`, `x-forwarded-access-token`, `x-forwarded-id-token`). From the box: removes `X-Frame-Options`, `Content-Security-Policy` and `…-Report-Only`, and sets `Content-Security-Policy: frame-ancestors <BROKER_FRAME_ANCESTORS>`, so only the listed origins (customize, csadmin) can iframe the UI. 404 `no active forward` for an unknown id |
 
 ## Internal design
 
@@ -71,7 +71,9 @@ edge-api's image is Alpine (musl).
 
 Key details:
 
-- **Secret handling.** The `StartSession` response is passed to the plugin in the env var
+- **Secret handling.** The broker exits at startup (`[broker] FATAL`) unless `BROKER_TOKEN` is at
+  least 32 characters, and removes it from its own environment after reading it, so plugin
+  children never inherit it. The `StartSession` response is passed to the plugin in the env var
   `AWS_SSM_START_SESSION_RESPONSE`; `argv[1]` carries only the variable's *name*, so the token
   never appears in `ps`. Argument order mirrors the AWS CLI's own invocation:
   `session-manager-plugin AWS_SSM_START_SESSION_RESPONSE <region> StartSession "" <request-json> <endpoint>`.
@@ -97,7 +99,8 @@ Broker (`server.mjs`):
 |---|---|---|---|
 | `BROKER_PORT` | `8090` | `8090` | WebSocket `/shell` |
 | `BROKER_HTTP_PORT` | `8091` | (default) | `/forward` + `/p/*` |
-| `BROKER_TOKEN` | *(empty ⇒ every WS rejected; `/forward` still compares with `!==`)* | `${EDGE_SESSION_BROKER_TOKEN}`, falling back to a committed literal | Shared secret with edge-api |
+| `BROKER_TOKEN` | *(none: the broker exits at startup unless it is ≥ 32 characters)* | `${EDGE_SESSION_BROKER_TOKEN:?}` (compose refuses to start without it), from Secrets Manager `packiot/staging/app` key `edge_session_broker_token` | Shared secret with edge-api, checked on every route |
+| `BROKER_FRAME_ANCESTORS` | `'self'` | `'self' https://customize.staging.packiot.app https://csadmin.staging.packiot.app` | CSP `frame-ancestors` source list for proxied box UIs (space-separated; `;`, `,` or newlines rejected at startup) |
 | `AWS_REGION` | `us-east-1` | `us-east-1` | Plugin region |
 | `SSM_ENDPOINT` | `https://ssm.<region>.amazonaws.com` | — | Plugin endpoint argument |
 | `BROKER_FORWARD_IDLE_MS` | `600000` | — | Idle port-forward reap |
@@ -107,26 +110,12 @@ edge-api side: `EDGE_SESSION_BROKER_WS_URL` (`ws://edge-session-broker:8090/shel
 `EDGE_SESSION_BROKER_TOKEN`, and the `SSM_SESSION_*` limits above. Empty WS URL ⇒ shell
 streaming disabled (socket closed `1011`); empty HTTP URL ⇒ `POST webui` 503.
 
-!!! warning "Current staging security posture"
-    - The token falls back to a literal default in `compose.staging.yml` (for both edge-api and
-      the broker) when `EDGE_SESSION_BROKER_TOKEN` is unset, so it is guessable from git.
-    - `/p/*` has no authentication at the broker, and the proxy strips the box's
-      `X-Frame-Options` / `Content-Security-Policy`, so a live box session could be framed by
-      any site.
-    - The proxy forwards the engineer's request headers to the box (customer hardware),
-      including the `_oauth2_proxy` and `pk_webui_*` cookies.
-
-    The broker is unreachable from outside `packiot-net`, which is the real boundary today.
-
-!!! note "Pending change: PR #1700 (open, not merged)"
-    [#1700](https://github.com/packiot/packiot-stack-alpha/pull/1700) hardens the broker: the token
-    becomes required (≥ 32 chars, from Secrets Manager `packiot/staging/app` key
-    `edge_session_broker_token`, written into `.env` by the deploy), compared in constant time
-    and kept out of the plugin's environment; every `:8091` route, `/p/*` included, requires
-    `x-broker-token` (edge-api sends it from packiot/edge-api#304); the box's XFO/CSP are replaced
-    by `Content-Security-Policy: frame-ancestors <BROKER_FRAME_ANCESTORS>`; platform cookies and
-    identity headers are no longer forwarded; and `server.test.mjs` runs in a new
-    `node-services.yml` workflow. Until it merges, the behaviour above is what runs.
+!!! note "Secret hygiene"
+    The token lives only in Secrets Manager (`packiot/staging/app` key
+    `edge_session_broker_token`). `deploy-staging.yml` writes it into `/opt/packiot/.env` on every
+    deploy and fails if it is missing or shorter than 32 characters; `app_init.sh` writes it on a
+    fresh box (without the length check; the broker itself refuses a short token). Before #1700 compose fell back to a committed literal, which is burned.
+    Port isolation on `packiot-net` remains a second boundary, not the only one.
 
 ## Data & invariants
 
@@ -151,7 +140,10 @@ streaming disabled (socket closed `1011`); empty HTTP URL ⇒ `POST webui` 503.
 
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
-| Terminal closes immediately | WS close `1008 unauthorized` in broker log | Token mismatch between edge-api and broker | Set the same `EDGE_SESSION_BROKER_TOKEN` for both, recreate both |
+| Terminal closes immediately | WS close `1008 unauthorized` in broker log | Token mismatch between edge-api and broker | Both read `EDGE_SESSION_BROKER_TOKEN` from `.env`; redeploy so both are recreated |
+| Web UI `401 unauthorized` | Iframe shows 401 | edge-api not sending `x-broker-token` on `/forward` or `/p/*` (an edge-api image older than packiot/edge-api#304), or token mismatch | Deploy edge-api ≥ #304; redeploy both services |
+| Broker restarts in a loop | `[broker] FATAL BROKER_TOKEN must be set…` | Token missing or shorter than 32 characters | Seed `packiot/staging/app` `edge_session_broker_token` (`openssl rand -hex 32`) and redeploy |
+| Box UI refuses to render in the iframe | Browser console: refused to frame, `frame-ancestors` | The embedding SPA's origin is not in `BROKER_FRAME_ANCESTORS` | Add the origin in `compose.staging.yml`, recreate the broker |
 | Terminal closes with `plugin exit 255` | Session ends at once | Expired/used handle, or box offline | Check SSM ping status; retry |
 | Web UI 502 `port-forward did not come up` | Iframe error | Box port not listening (e.g. on-prem box without Node-RED at 1880), or SSM denied | `connect` now picks the dashboard port for on-prem tenants; verify with `status/detailed` |
 | Web UI 502 `StartSession` denied (2026-09-16 → 20) | 502 from edge-api | Target was an EC2 `i-` box; IAM scopes StartSession to `managed-instance/*` + `managed-by` tag | Register the box as a hybrid `mi-` |
@@ -162,15 +154,19 @@ streaming disabled (socket closed `1011`); empty HTTP URL ⇒ `POST webui` 503.
 
 - Restart: `docker compose -f compose.staging.yml up -d --force-recreate edge-session-broker`
   (drops open shells; safe otherwise).
-- Rotate the token: set `EDGE_SESSION_BROKER_TOKEN` in `/opt/packiot/.env`, then recreate
-  **both** `edge-session-broker` and `edge-api` (a `docker restart` keeps the old env).
-- Never publish ports 8090/8091 on the host or nginx: with `/p/*` unauthenticated, network
-  isolation is the only control.
+- Rotate the token: put a new `openssl rand -hex 32` into `packiot/staging/app` key
+  `edge_session_broker_token` and redeploy. The deploy rewrites `.env` and recreates **both**
+  `edge-session-broker` and `edge-api` (a `docker restart` keeps the old env).
+- Never publish ports 8090/8091 on the host or nginx; the token is a second boundary, not a
+  reason to expose them.
 
 ## Tests
 
-No automated tests in `services/edge-session-broker/` and no CI workflow builds or tests it
-(PR #1700 adds both). edge-api covers the control plane in
+`services/edge-session-broker/server.test.mjs` (`npm test`, `node:test`, no plugin or AWS
+needed) covers token enforcement on the WebSocket and every HTTP route (`/p/*` included), the
+startup refusal without a 32-character token, the `frame-ancestors` header and the request-header
+and cookie stripping on `/p/`. CI: `.github/workflows/node-services.yml` runs it on pull requests
+that touch the service (not yet a required check). edge-api covers the control plane in
 `edge-api/src/usecases/edge-ssm/shared/edge-ssm.service.spec.ts` (session caps, tickets, mock
 tenants). End-to-end proof is manual: open a shell / web UI from csadmin Box Ops on a sandbox
 tenant.
@@ -179,7 +175,9 @@ tenant.
 
 | Path | What's there |
 |---|---|
-| `services/edge-session-broker/server.mjs` | WS shell bridge, `/forward`, `/p/*` proxy, reaper |
+| `services/edge-session-broker/server.mjs` | WS shell bridge, `/forward`, `/p/*` proxy, token check, header filters, reaper |
+| `services/edge-session-broker/server.test.mjs` | `node:test` suite |
+| `.github/workflows/node-services.yml` | CI for Node services (matrix: `edge-session-broker`) |
 | `services/edge-session-broker/Dockerfile` | Debian + session-manager-plugin install |
 | `edge-api/src/main.ts` | WS upgrade handler `/api/edge-ssm/session/stream`, web-UI reverse proxy + HTML shim |
 | `edge-api/src/usecases/edge-ssm/shared/edge-ssm.service.ts` | `startSession`, `relayToBroker`, `startWebUi`, reaper, `webUiTarget` |

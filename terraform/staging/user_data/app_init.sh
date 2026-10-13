@@ -99,6 +99,9 @@ GRAFANA_DEV_USER_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_dev_user_pass // ""
 # CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
 # POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
 GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
+# edge-api <-> edge-session-broker shared secret (ADR-0057). No fallback: compose
+# fails closed (VAR:? form) without it; deploy-staging.yml re-mirrors it every deploy.
+EDGE_SESSION_BROKER_TOKEN=$(echo "$APP_SECRET" | jq -r '.edge_session_broker_token // ""')
 # Onboard-generate API key (ADR-0045 §generate) — bearer that edge-api uses to
 # call the edge-transformer onboard server (:9105). Durable so a fresh instance
 # does not lose it (it was hand-added to .env once; codified 2026-08-05).
@@ -293,6 +296,9 @@ AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
 #   Kept as an explicit flag so the sandbox twin can be paused independently of
 #   the ent-3 replicator without editing compose.
 LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
+
+# edge-api <-> edge-session-broker shared secret (packiot/staging/app edge_session_broker_token)
+EDGE_SESSION_BROKER_TOKEN=$EDGE_SESSION_BROKER_TOKEN
 REPLICATE_SBX_ENABLED=true
 
 # Compose substitution helpers
