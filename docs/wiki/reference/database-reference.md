@@ -2,18 +2,22 @@
 title: Database reference
 layer: 4
 owner_area: analytics-db
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Database reference
 
 > **Layer 4 · Reference** — one line per table: grain, writer, main reader, retention.
-> Staging `packiot_analytics` and the historian gateway, read from the live catalog on
-> 2026-09-28. For lookups; explanations are in the linked pages.
+> Covers the **analytics DB** (`packiot_analytics`, the new stack's TimescaleDB, staging) and
+> the **historian** gateway (`packiot_historian`). The **legacy DB** (`packiot40` / tsp12, which
+> production still runs on) is not described here. Read from the live catalog on 2026-09-28;
+> table list re-checked on 2026-10-13 against `db/migrations/` and the 2026-10-09 column
+> inventory `dev/seed/schema-columns.tsv`. For lookups; explanations are in the linked pages.
 > Up: [Analytics DB](../understand/subsystems/analytics-db.md)
 
 Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 **RA** = `read-api`, **AS** = `analytics-sync` / `legacy-replicator`, **BS** =
-`barcode-service`, **SS** = Superset, **HG** = historian gateway. "∞" = kept forever.
+`barcode-service`, **SS** = Superset, **HG** = historian gateway, **SA** = `sparkplug-agent`,
+**DEC** = `sparkplug-decoder`. "∞" = kept forever.
 "RLS" = FORCE row-level security on `app.tenant_id`.
 
 ## Analytics DB — facts and aggregates
@@ -37,6 +41,9 @@ Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 | `silver.agg_equipment_values_1hour` | cagg | 1 h, wide | Timescale 1005 | legacy-shaped reads | 13 mo |
 | `silver.ca_discrete_changes_1s` | cagg | 1 s | Timescale 1013 | CPAC deriver | 90 d |
 | `silver.ca_equipment_boxes_1s` | cagg | 1 s × PO | Timescale 1014 | box counting | 90 d |
+| `silver.plc_link_minutes` | hypertable (7 d chunks), RLS | `(id_enterprise, endpoint, ts_minute)` | SA (`internal/agent/linkhealth`) | SE (PLC link → "no data" status, availability exclusions), invariants | not in catalog |
+| `silver.plc_endpoint_equipment` | view | reader endpoint → equipment | — | SE `events/cpac_deriver.go`, invariants | — |
+| `silver.machine_state` | lookup table | PackML state code → label, running/stopped | migration | `silver.equipment_values_labeled`, `silver.equipment_events_labeled` (views) | ∞ |
 | `silver.equipment_live_{metrics,shift,day,month,job}`, `silver.area_live_{shift,day}` | tables | one row per equipment/area | SE (`internal/uns`) | RA, `serving.production_information` | overwritten |
 | `gold.equipment_oee_hourly` | table, RLS | `(id_equipment, ts_value)` hour, `tp_equipment > 1` | SE `rollup/hour.go` | `bi.oee_hourly`, RA | 13 mo (job 1033) |
 | `gold.equipment_oee_shift` | table, RLS | `(id_equipment, ts_value)` shift | SE `rollup/shift.go` | `bi.oee_shift`, RA | ∞ |
@@ -47,7 +54,9 @@ Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 | `gold.site_oee_shift` | table | `(id_site, ts_value)` | SE `entity_grains.go` | `serving.oee_progress` | ∞ |
 | `gold.production_orders_runtime` | table, RLS | PO run; no overlap per equipment | SE pocontrol + `rollup/compute.go`, AS | `bi.production_order_runtime`, RA | ∞ |
 | `gold.po_box_counter` | table | one row per PO | BS | `bi.po_box_counter` | ∞ |
-| `serving.downtime_events_resolved` | table, RLS | resolved downtime row | Timescale 1072 (every 2 min, last 3 days) | RA downtime datasets | not in catalog |
+| `serving.downtime_events_resolved` (+ `_meta`, coverage start) | table, RLS | resolved downtime row | Timescale 1072 (every 2 min, last 3 days) | RA downtime datasets | not in catalog |
+| `serving.v_events_2`, `v_operator_*`, `v_*_per_user_role*`, `v_report_downtimes`, `production_information` | views | — | — | RA (operator, menus, reports) | — |
+| `bi.*` (`downtimes`, `equipments`, `equipment_speed`, `live_status`, `oee_hourly`, `oee_shift`, `po_box_counter`, `production_by_team`, `production_order_runtime`, `production_orders`, `production_targets`, `scanned_boxes`) | views (owner `bi_owner`) | — | — | SS | — |
 
 ## Analytics DB — dimensions, config, identity, ops
 
@@ -55,25 +64,34 @@ Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 |---|---|---|---|---|
 | `core.enterprises` / `sites` / `areas` | id | EA (CS Admin) | everyone | ∞ |
 | `core.equipments` (RLS) | `id_equipment` | EA | everyone; RLS anchor for `bi.*` | ∞ |
-| `core.topic_routing` (+ view `core.packml_register`) | `id_topic_route` | EA | decoder, SE | ∞ |
+| `core.device_bindings` (RLS) | `device_key` (`dk_` + 32 hex, UNIQUE); one active row per `id_equipment` | EA (CS Admin onboarding "Create missing device keys", `POST /api/onboarding/device-keys/mint-missing`) | DEC birth binding, RA | ∞ |
+| `core.topic_routing` (+ view `core.packml_register`) | `id_topic_route` | EA | DEC, SE | ∞ — being replaced by `core.device_bindings` ([ADR-0061](../adr/0061-remove-packml-from-the-cloud.md)) |
 | `core.shifts` / `core.shift_hours` | id | EA (runtime fields: SE) | shift resolver | ∞ |
-| `core.production_orders` (RLS) | `id_production_order` | EA, SE pocontrol/recalc, AS | `bi.production_orders`, RA, HG | ∞ |
+| `core.production_orders` (RLS) | `id_production_order` (the only join key); `id_order_text` = client PO number, text, NOT NULL, unique per enterprise; `po_uuid` UUIDv7 handle; integer `id_order` is being retired ([ADR-0062](../adr/0062-production-order-identity-and-alphanumeric-numbers.md)) | EA, SE pocontrol/recalc, AS | `bi.production_orders`, RA, HG | ∞ |
+| `core.po_number_corrections` | `id_production_order` | migration / DBA (reviewed fixes) | trigger `production_orders_po_number` on `core.production_orders` | ∞ |
 | `core.products`, `product_families`, `clients`, `teams` | id | EA, AS | RA, SE | ∞ |
 | `core.downtime_reason`, `equipment_downtime_reason` | id / pair | EA | operator | ∞ |
-| `core.client_descriptors` | `id_enterprise` | EA onboarding | decoder, SE reports | ∞ |
+| `core.client_descriptors` | `id_enterprise` (+ `version`) | EA onboarding / Customize | DEC, SE (`descriptor->'oee_profile'`, incl. per-line `lines`, read by `internal/oeeprofile`), SE reports | ∞ |
+| `core.box_production_bridges` | per enterprise × source/target `cd_equipment` | DBA (no app writer) | SE `reports/boxes_bridge.go` | ∞ |
+| `core.shifts_exception_period`, `core.scrap_reason`, `core.equipment_scrap_reason`, `core.equipment_validation_shift` | id | none yet (half-built: tables exist, no new-stack writer) | `equipment_validation_shift`: RA external shift validation, SE sync06 report | ∞ |
 | `config.production_targets` (RLS) | scope tuple | EA, trigger on `core.equipments` | `bi.production_targets`, RA | ∞ |
 | `config.scrap_targets`, `oee_targets` | scope tuple | EA / none | RA | ∞ |
+| `config.equipment_out_of_service` (RLS) | `id`; `(id_equipment, period)` no overlap | EA (CS Admin → Lines → line settings → "Out of service") | SE availability + PO exclusions, invariants | ∞ |
 | `config.labels`, `label_formats`, `translations`, `tenant_translations`, `language_packs`, `pages`, `dashboard_config` | various | EA / migrations | EA, RA, SE | ∞ |
 | `identity.users` | linked to Cognito by `id_user_cognito` | EA | RA, operator | ∞ |
 | `identity.user_roles` | id | EA | RA | ∞ |
 | `identity.user_logs` | log row | EA logger | audit | ∞ |
 | `identity.user_screen_config` | `(id_enterprise, id_user, screen)` | RA | RA | ∞ |
-| `ops.retention_policy` / `retention_run` | relation / run | DBA / job 1033 | job 1033, exporter | run log 13 mo |
+| `ops.retention_policy` / `retention_run` (+ view `retention_drift`) | relation / run | DBA / job 1033 | job 1033, exporter | run log 13 mo |
+| `ops.data_invariant_result` (+ view `data_invariant_latest`) | check × tenant × run | `ops.job_data_invariants` (every 30 min), `scripts/ops/data-oracle-check.sh` | alerting | 14 d |
+| `ops.sandbox_state` (+ view `sandbox_hold_status`) | one row per sandbox twin | sandbox heal / `scripts/sandbox-session.sh` | sandbox heal | ∞ |
+| `ops.legacy_manual_event_link` | `id_equipment_event` | AS manual-event reconciler | AS | ∞ |
 | `ops.mirror_replay_cursor` / `_dlq` | stream | AS | AS | ∞ |
 | `ops.capture_observations` | topic × index | sparkplug-decoder agent | EA | ∞ |
 | `ops.idempotency_keys` | key | EA | EA | ∞ |
-| `ops._bkp_*` | copy of repaired rows | DBA | DBA | manual |
-| `customer_reports.*` | report row | SE `internal/reports` | customer integrations | ∞ |
+| `ops._bkp_*`, `ops._fix_*`, `ops.bf2_*`, `ops._bf_gap_*` | copies of repaired rows / backfill plans | DBA | DBA | manual |
+| `customer_reports.boxes`, `production_data_sync`, `sap_data_sync`, `shift` | report row | SE `internal/reports` | customer integrations | ∞ |
+| `public.knex_migrations` (+ `_lock`) | migration name | edge-api knex | edge-api | ∞ |
 
 ## Historian gateway (`packiot_historian`)
 
