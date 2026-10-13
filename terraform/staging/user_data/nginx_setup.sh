@@ -650,6 +650,15 @@ cat > /etc/nginx/conf.d/refdata.conf <<NGINX
 # is the SAME exemption rationale as api.conf's /api/* block and operator.conf's
 # XHR routes (see their comments) — so there is NO auth_request here; nginx
 # proxies straight to the container and refdata-api is the sole auth authority.
+# Allowed SPA origins (codified from the live hand-fix, 2026-10-13): front4 staging
+# moved to front.$STAGING_DOMAIN and csadmin calls refdata too; a single hard-coded
+# origin made the browser reject their responses. Unknown origins get no ACAO.
+map \$http_origin \$cors_allow_origin {
+    default                                "";
+    "https://staging.packiot.com"          \$http_origin;
+    "https://front.$STAGING_DOMAIN"    \$http_origin;
+    "https://csadmin.$STAGING_DOMAIN"  \$http_origin;
+}
 server {
     listen 80;
     server_name refdata.$STAGING_DOMAIN;
@@ -679,9 +688,8 @@ server {
         # request can reach refdata-api's fail-closed auth middleware. 'always'
         # ensures the ACAO header rides along on refdata's 401/4xx too, so the
         # browser can read cross-origin error bodies.
-        set \$cors_origin "https://staging.packiot.com";
         if (\$request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin  \$cors_origin always;
+            add_header Access-Control-Allow-Origin  \$cors_allow_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS" always;
             # x-packiot-agent + x-user are sent by front4 on every refdata call;
             # omitting them from Allow-Headers makes the browser block the request
@@ -692,7 +700,7 @@ server {
             add_header Content-Type "text/plain";
             return 204;
         }
-        add_header Access-Control-Allow-Origin  \$cors_origin always;
+        add_header Access-Control-Allow-Origin  \$cors_allow_origin always;
         add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user, x-operator-superadmin-token" always;
 
         # refdata-api: internal container, no host publish. nginx (host) reaches
