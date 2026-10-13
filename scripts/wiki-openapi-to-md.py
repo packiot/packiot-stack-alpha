@@ -219,6 +219,14 @@ def render(name, doc):
         f"> Up: [API reference](index.md) · Version `{info.get('version', '')}` · OpenAPI `{doc.get('openapi', '')}`",
         "",
     ]
+    ext = (doc.get("externalDocs") or {}).get("url", "")
+    m = re.match(r"https://wiki\.packiot\.app/(understand/components/[a-z0-9-]+)/?$", ext)
+    if m:
+        # Wiki-internal target: link relatively so mkdocs --strict checks it.
+        out += [f"**How it works:** [{m.group(1).rsplit('/', 1)[-1]}](../../{m.group(1)}.md) · "
+                "[Service catalog](../service-catalog.md)", ""]
+    elif ext:
+        out += [f"**How it works:** <{ext}>", ""]
     if info.get("description"):
         out += ["## Overview", "", demote(info["description"], by=1).strip(), ""]
 

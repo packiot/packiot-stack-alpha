@@ -144,4 +144,10 @@ No dev slice and no tests in this directory. The nearest check is the integrity 
 - [ADR-0041 — GCP exit and lakehouse](../../docs/adr/0041-gcp-exit-lakehouse.md)
 - [ADR-0060 — local development environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [historian-gateway](https://wiki.packiot.app/understand/components/historian-gateway/) |
+| Backups and known gaps | [Backups & restore](https://wiki.packiot.app/build/operate/backups-and-restore/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

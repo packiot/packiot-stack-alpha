@@ -9,7 +9,7 @@
 #      reference/adr-index.md links resolve. Writing rules: docs/WIKI-STYLE.md.
 #   2. Runs mkdocs-material against wiki/mkdocs.yml.
 #   3. Emits self-contained static HTML to dist/wiki/ (synced to /var/www/wiki
-#      on the box; see docs/wiki/components/wiki-pipeline.md).
+#      on the box; see docs/wiki/understand/components/wiki-pipeline.md).
 #
 # IDEMPOTENT: the staging + dist dirs are wiped and rebuilt each run.
 # NETWORK: none at serve time; a one-time `pip install` into a local venv if
@@ -93,4 +93,4 @@ rm -rf "$DIST"
 
 log "done. Static site at: $DIST"
 log "  entry:  $DIST/index.html"
-log "  sync to box:  aws s3 sync '$DIST/' s3://<bucket>/wiki/  (see docs/wiki/components/wiki-pipeline.md)"
+log "  sync to box:  aws s3 sync '$DIST/' s3://<bucket>/wiki/  (see docs/wiki/understand/components/wiki-pipeline.md)"

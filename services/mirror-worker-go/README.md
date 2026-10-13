@@ -182,4 +182,9 @@ CI runs `go vet`, `go test -race` and `go build` in `.github/workflows/go-servic
 - [ADR-0025 three-flow PO state reconciliation](../../docs/adr/0025-three-flow-po-state-reconciliation.md)
 - [Sandbox twin runbook](../../docs/runbooks/sandbox-twin.md) — what replaced the mirror as staging test data
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [mirror-worker](https://wiki.packiot.app/understand/components/mirror-worker/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

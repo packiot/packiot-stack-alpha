@@ -173,4 +173,11 @@ the `go-services.yml` matrix. `openapi_completeness_test.go` checks the spec cov
 - [ADR-0062 production-order identity](../../docs/adr/0062-production-order-identity-and-alphanumeric-numbers.md)
 - [ADR-0060 dev environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [operator-gateway](https://wiki.packiot.app/understand/components/operator-gateway/) |
+| API reference (generated from the spec) | [operator-gateway](https://wiki.packiot.app/reference/api/operator-gateway/) |
+| Interactive API docs (staging, SSO) | [API portal](https://api.staging.packiot.app/docs/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

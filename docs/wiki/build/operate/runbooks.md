@@ -43,7 +43,7 @@ last_verified: 2026-09-28
 | `docs/ops/observability-persona-dashboards.md` | which Grafana board answers which question |
 | `docs/ops/aws-cost-optimization.md` | AWS cost audit and tracker (read-only) |
 | `docs/ops/worker-tier-k8s-orchestration.md` | design for scaling the worker tier (not an operating procedure) |
-| `docs/wiki-deploy.md` | wiki bucket/role/cron wiring (see [wiki pipeline](../../understand/components/wiki-pipeline.md)) |
+| `docs/archive/wiki-v1/wiki-deploy.md` (archived) | wiki bucket/role/cron wiring (see [wiki pipeline](../../understand/components/wiki-pipeline.md)) |
 | `services/historian-gateway/README.md` | historian gateway start, hardening and recreate |
 | `scripts/deploy-db-agent.sh` | (re)deploy the DB-box Alloy agent via SSM |
 | `scripts/provision-sandbox-tenant.sh` | provision or `--heal` the sandbox tenant 2000003 |

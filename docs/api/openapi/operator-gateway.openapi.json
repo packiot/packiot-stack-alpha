@@ -1,5 +1,9 @@
 {
   "openapi": "3.1.0",
+  "externalDocs": {
+    "description": "How this service works (Packiot wiki, SSO)",
+    "url": "https://wiki.packiot.app/understand/components/operator-gateway/"
+  },
   "info": {
     "title": "operator-gateway",
     "version": "0.1.0",

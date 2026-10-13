@@ -144,4 +144,11 @@ After changing `openapi.json`, run `make openapi` and commit the exported copy
 - [ADR-0034 — adopt Cognito/Amplify auth](../../docs/adr/0034-adopt-cognito-amplify-auth.md)
 - [ADR-0060 — local development environment](../../docs/adr/0060-local-development-environment-and-cpack-dev-seed.md)
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [barcode-service](https://wiki.packiot.app/understand/components/barcode-service/) |
+| API reference (generated from the spec) | [barcode-service](https://wiki.packiot.app/reference/api/barcode-service/) |
+| Interactive API docs (staging, SSO) | [API portal](https://api.staging.packiot.app/docs/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |

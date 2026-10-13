@@ -52,4 +52,10 @@ CS-Admin SSO).
 - **Deploy**: merge to `staging` → **Deploy to Staging** (`.github/workflows/deploy-staging.yml`). These are
   first-party directories, so the submodule auto-bump chain does not apply.
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+- **How each service works:** the component pages under [Understand](https://wiki.packiot.app/understand/) in the wiki (SSO).
+- **APIs:** [API reference](https://wiki.packiot.app/reference/api/) (generated from the OpenAPI specs in this repo) and the
+  interactive [API portal](https://api.staging.packiot.app/docs/) (staging, SSO).
+- **Everything linked in one table:** [Service catalog](https://wiki.packiot.app/reference/service-catalog/).
+- **Adding a service:** [Add a service](https://wiki.packiot.app/build/develop/add-a-service/).

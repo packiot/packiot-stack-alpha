@@ -8,7 +8,7 @@ the only thing deployed to the AWS staging EC2. The
 service repos do their own testing in isolation; this repo runs the
 integration via `docker compose`.
 
-If you're new to the codebase, start with the wiki's **For engineers** page (`docs/wiki/for-engineers.md`, served at wiki.packiot.app)
+If you're new to the codebase, start with the wiki's **Understand Packiot** page (`docs/wiki/understand/index.md`, served at wiki.packiot.app)
 — the end-to-end walk through the stack (architecture, code map,
 glossary, doc routing). This file is about **workflow** — branches,
 PRs, deploys, and how the auto-bump chain wires it all together.
@@ -18,8 +18,8 @@ PRs, deploys, and how the auto-bump chain wires it all together.
 ## TL;DR
 
 The full, verified procedure is in the wiki: **Operations → "Branches, merging & deploying"**
-(`docs/wiki/operations/branches-and-merging.md`) and **"Local development"**
-(`docs/wiki/operations/local-development.md`).
+(`docs/wiki/build/develop/branches-and-merging.md`) and **"Local development"**
+(`docs/wiki/build/develop/local-development.md`).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -33,8 +33,8 @@ The full, verified procedure is in the wiki: **Operations → "Branches, merging
 - Feature branches off **`staging`**, PR back into **`staging`**, in every repo.
 - **Never push/merge/rebase/force-push `development`, `master`, `main` or `production`**
   in any repo: in edge-api and front4 those branches deploy to customers.
-- Merge only when **every** check on the PR's head SHA is green (only
-  `Validate compose files` is required by the ruleset; the rest is our rule).
+- Merge only when **every** check on the PR's head SHA is green (the ruleset
+  requires `Validate compose files` and `dev slices gate`; everything else green is our rule).
 - Submodule changes: merge in the submodule's `staging`; edge-api, operator4 and
   edge-node-red bump the pin here automatically; csadmin is bumped by hand.
 - `db/migrations/` has no runner: dry-run → apply → verify on staging, then merge.
@@ -125,8 +125,10 @@ targets the parent's **retired** `development` branch (direct merge, it is unpro
 Do not push submodule `development` branches: in edge-api it also deploys the
 customer-facing Elastic Beanstalk `edge-api-dev-docker-env`.
 
-Auto-merge waits only for the one required check (`Validate compose files`), not
-for `dev-slices` or `go-services`: the submodule's own CI is the real gate.
+Auto-merge waits for the two required checks (`Validate compose files` and
+`dev slices gate`), not for `go-services` or gitleaks; the submodule's own CI is the
+real gate. Note: without the `DEV_SUBMODULES_TOKEN` secret the `edge` slice is skipped,
+and a skipped slice still passes the gate.
 
 ### Requirements per submodule
 
@@ -184,7 +186,7 @@ Rules active on `refs/heads/staging`:
 | Rule | Effect |
 |---|---|
 | `pull_request` | All changes must go through a PR. Direct `git push origin staging` is rejected. Required approvals: 0 (so bot bump PRs auto-merge). |
-| `required_status_checks` | `Validate compose files` must pass before merge. |
+| `required_status_checks` | `Validate compose files` and `dev slices gate` must pass before merge. |
 | `non_fast_forward` | Force-push to `staging` is rejected. |
 | `deletion` | `staging` cannot be deleted. |
 
@@ -245,7 +247,8 @@ bump failed silently.
 | Workflow | Trigger | Job name | Required? |
 |---|---|---|---|
 | `pr-validation.yml` | PR to `staging` or `development` | `Validate compose files` | **Yes** (on `staging`) |
-| `gitleaks.yml` | PR + push to `staging` | `gitleaks detect (full history)` | **Yes** — fails on any secret |
+| `dev-slices.yml` | every PR to `staging` | `dev slices gate` (+ `slice <name>` jobs) | **Yes** — passes when the slices pass or are not needed |
+| `gitleaks.yml` | PR + push to `staging` | `gitleaks detect (full history)` | No (not in the ruleset), but merge only when green — fails on any secret |
 | `go-services.yml` | PR to `staging`/`development` touching `services/**` | `<service> — vet/test/build` (matrix) | No (convention) |
 | `deploy-staging.yml` | push to `staging` | `deploy` (includes smoke check on container health) | (post-merge) |
 | `build-postgres.yml` | push to `main` (path `db/**`) | `build-and-push` | No |
@@ -291,9 +294,9 @@ worth ~2-4h of work if discipline keeps slipping.
 
 Two layers keep credentials out of git:
 
-1. **CI (`gitleaks.yml`)** — a **required** check that scans the full history
-   on every PR and every push to `staging`. Any finding fails the job and
-   blocks the merge. Runs the pinned gitleaks binary with the shared
+1. **CI (`gitleaks.yml`)** — a check (by convention: merge only when it is green; it is not in the ruleset) that scans the full history
+   on every PR and every push to `staging`. Any finding fails the job, and by our
+   rule the PR is not merged. Runs the pinned gitleaks binary with the shared
    `.gitleaks.toml` allowlist (tuned to suppress documented dev-default /
    public-key false positives with near-zero noise).
 

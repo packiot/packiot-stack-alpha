@@ -218,4 +218,10 @@ renders the history-recompute SQL from the current code (see the runbook below).
 - [ADR-0061 remove PackML from the cloud](../../docs/adr/0061-remove-packml-from-the-cloud.md)
 - [`docs/PORTING.md`](../../docs/PORTING.md) — port rules
 
-<!-- wiki-links: added in cross-reference pass -->
+## Docs
+
+| What | Where |
+|---|---|
+| How it works (wiki) | [stream-engine](https://wiki.packiot.app/understand/components/stream-engine/) |
+| Rollup internals | [stream-engine rollup internals](https://wiki.packiot.app/understand/components/stream-engine-rollup-internals/) |
+| Every service, linked | [Service catalog](https://wiki.packiot.app/reference/service-catalog/) |
