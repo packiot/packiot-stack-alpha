@@ -55,7 +55,18 @@ Tables live in the analytics DB; the column definitions are in
 ### The flag model
 
 - A grain row exists before its time comes: `runtime-provision` pre-creates future hour, day, shift,
-  week and month rows (`piot_create_*_oee_*`).
+  week and month rows. Hour rows come from the engine's own `provisionHourlySQL` (`provision.go`);
+  the other grains from the legacy `piot_create_*_oee_*` functions.
+- An hour row's production day (`ts_value_production`) is the day that contains
+  **bucket start + 59 minutes**, from `piot_get_day_begin_by_equipment`. It only matters for a day
+  that starts off the hour: with `day_begin = -3000` (23:10 local) the bucket 23:00–00:00 local
+  belongs to the new day, where 50 of its 60 minutes are. The label depends only on the bucket, so
+  re-running provisioning never changes it. Until 2026-10-13 the legacy
+  `piot_create_equipment_oee_hourly` labelled that bucket by the minute the job happened to run
+  (legacy prod always ran it at minute 59, the engine at any minute), so CPACK, the twin, Incoplast,
+  119 and 120 had production days with 23 or 25 hour rows. Invariant `K8_day_hour_rows_ne_day_hours`
+  (`db/migrations/t-data-invariants-v11`) checks that every settled day of the last 7 has exactly
+  day length / 3600 hour rows.
 - Rows are **flagged** by the jobs themselves: each pass re-flags a recent band every tick
   (hour: `[date_trunc('hour', now − 2 h), now]`; shift: `[now − 12 h, now + 18 h)`; day: the current
   production day; week/month: the current bucket). Lower grains also flag higher ones (hour → day,
@@ -76,7 +87,7 @@ provisioning holds it, commit and skip.
 |---|---|---|---|
 | 1 | `eligible` | `equipment_oee_hourly`, `equipments` | temp table `hour_elig`: flagged rows in `[now − 65 min, now]`, `tp_equipment > 1`, not excluded |
 | 2 | `values` | `_1hour` cagg (same bucket) | `gross`, `net`, `scrap = gross − net` (signed); missing buckets → 0; **keeps** `recalc_needed = true` |
-| 3 | `cascade-day` | `piot_get_day_begin_by_equipment` | flags the equipment's day row (`FOR UPDATE SKIP LOCKED`, only rows not already flagged) |
+| 3 | `cascade-day` | the hour row's `ts_value_production` (fallback: `piot_get_day_begin_by_equipment` at bucket + 59 min) | flags the day row the hour is summed into (`FOR UPDATE SKIP LOCKED`, only rows not already flagged) |
 | 4 | `speed` | `_1min` cagg; LOCF of `equipment_values.ideal_production_speed` (≤ 7 days back); `equipments.production_speed` | `speed` = avg per-minute speed; `ideal_speed` = avg of (bucket ideal, else last known, else `production_speed`) |
 | 5 | `events` | `equipment_events` of the last 10 days plus the event in effect at that bound; `_1hour` (last data) | only for rows that overlap an event: time in state, `available_time = total − planned`, `ideal_production = available/60 × ideal_speed`, `oee = net/ideal_production`, `oee_a`, `oee_q`; clears `recalc_needed`. Guard `ts_value ≥ now − 6 h` |
 | 6 | `counters-avail` (if engaged) | `_1min` | opted-in equipment still flagged after step 5 (no events): count-session availability |
@@ -141,7 +152,8 @@ bucket, so a day can only exceed its length when more hour buckets are attribute
 hours (a `day_begin` that is not on the hour) or when time is counted twice upstream. That is a
 data-quality signal, not something to clip: invariant `K7_day_time_gt_day_length`
 (`db/migrations/t-data-invariants-v10`) reports every settled day of the last 7 whose time columns
-exceed the day's DST-aware length. The UI may cap for display.
+exceed the day's DST-aware length. The UI may cap for display. Its main cause was the hour-label bug
+described under [the flag model](#the-flag-model); K8 now checks the labels directly.
 
 ### RunShift
 
@@ -332,6 +344,7 @@ Use this after a code fix or a Silver repair. The full procedure is the runbook
 from `services/stream-engine` (CI job `golden-fixtures`). Rollup golden files: `golden_test.go`,
 `shift_golden_test.go`, `line_lead_golden_test.go`, `counters_avail_golden_test.go`,
 `changeover_golden_test.go`, `day_clamp_golden_test.go`, `hour_deadlock_golden_test.go`,
+`provision_label_golden_test.go`,
 `event_lookback_golden_test.go`, `availability_exclusions_golden_test.go`,
 `availability_exclusions_po_golden_test.go`, `grain_cascade_golden_test.go`,
 `area_day_flag_golden_test.go`, `po_runtime_golden_test.go`, `stranded_golden_test.go`,
@@ -355,8 +368,9 @@ tests include `backfill_test.go`, `history_test.go`, `line_lead_scope_test.go`, 
 | `services/stream-engine/internal/rollup/oee.go` | canonical OEE formulas in Go (reference) |
 | `services/stream-engine/internal/rollup/dq.go`, `silver.go`, `unmetered.go`, `stranded.go` | post-grain passes and the stranded-flag sweep |
 | `services/stream-engine/internal/rollup/history.go`, `cmd/recompute-render/` | history-recompute renderer |
-| `services/stream-engine/internal/rollup/provision.go`, `locks.go` | provisioning, advisory lock helper |
+| `services/stream-engine/internal/rollup/provision.go`, `locks.go` | provisioning (`provisionHourlySQL`: hour rows and their production-day label), advisory lock helper |
 | `scripts/recompute/` | per-day recompute runner and flag example |
 | `db/migrations/t-oee-uncapped-data/`, `t-history-uncap/` | relaxed OEE CHECKs, uncapped history |
 | `db/migrations/t-data-invariants-v10/` | K7: day time above the production-day length (day times stored raw since 2026-10-13) |
+| `db/migrations/t-data-invariants-v11/` | K8: hour rows per production day must equal the day's length / 3600 |
 | `services/stream-engine/cmd/port-parity/`, `services/stream-engine/scripts/parity-check.sql` | parity tooling |

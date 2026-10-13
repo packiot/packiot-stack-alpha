@@ -114,7 +114,7 @@ enterprise added to a deriver list must be added to the closer list too.
 
 | Data | Grain / key | Lifecycle |
 |---|---|---|
-| `gold.equipment_oee_hourly` | `(id_equipment, ts_value)` hour, every equipment; machine rows of line-metered enterprises carry NULL factors ("not metered") | pre-created by provision; recomputed ≤ 10 days back; retained 13 months |
+| `gold.equipment_oee_hourly` | `(id_equipment, ts_value)` hour, every equipment; machine rows of line-metered enterprises carry NULL factors ("not metered") | pre-created by provision (production day = the day containing bucket + 59 min); recomputed ≤ 10 days back; retained 13 months |
 | `gold.equipment_oee_shift` | `(id_equipment, ts_value)` shift start, with `ts_end`, `id_shift` | recomputed ≤ 30 days back (line-lead 25); retained indefinitely |
 | `gold.equipment_oee_daily` / `_weekly` / `_monthly` | production day / week / month | recomputed ≤ 1 month / 1 year back |
 | `gold.area_oee_daily`, `gold.area_oee_shift`, `gold.site_oee_shift` | area/site × bucket | summed from lines |
@@ -177,6 +177,7 @@ The full list with defaults is on the [stream-engine](../components/stream-engin
 | 2026-10-01 | Availability three states: PLC link health (#1531), no-data events (#1532), exclusions (#1534); meter-fill flag (#1530); stranded-flag sweep (#1541) |
 | 2026-10-02 | Shift boundary hours split by overlap (#1545) and a shift-vs-silver invariant (#1546) |
 | 2026-10-13 | Day time columns stored raw (no production-day-length cap, like P and Q); invariant K7 reports days above their length |
+| 2026-10-13 | Hour rows' production day no longer depends on when provisioning runs (engine-owned `provisionHourlySQL`, bucket + 59 min rule); day cascade follows the label; invariant K8 counts hour rows per day |
 
 ## Go deeper
 
