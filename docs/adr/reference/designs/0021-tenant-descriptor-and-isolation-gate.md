@@ -24,7 +24,7 @@ clients/incoplast/
 
 Extends today's honored skeleton (`tenant_id`, `customer`, `environment`,
 `equipments`) with three new top-level sections. The loader
-(`services/edge-transformer/internal/clientconfig/loader.go`) grows to parse these
+(`services/sparkplug-decoder/internal/clientconfig/loader.go`) grows to parse these
 (task C0); until then they parse-and-ignore, so the file is forward-compatible.
 
 ```yaml

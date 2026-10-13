@@ -1,7 +1,7 @@
 # ADR-0042 P1 — CPACK Mode-A tee: front-door + cutover spec
 
 Companion to the `sparkplug-agent-cpack` service (`compose.staging.yml`) and the
-agent HTTP ingest (`services/edge-transformer/internal/agent/httpingest`). This
+agent HTTP ingest (`services/sparkplug-decoder/internal/agent/httpingest`). This
 doc holds the two **USER-gated / operational** pieces the PR builds-and-proves
 but does **not** apply: the public HTTPS front-door (nginx + cert + SG rule) and
 the plc-sim cutover.

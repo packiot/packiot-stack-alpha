@@ -8,7 +8,7 @@
 # run on the staging sandbox VM (mi-0114b66366e2d6613) and PROVABLY cannot write
 # to real CPACK. Generate the bundle the SAME way as any client:
 #
-#   go run ./services/edge-transformer/cmd/onboard-gen \
+#   go run ./services/sparkplug-decoder/cmd/onboard-gen \
 #       --descriptor docs/clients/sandbox-edge/sbxcpack.descriptor.yaml --out <dir>/
 #
 # SEVERANCE BAKED INTO THIS DESCRIPTOR (see scripts/provision-cpack-replica-sandbox.sh

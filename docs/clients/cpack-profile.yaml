@@ -5,7 +5,7 @@
 # It expresses — as data, not code — the four quirk classes the CPACK L6 tee
 # validation surfaced. The sparkplug-agent loads this profile + packml_register
 # and BUILDS the raw_tag_map; no per-client Go. See
-# services/edge-transformer/internal/agent/tenantprofile.
+# services/sparkplug-decoder/internal/agent/tenantprofile.
 #
 # Equivalence: BuildRawTagMapFromRegister(this profile, the enterprise-3 CPACK
 # equipment rows) reproduces cpack-agent.yaml's raw_tag_map exactly (same
