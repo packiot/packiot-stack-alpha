@@ -723,6 +723,7 @@ func buildOpenAPISpec() (map[string]any, error) {
 				`{"error":"filter \"time_grain\" must be one of day|hour|week|month"}`,
 				`{"error":"unknown metric \"oee\""}`,
 				`{"error":"window exceeds 168h0m0s budget for grain 1min"}`),
+			"413": errResp("The body exceeds 64 KB.", `{"error":"payload too large"}`),
 			"403": errResp("A per-user-role dataset (`requires_user_context`) was called without a user identity (X-Api-Key, or a user without a role).",
 				`{"error":"dataset requires user context (front4 Firebase JWT); not available via X-Api-Key"}`),
 			"422": errResp("Composer only: the window starts before the aggregate's retention floor.",
@@ -755,6 +756,7 @@ func buildOpenAPISpec() (map[string]any, error) {
 			"200": jsonResp("Stored.", map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean", "description": "Always `true` on success."}}, "required": []string{"ok"}}, map[string]any{"ok": true}),
 			"400": errResp("`user`/`screen` missing, or the body is not valid JSON ≤ 64 KB.",
 				`{"error":"user and screen query params required"}`, `{"error":"config must be valid JSON <= 64KB"}`),
+			"413": errResp("The body exceeds 64 KB.", `{"error":"payload too large"}`),
 			"500": errResp("The upsert failed.", `{"error":"store failed"}`),
 		}))
 
@@ -814,6 +816,7 @@ func buildOpenAPISpec() (map[string]any, error) {
 				"400": errResp("Malformed body (including a non-RFC 3339 bound), from ≥ to, or the window exceeds the budget.",
 					`{"error":"bad request body"}`, `{"error":"invalid window: require from < to (RFC3339)"}`,
 					fmt.Sprintf(`{"error":"window exceeds %s historian budget"}`, histMaxWindow)),
+				"413": errResp("The body exceeds 64 KB.", `{"error":"payload too large"}`),
 				"500": errResp("The historian query failed or timed out (60 s).", `{"error":"historian query failed"}`),
 				"503": errResp("The historian gateway is not configured on this deployment.", `{"error":"historian gateway not configured"}`),
 			}))

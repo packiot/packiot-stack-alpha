@@ -106,7 +106,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.reject(w, r, http.StatusBadRequest, metrics.OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			s.reject(w, r, http.StatusRequestEntityTooLarge, metrics.OutcomeRejectedBad, "payload too large", "", int64(len(body)))
 			return
 		}
 		s.reject(w, r, http.StatusBadRequest, metrics.OutcomeRejectedBad, "cannot read body", "", int64(len(body)))

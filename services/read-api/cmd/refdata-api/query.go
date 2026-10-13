@@ -164,11 +164,11 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+		body, ok := readBodyCapped(w, r, maxRequestBody)
+		if !ok {
 			return
 		}
+		var err error
 		// Two request shapes share the endpoint: {"dataset", ...} routes
 		// to the named-dataset registry (datasets.go, front4 census);
 		// otherwise the metric×dimension composer (legacy shape).
@@ -317,12 +317,15 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(cfg)
 		case http.MethodPut:
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-			if err != nil || !json.Valid(body) {
+			body, ok := readBodyCapped(w, r, maxRequestBody)
+			if !ok {
+				return
+			}
+			if !json.Valid(body) {
 				http.Error(w, `{"error":"config must be valid JSON <= 64KB"}`, http.StatusBadRequest)
 				return
 			}
-			_, err = pool.Exec(r.Context(), `INSERT INTO identity.user_screen_config (id_enterprise, id_user, screen, config)
+			_, err := pool.Exec(r.Context(), `INSERT INTO identity.user_screen_config (id_enterprise, id_user, screen, config)
 				VALUES ($1,$2,$3,$4) ON CONFLICT (id_enterprise, id_user, screen)
 				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, cid, user, screen, string(body))
 			if err != nil {
@@ -377,6 +380,30 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 		served.Add(1)
 		writeDashboardConfig(w, resolveDashboardConfigResp(cfg, version, found))
 	})
+}
+
+// maxRequestBody caps every read-api JSON request body (/v1/query, the
+// historian series, PUT /v1/screen-config).
+const maxRequestBody = 1 << 16 // 64 KB
+
+// readBodyCapped reads the request body under http.MaxBytesReader. Over the cap
+// is 413 {"error":"payload too large"}; any other read failure is 400
+// {"error":"bad request body"}. It replaced io.LimitReader, which silently
+// truncated an oversized body and then failed (or, for a truncation that is
+// still valid JSON, succeeded) on the cut-off bytes. ok=false ⇒ the response
+// has been written.
+func readBodyCapped(w http.ResponseWriter, r *http.Request, limit int64) (body []byte, ok bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, `{"error":"payload too large"}`, http.StatusRequestEntityTooLarge)
+			return nil, false
+		}
+		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+		return nil, false
+	}
+	return body, true
 }
 
 // ── Dashboard config (ADR-0029 §D2 / Phase F2) ───────────────────────────────

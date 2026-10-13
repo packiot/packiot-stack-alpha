@@ -32,7 +32,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -208,11 +207,11 @@ func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgx
 	}
 	// Validate the request BEFORE checking backend availability, so a malformed
 	// window is always a clean 400 regardless of whether the gateway is up.
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-	if err != nil {
-		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+	body, ok := readBodyCapped(w, r, maxRequestBody)
+	if !ok {
 		return
 	}
+	var err error
 	var q histSeriesReq
 	if err := json.Unmarshal(body, &q); err != nil {
 		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)

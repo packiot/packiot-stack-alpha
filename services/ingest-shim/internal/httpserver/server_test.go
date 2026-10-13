@@ -213,7 +213,7 @@ func TestIngest_EmptyBody_400(t *testing.T) {
 	}
 }
 
-func TestIngest_Oversized_400(t *testing.T) {
+func TestIngest_Oversized_413(t *testing.T) {
 	pub := &fakePublisher{healthy: true}
 	h := New(Deps{
 		APIKey:       testKey,
@@ -225,8 +225,11 @@ func TestIngest_Oversized_400(t *testing.T) {
 	})
 	big := `{"metrics":[{"name":"INCOPLAST/` + strings.Repeat("A", 200) + `"}]}`
 	rec := do(t, h, testKey, big)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 on oversized body, got %d", rec.Code)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413 on oversized body, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "payload too large") {
+		t.Fatalf("want the payload-too-large error body, got %q", rec.Body.String())
 	}
 	if pub.calls != 0 {
 		t.Fatalf("oversized body must not be published")

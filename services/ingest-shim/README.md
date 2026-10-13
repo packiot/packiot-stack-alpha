@@ -46,7 +46,7 @@ TLS listener (`HTTP_ADDR`, default `:8444`):
 
 | Method | Path | Auth | What |
 |---|---|---|---|
-| POST | `/ingest/sparkplug` | `X-Ingest-Key` | Publish one envelope. 202 `{"status":"accepted"}`; 400 bad/empty/too-large/topicless body; 401 wrong key; 403 out-of-scope group; 503 publish failed (retry) |
+| POST | `/ingest/sparkplug` | `X-Ingest-Key` | Publish one envelope. 202 `{"status":"accepted"}`; 400 bad/empty/topicless body; 413 body over `MAX_BODY_BYTES`; 401 wrong key; 403 out-of-scope group; 503 publish failed (retry) |
 | GET | `/healthz` | none | 200 `{"status":"ok"}`, or 503 `{"status":"amqp_down"}` while the broker connection is down |
 | GET | `/openapi.json` | none | the embedded OpenAPI document |
 
@@ -87,7 +87,7 @@ N/A: no database access.
 | `CONFIRM_TIMEOUT_MS` | `5000` | no | Wait for a publisher confirm before answering 503 |
 | `SCOPE_GROUP` | `INCOPLAST` | no | Only this group is admitted. An empty value falls back to the default (it does not disable the guard) |
 | `FANOUT_SOURCE_TYPES` | `legacy,go,refactored` | no | Comma list of flows; staging/dev: `refactored` |
-| `MAX_BODY_BYTES` | `1048576` | no | Larger bodies are 400 |
+| `MAX_BODY_BYTES` | `1048576` | no | Larger bodies are 413 |
 | `LOG_LEVEL` | `info` | no | slog level |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (tracing off) | no | OTLP/gRPC endpoint. Staging: `http://tempo:4317` |
 | `OTEL_TRACES_SAMPLER_ARG` | `1.0` | no | Head-sampling ratio; the trace context is carried into the AMQP headers |

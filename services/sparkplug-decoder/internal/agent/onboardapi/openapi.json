@@ -35,7 +35,7 @@
         ],
         "operationId": "generateOnboardArtifacts",
         "summary": "Generate onboarding artifacts from a client descriptor",
-        "description": "Turns one client descriptor into the tenant's onboarding artifacts: the tenant conversion profile, the topic-registry SQL, the `equipments.position` backfill SQL, the sparkplug-agent config, the Node-RED tee node and, when the descriptor has a `plc` block, the PLC reader `client.yaml` and reader flow (with the descriptor's authored customizations).\n\n**Order of checks**: bearer key (401) → body read under the cap (400 `payload too large` / `cannot read body` / `empty body`) → descriptor parse + validation (400 with the reason) → generation (400 for an authoring error only detectable at render time, e.g. a customization id collision; 500 for any other generator fault) → unmapped-topic check (500 on failure) → 200.\n\n**Mode**: artifacts are always generated in draft/observe mode; cutover readiness is reported in `validation` (`cutover_eligible` is false while any count index is only inferred) instead of blocking generation.\n\n**Side effects**: none — nothing is written to the database or published. The caller (edge-api / CS Admin) stores or applies the artifacts verbatim. Uses the same code path as the `onboard-gen` CLI, so both produce byte-identical artifacts.\n\n**Idempotency**: deterministic; the same descriptor always yields the same response.\n\n**Tenant scoping**: the tenant is whatever the descriptor declares (`tenant`, `enterprise_id`); the shared key authorizes generation for any tenant, so only trusted internal callers hold it.\n\n**Limits**: body ≤ ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). No rate limit.",
+        "description": "Turns one client descriptor into the tenant's onboarding artifacts: the tenant conversion profile, the topic-registry SQL, the `equipments.position` backfill SQL, the sparkplug-agent config, the Node-RED tee node and, when the descriptor has a `plc` block, the PLC reader `client.yaml` and reader flow (with the descriptor's authored customizations).\n\n**Order of checks**: bearer key (401) → body read under the cap (413 `payload too large`; 400 `cannot read body` / `empty body`) → descriptor parse + validation (400 with the reason) → generation (400 for an authoring error only detectable at render time, e.g. a customization id collision; 500 for any other generator fault) → unmapped-topic check (500 on failure) → 200.\n\n**Mode**: artifacts are always generated in draft/observe mode; cutover readiness is reported in `validation` (`cutover_eligible` is false while any count index is only inferred) instead of blocking generation.\n\n**Side effects**: none — nothing is written to the database or published. The caller (edge-api / CS Admin) stores or applies the artifacts verbatim. Uses the same code path as the `onboard-gen` CLI, so both produce byte-identical artifacts.\n\n**Idempotency**: deterministic; the same descriptor always yields the same response.\n\n**Tenant scoping**: the tenant is whatever the descriptor declares (`tenant`, `enterprise_id`); the shared key authorizes generation for any tenant, so only trusted internal callers hold it.\n\n**Limits**: body ≤ ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). No rate limit.",
         "requestBody": {
           "required": true,
           "content": {
@@ -151,19 +151,13 @@
             }
           },
           "400": {
-            "description": "Body problems (`payload too large`, `cannot read body`, `empty body`), a descriptor that does not parse or validate (`clientdescriptor: parse: ...`, `clientdescriptor: validate: ...`), or an authoring error found while rendering (for example a customization id collision). The message is the reason, meant for the descriptor author.",
+            "description": "Body problems (`cannot read body`, `empty body`), a descriptor that does not parse or validate (`clientdescriptor: parse: ...`, `clientdescriptor: validate: ...`), or an authoring error found while rendering (for example a customization id collision). The message is the reason, meant for the descriptor author.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
                 "examples": {
-                  "tooLarge": {
-                    "summary": "Body over the cap",
-                    "value": {
-                      "error": "payload too large"
-                    }
-                  },
                   "empty": {
                     "summary": "Empty body",
                     "value": {
@@ -189,6 +183,27 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "description": "`payload too large`: the body exceeds ONBOARD_API_MAX_BODY_BYTES (default 4 MiB).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over ONBOARD_API_MAX_BODY_BYTES",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "500": {
             "description": "`generation failed: ...` (a generator fault for a descriptor that passed validation) or `validation failed: ...` (the unmapped-topic check failed). Not the caller's fault; report it.",
             "content": {
@@ -212,9 +227,6 @@
                 }
               }
             }
-          },
-          "405": {
-            "$ref": "#/components/responses/MethodNotAllowed"
           }
         }
       }
@@ -226,7 +238,7 @@
         ],
         "operationId": "simulateDerivedRules",
         "summary": "Preview derived-metric rules against sample readings",
-        "description": "Builds the tenant profile from `descriptor` and feeds `samples`, in order, through the same derive core the `derive-replay` CLI and the edge agent use; each sample is processed as its own one-tag envelope and treated as good quality. Returns the active derived rules (so a preview can show them before any sample) and every tag they synthesized. Used by the CS Admin / customize preview before deploying a descriptor change.\n\n**Order of checks**: bearer key (401) → body read under the cap (400) → JSON decode (400 `invalid JSON body: ...`) → `descriptor` present (400 `missing descriptor`) → descriptor parse + validation (400) → profile build (500 `cannot build profile: ...`) → 200.\n\n**Side effects**: none; nothing is stored or published. Deterministic for the same request.\n\n**Limits**: body ≤ ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). No rate limit; keep `samples` to a preview-sized list.",
+        "description": "Builds the tenant profile from `descriptor` and feeds `samples`, in order, through the same derive core the `derive-replay` CLI and the edge agent use; each sample is processed as its own one-tag envelope and treated as good quality. Returns the active derived rules (so a preview can show them before any sample) and every tag they synthesized. Used by the CS Admin / customize preview before deploying a descriptor change.\n\n**Order of checks**: bearer key (401) → body read under the cap (413 over it, 400 unreadable or empty) → JSON decode (400 `invalid JSON body: ...`) → `descriptor` present (400 `missing descriptor`) → descriptor parse + validation (400) → profile build (500 `cannot build profile: ...`) → 200.\n\n**Side effects**: none; nothing is stored or published. Deterministic for the same request.\n\n**Limits**: body ≤ ONBOARD_API_MAX_BODY_BYTES (default 4 MiB). No rate limit; keep `samples` to a preview-sized list.",
         "requestBody": {
           "required": true,
           "content": {
@@ -362,7 +374,7 @@
             }
           },
           "400": {
-            "description": "`payload too large`, `cannot read body`, `empty body`, `invalid JSON body: ...`, `missing descriptor`, or the descriptor's parse/validation message (a descriptor sent as a JSON string instead of an object fails here with a parse error).",
+            "description": "`cannot read body`, `empty body`, `invalid JSON body: ...`, `missing descriptor`, or the descriptor's parse/validation message (a descriptor sent as a JSON string instead of an object fails here with a parse error).",
             "content": {
               "application/json": {
                 "schema": {
@@ -400,6 +412,27 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "description": "`payload too large`: the body exceeds ONBOARD_API_MAX_BODY_BYTES (default 4 MiB).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over ONBOARD_API_MAX_BODY_BYTES",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "500": {
             "description": "`cannot build profile: ...`: the validated descriptor could not be turned into a tenant profile.",
             "content": {
@@ -412,9 +445,6 @@
                 }
               }
             }
-          },
-          "405": {
-            "$ref": "#/components/responses/MethodNotAllowed"
           }
         }
       }

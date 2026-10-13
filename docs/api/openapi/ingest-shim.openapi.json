@@ -35,7 +35,7 @@
         ],
         "operationId": "ingestSparkplug",
         "summary": "Publish one SparkPlug JSON envelope",
-        "description": "Admits one envelope from the client's tee and republishes it to RabbitMQ.\n\nOrder of checks: route/method (405, router) -> API key (401) -> body read under MAX_BODY_BYTES (default 1 MiB; over the cap, unreadable or empty -> 400) -> group extraction (400 when the body is not a JSON object, a probed field is not a string, or no topic/group is found) -> scope check (403) -> fan-out publish (503 on any broker failure).\n\nGroup extraction: the first `/`-separated segment of, in order, `topic`, `group`, `group_id`, then each `metrics[].name`; the first non-empty one wins. It must equal SCOPE_GROUP (case-insensitive).\n\nSide effects: one AMQP message per FANOUT_SOURCE_TYPES entry (default 3) on exchange `oee` / routing key `sparkplug.data`, each the original object with a top-level `source_type` set (\"\" = legacy flow, \"go\", \"refactored\"; any `source_type` you send is overwritten). The downstream worker routes each copy to its flow's tables (raw equipment values/events). Nothing is written to a database by this service.\n\nIdempotency and retries: 202 means every copy was broker-confirmed. On 503 some copies may already be published; resend the same envelope (downstream writes are idempotent upserts, so duplicates do not double-count). No rate limit is enforced here.\n\nTenant scoping: one scope group per instance; the key is shared by that client's tee only.",
+        "description": "Admits one envelope from the client's tee and republishes it to RabbitMQ.\n\nOrder of checks: route/method (405, router) -> API key (401) -> body read under MAX_BODY_BYTES (default 1 MiB; over the cap -> 413; unreadable or empty -> 400) -> group extraction (400 when the body is not a JSON object, a probed field is not a string, or no topic/group is found) -> scope check (403) -> fan-out publish (503 on any broker failure).\n\nGroup extraction: the first `/`-separated segment of, in order, `topic`, `group`, `group_id`, then each `metrics[].name`; the first non-empty one wins. It must equal SCOPE_GROUP (case-insensitive).\n\nSide effects: one AMQP message per FANOUT_SOURCE_TYPES entry (default 3) on exchange `oee` / routing key `sparkplug.data`, each the original object with a top-level `source_type` set (\"\" = legacy flow, \"go\", \"refactored\"; any `source_type` you send is overwritten). The downstream worker routes each copy to its flow's tables (raw equipment values/events). Nothing is written to a database by this service.\n\nIdempotency and retries: 202 means every copy was broker-confirmed. On 503 some copies may already be published; resend the same envelope (downstream writes are idempotent upserts, so duplicates do not double-count). No rate limit is enforced here.\n\nTenant scoping: one scope group per instance; the key is shared by that client's tee only.",
         "requestBody": {
           "required": true,
           "description": "One SparkPlug-derived JSON object (as produced by the tee's SparkPlug JSON decode). Forwarded verbatim apart from `source_type`. Examples assume SCOPE_GROUP=ACME.",
@@ -115,19 +115,13 @@
             }
           },
           "400": {
-            "description": "Permanent request problem (do not retry unchanged): `payload too large` (body over MAX_BODY_BYTES; note 400, not 413), `cannot read body` (read error, e.g. client disconnect), `empty body`, `unparseable or topicless payload` (not a JSON object, a probed field has the wrong type, or no group can be found), or `unparseable payload (fanout)` (defensive: re-marshal failed after admission).",
+            "description": "Permanent request problem (do not retry unchanged): `cannot read body` (read error, e.g. client disconnect), `empty body`, `unparseable or topicless payload` (not a JSON object, a probed field has the wrong type, or no group can be found), or `unparseable payload (fanout)` (defensive: re-marshal failed after admission).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
                 "examples": {
-                  "tooLarge": {
-                    "summary": "Body over MAX_BODY_BYTES",
-                    "value": {
-                      "error": "payload too large"
-                    }
-                  },
                   "unreadable": {
                     "summary": "Body read failed",
                     "value": {
@@ -191,6 +185,24 @@
                   "description": "Go net/http reason phrase plus newline."
                 },
                 "example": "Method Not Allowed\n"
+              }
+            }
+          },
+          "413": {
+            "description": "`payload too large`: the body exceeds MAX_BODY_BYTES (default 1 MiB). Permanent: do not retry unchanged; split the envelope or raise the cap.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body over MAX_BODY_BYTES",
+                    "value": {
+                      "error": "payload too large"
+                    }
+                  }
+                }
               }
             }
           },

@@ -2230,6 +2230,17 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "413": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"payload too large\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The body exceeds 64 KB."
+          },
           "500": {
             "content": {
               "text/plain": {
@@ -2334,6 +2345,17 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"payload too large\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The body exceeds 64 KB."
           },
           "500": {
             "content": {
@@ -2913,6 +2935,17 @@
             },
             "description": "A per-user-role dataset (`requires_user_context`) was called without a user identity (X-Api-Key, or a user without a role)."
           },
+          "413": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"payload too large\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The body exceeds 64 KB."
+          },
           "422": {
             "content": {
               "text/plain": {
@@ -3130,6 +3163,17 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"payload too large\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The body exceeds 64 KB."
           },
           "500": {
             "content": {

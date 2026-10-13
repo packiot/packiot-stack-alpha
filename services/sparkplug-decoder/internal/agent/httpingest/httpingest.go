@@ -241,7 +241,7 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			s.reject(w, http.StatusRequestEntityTooLarge, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
 			return
 		}
 		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "cannot read body", "", int64(len(body)))
@@ -312,7 +312,7 @@ func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			s.reject(w, http.StatusRequestEntityTooLarge, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
 			return
 		}
 		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "cannot read body", "", int64(len(body)))
