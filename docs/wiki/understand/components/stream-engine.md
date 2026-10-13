@@ -384,11 +384,12 @@ overrides it; that file is not in git).
 |---|---|---|---|
 | `AWS_REGION` | `us-east-1` | `us-east-1` | |
 | `PG_SECRET_ID` | `packiot/staging/db` | same | DB credentials in Secrets Manager (unused with `CREDS_SOURCE=env`) |
-| `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-stream-engine-creds` | same | AMQP credentials (unused with `CREDS_SOURCE=env`) |
-| `CREDS_SOURCE` | unset | `env` | take DB creds from `DB_*` and AMQP creds from `RABBITMQ_USER/PASSWORD` instead of Secrets Manager |
+| `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-stream-engine-creds` | same | AMQP credentials (unused when the AMQP source is `env`) |
+| `CREDS_SOURCE` | unset | `env` | take DB creds from `DB_*` (and, unless `AMQP_CREDS_SOURCE` says otherwise, AMQP creds from `RABBITMQ_USER/PASSWORD`) instead of Secrets Manager |
+| `AMQP_CREDS_SOURCE` | unset (follows `CREDS_SOURCE`) | `aws` | AMQP creds only: `env` = `RABBITMQ_USER/PASSWORD`, anything else = `RABBITMQ_SECRET_ID` |
 | `DB_HOST`, `DB_PORT`, `DB_NAME` | `postgres`, 5432, `packiot` | `10.10.10.89`, 5432, `packiot_analytics` | with `CREDS_SOURCE=env` |
 | `DB_USER`, `DB_PASSWORD` | – (required) | `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}` from `.env` | |
-| `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | – (required in env mode) | from `.env` | see the note below |
+| `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | – (required in env mode) | unused (`AMQP_CREDS_SOURCE=aws`) | see the note below |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `rabbitmq` / 5672 | same | |
 | `SOURCE_EXCHANGE` | `oee` | `oee` | |
 | `WORKER_QUEUE` | `stream-engine-q` | same | firehose queue name and per-tenant prefix |
@@ -423,12 +424,14 @@ overrides it; that file is not in git).
 | `OEECLOUD_WORKER_REPLICAS` (compose) | 1 | — | replicas; > 1 needs SAC queues and no static IP/name |
 
 !!! note "Which RabbitMQ user staging uses"
-    Staging sets `CREDS_SOURCE=env`, so the worker ignores `RABBITMQ_SECRET_ID` and reads
-    `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from the host `.env`. The same `RABBITMQ_USER` is the
-    broker's `RABBITMQ_DEFAULT_USER` (`compose.staging.yml`, `rabbitmq` service), so on staging
-    stream-engine connects as the broker's default administrator, not the least-privilege
-    `stream-engine` user that `internal/config/config.go` describes. `compose.production.yml` does
-    not set `CREDS_SOURCE` and would use the Secrets Manager user.
+    Staging sets `CREDS_SOURCE=env` for the database, and `AMQP_CREDS_SOURCE=aws` so the AMQP
+    creds still come from `RABBITMQ_SECRET_ID`: the least-privilege `stream-engine` user, whose
+    permissions are in `monitoring/rabbitmq/definitions.template.json`. Without that override the
+    worker would read `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from the host `.env`, which is the
+    broker's `RABBITMQ_DEFAULT_USER` (the administrator). `scripts/ci/check-amqp-least-priv.py`
+    (PR Validation) fails a PR that brings that back, and checks the user's permission regexes
+    cover every exchange and queue the worker uses. `compose.production.yml` does not set
+    `CREDS_SOURCE` and uses the Secrets Manager user for both.
 
 ### Rollups and OEE
 

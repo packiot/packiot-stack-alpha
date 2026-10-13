@@ -161,6 +161,7 @@ start-up and are **added** to the env lists below (env is the floor).
 |---|---|---|---|
 | `LOG_LEVEL` | `info` | `info` | log verbosity |
 | `AWS_REGION`, `PG_SECRET_ID`, `CREDS_SOURCE` | `us-east-1`, `packiot/staging/db`, `env` | `us-east-1`, `packiot/staging/db`, — | take DB creds from env (not Secrets Manager) |
+| `AMQP_CREDS_SOURCE` | `aws` | follows `CREDS_SOURCE` | AMQP creds from `RABBITMQ_SECRET_ID` (least-privilege `stream-engine`), not the admin in `.env` |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `10.10.10.89`, `5432`, from `.env`, from `.env`, `packiot_analytics` | `postgres`, `5432`, —, —, `packiot` | direct DB connection (not pgbouncer) |
 | `POSTGRES_ANALYTICS_DB_NAME` | `packiot_analytics` | empty | analytics DB name |
 | `POSTGRES_MAX_CONNS`, `POSTGRES_ANALYTICS_MAX_CONNS` | `5`, `15` | same | pool sizes |
