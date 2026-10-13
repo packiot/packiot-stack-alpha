@@ -2,7 +2,7 @@
 title: Branches, merging and deploying to staging
 layer: 4
 owner_area: platform
-last_verified: 2026-10-09
+last_verified: 2026-10-13
 ---
 # Branches, merging and deploying to staging
 
@@ -28,13 +28,13 @@ last_verified: 2026-10-09
 
 ## What each branch deploys
 
-Verified 2026-10-09 from each repository's workflows and the AWS Amplify app settings.
+Verified 2026-10-13 from each repository's workflows, the stack's ruleset and the AWS Amplify app settings. Per-repository detail: [Repositories](../../reference/repositories.md).
 
 ### packiot-stack-alpha (this repository)
 
 | Branch | Deploys | Protection |
 |---|---|---|
-| `staging` (default) | **Staging stack** — `deploy-staging.yml` on every push | Ruleset "Protect staging": PR required (0 approvals), required check `Validate compose files`, no force-push, no deletion, no bypass |
+| `staging` (default) | **Staging stack** — `deploy-staging.yml` on every push | Ruleset "Protect staging": PR required (0 approvals), required checks `Validate compose files` **and** `dev slices gate`, no force-push, no deletion, no bypass |
 | `production` | **New-stack production** — `deploy-production.yml` on push. Promotion only. | none — do not touch |
 | `development` | nothing. **Retired**: last commit 2026-08-18, 1,449 commits behind `staging` | none |
 | `main` | nothing. Frozen legacy anchor | none |
@@ -47,7 +47,7 @@ Verified 2026-10-09 from each repository's workflows and the AWS Amplify app set
 | `operator4` (stack path `operator/`) | bump bot → stack `staging` PR | `development` → bump into the stack's `development`. `master` → publishes Docker Hub image `devpackiot/operator4` |
 | `edge-node-red` | bump bot → stack `staging` PR | `development` → bump into the stack's `development`. `main` → publishes Docker Hub image `devpackiot/edge-node-red` |
 | `csadmin` | **no bump bot** — bump the pin by hand (below) | — |
-| `front4` | **AWS Amplify** auto-builds → `front.staging.packiot.app` and `staging.packiot.com`. Not tied to the stack's pin. | `production` → Amplify → `front.prod.packiot.app`. `master` (default) → `go.packiot.com` (**customer production**, legacy line). `development` → `dev.packiot.com` |
+| `front4` | **AWS Amplify** auto-builds → `front.staging.packiot.app`; the `staging.yml` workflow also syncs `staging.packiot.com`. Not tied to the stack's pin. | `production` → Amplify auto-build → `front.prod.packiot.app`. `master` (default) → `master.yml` triggers the Amplify deploy and syncs `go.packiot.com` (**customer production**, legacy line). `development` → `development.yml` triggers the Amplify deploy → `dev.packiot.com` |
 
 !!! danger "`development` and `master` in the app repositories are customer-facing"
     `edge-api/development` and `edge-api/master` deploy Elastic Beanstalk environments that factories use;
@@ -108,11 +108,13 @@ manual step (migration to apply, flag to set).
 
 | Check | Workflow | Runs when | Blocks merge? |
 |---|---|---|---|
-| `Validate compose files` | `pr-validation.yml` | every PR | **yes — the only required check** |
+| `Validate compose files` | `pr-validation.yml` | every PR | **yes — required** |
+| `dev slices gate` | `dev-slices.yml` | every PR (passes at once when no slice path changed) | **yes — required**; fails if any slice failed |
 | `packml ratchet (ADR-0061)` | `pr-validation.yml` | every PR | no (but never merge red: a new PackML reference is a design violation) |
 | `gitleaks detect (full history)` | `gitleaks.yml` | every PR | no |
-| `<service> — vet/test/build`, `stream-engine — golden fixtures` | `go-services.yml` | PR touches a Go service | no |
-| `slice tier0-grafana / pipeline / barcode / edge` | `dev-slices.yml` | PR touches `dev/`, `db/migrations/`, `services/`, `customize/`, `grafana/`, broker configs, a submodule pin or `Makefile` | no |
+| `<service> — vet/test/build`, `stream-engine — golden fixtures` | `go-services.yml` | PR touches one of the nine Go services in its matrix | no |
+| `slice tier0-grafana / pipeline / barcode / ingest / edge` | `dev-slices.yml` | PR touches `dev/`, `db/migrations/`, `services/`, `customize/`, `grafana/`, broker configs, the `edge-api`/`csadmin`/`operator`/`front4` pin or `Makefile` | through `dev slices gate` |
+| `OpenAPI export — make openapi produces no diff` | `openapi-export.yml` | PR touches read-api, an embedded OpenAPI spec, `docs/api/openapi/` or `Makefile` | no |
 | `2-tenant RLS isolation…`, `compose.superset.yml merges…` | `superset-rls-isolation.yml` | every PR | no |
 | `contract self-check (no prod access)` | `refdata-contract-drift.yml` | PR touches read-api's dataset registry or its golden | no |
 | `build merged docs site` | `build-wiki.yml` | PR touches `docs/wiki/`, `docs/adr/`, `wiki/` | no |
@@ -129,7 +131,7 @@ manual step (migration to apply, flag to set).
 | `edge-node-red` | `ci.yml`, `lint-flows.yml` |
 
 !!! warning "Wait for every check on the head commit"
-    GitHub only *requires* `Validate compose files`. Merging while other checks still run has bitten us
+    GitHub only *requires* `Validate compose files` and `dev slices gate`. Merging while other checks still run has bitten us
     (edge-api #292 merged mid-run, 2026-10-08). Wait on the current head SHA:
     ```bash
     PR=1234 REPO=packiot/packiot-stack-alpha
@@ -165,12 +167,20 @@ staging app host itself:
 Deploys queue, never cancel each other.
 
 **Submodules with a bump bot** (edge-api, operator4, edge-node-red). Merging into the submodule's `staging` makes the
-bot open a PR in the stack, `chore(submodule): bump <name> to <sha> (staging) (auto)`, and enable auto-merge. It
-merges as soon as the required check passes, and the stack deploy follows.
+bot (`bump-stack-submodule.yml`) open a PR in the stack, `chore(submodule): bump <name> to <sha> (staging)`, and
+enable auto-merge (squash). It merges as soon as both required checks pass, and the stack deploy follows.
 
-!!! warning "A bump PR does not wait for the other checks"
-    Auto-merge waits only for `Validate compose files`. The `dev-slices` run on a pin bump does not block it. Treat
-    the submodule's own CI as the gate, and run the dev slice before you merge in the submodule.
+!!! warning "What a bump PR's checks really prove"
+    Auto-merge waits for `Validate compose files` and `dev slices gate` (since #1680 merged while the slices were
+    still running, 2026-10-09). But the gate is only as good as the slices behind it:
+
+    - An `edge-node-red` pin is not a slice path, so its bump passes the gate without running any slice.
+    - The `edge` slice (edge-api, csadmin, customize, operator, front4, operator-gateway) needs the repository secret
+      `DEV_SUBMODULES_TOKEN`. Without it the slice is **skipped with a warning**, and the gate still passes. On
+      2026-10-13 that secret was not set, so edge-api and operator4 bumps were not smoke-tested.
+
+    Treat the submodule's own CI as the gate, and run the dev slice (`make dev SVC=… && make dev-smoke SVC=…`)
+    before you merge in the submodule.
 
 If no bump PR appears within a few minutes, the bot's `PARENT_REPO_TOKEN` secret in that repository has probably
 expired (it has happened twice). Bump by hand (next block) and report the token.
@@ -185,8 +195,9 @@ git commit -m "chore(submodule): bump csadmin to <short-sha> (staging) — <what
 git push -u origin HEAD && gh pr create --base staging --fill
 ```
 
-**front4** deploys itself: Amplify builds `front4/staging` on every push. The stack's `front4` pin is not used by
-any deploy.
+**front4** deploys itself: Amplify builds `front4/staging` on every push (and front4's `staging.yml` workflow
+syncs `staging.packiot.com`). The stack's `front4` pin is not used by any deploy; it is only the default checkout
+for the dev `front4` slice.
 
 ### 7. Verify the deploy
 
@@ -211,12 +222,13 @@ seed in its `edge-api-migrate` step.
 ### Analytics DB migrations (`db/migrations/`)
 
 There is **no migration runner** for `db/migrations/`. Each change is a folder applied by hand on staging, and the
-PR is merged only after it has been applied and verified, so `staging` in git matches the live schema.
+PR is merged only after it has been applied and verified, so `staging` in git matches the live schema. Step by
+step, with the exact commands: [Add a migration](add-a-migration.md).
 
 ```text
 db/migrations/t-<topic>/
   01-up.sql      the change: \set ON_ERROR_STOP 1, BEGIN … COMMIT, SET LOCAL lock_timeout, idempotent
-  verify.sql     read-only checks that RAISE on failure (BEGIN READ ONLY … ROLLBACK)
+  verify.sql     read-only checks: one `label|value` row each, expected value in the label
   rollback.sql   restores the previous state
 ```
 
@@ -224,7 +236,7 @@ The procedure:
 
 1. Write the three files; run them against the dev seed (`make dev`, then `psql` into `packiot-dev-postgres-1`).
 2. Open the PR.
-3. **Dry-run on staging**: run `01-up.sql` plus the verify body inside one transaction that ends in `ROLLBACK`.
+3. **Dry-run on staging**: run `01-up.sql` with its final `COMMIT` replaced by `ROLLBACK`.
 4. **Apply** `01-up.sql` on staging, then run `verify.sql`.
 5. Write the dry-run and verify output in the PR, then merge.
 
@@ -300,7 +312,8 @@ planned window with the database transplant runbook and an explicit go. See
 |---|---|
 | `.github/workflows/deploy-staging.yml` | `gate` (skip superseded) + `deploy` (build, up, service-state gate) |
 | `.github/workflows/pr-validation.yml` | required `Validate compose files`; `packml ratchet` |
-| `.github/workflows/go-services.yml`, `dev-slices.yml`, `gitleaks.yml`, `superset-rls-isolation.yml`, `refdata-contract-drift.yml`, `build-wiki.yml`, `dashboard-lint.yml` | PR checks |
+| `.github/workflows/dev-slices.yml` | required `dev slices gate` + the slices behind it |
+| `.github/workflows/go-services.yml`, `gitleaks.yml`, `superset-rls-isolation.yml`, `refdata-contract-drift.yml`, `openapi-export.yml`, `build-wiki.yml`, `dashboard-lint.yml` | other PR checks |
 | `.github/workflows/deploy-production.yml` | production deploy (push to `production`) |
 | `.gitmodules` | every submodule tracks `staging` |
 | `edge-api/.github/workflows/{bump-stack-submodule,pullrequests,deploy-dev,deploy-main}.yml` | edge-api bump bot, CI, the two Elastic Beanstalk deploys |
