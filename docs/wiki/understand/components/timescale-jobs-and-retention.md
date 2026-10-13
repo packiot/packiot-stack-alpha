@@ -64,8 +64,10 @@ refresh and compute jobs there, but deliberately **not** the retention policies 
 monthly ones. It is stored in `_timescaledb_catalog.dimension.compress_interval_length`, not
 in `reloptions`.
 
-`silver.plc_link_minutes` (`t-plc-link-health`) has no compression or retention policy and no row
-in the retention catalog: it grows by one row per tenant × PLC endpoint × minute until one is added.
+`silver.plc_link_minutes` (`t-plc-link-health`) has no compression policy. It had no retention
+policy and no row in the retention catalog until `t-plc-link-minutes-retention`, which adds a
+90-day `hot_raw` row and its policy. That migration has to be applied by hand; until it is, the
+table keeps growing by one row per tenant × PLC endpoint × minute.
 
 ### Continuous aggregates
 
@@ -164,6 +166,7 @@ live on staging):
 |---|---|---|---|---|
 | hot_raw | `silver.equipment_values` | hypertable | 90 days | historian `equipment_values` |
 | hot_raw | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | hypertable | 90 days | — |
+| hot_raw | `silver.plc_link_minutes` (`t-plc-link-minutes-retention`) | hypertable | 90 days | — (NO DATA spans persist in `silver.equipment_events`) |
 | hot_raw | `ca_discrete_changes_1s`, `ca_equipment_boxes_1s`, `agg_equipment_values_1min`, `equipment_metrics_1min`, `equipment_categorical_1min` | cagg | 90 days | derivable |
 | hot_agg | `agg_equipment_values_1hour`, `equipment_categorical_1hour` | cagg | 13 months | — |
 | hot_agg | `gold.equipment_oee_hourly` | plain (purge job) | 13 months | — |
@@ -184,7 +187,6 @@ records on the next purge. The historian half of that cap is
   older than that stay until a manual refresh. Its served floor is
   `serving.downtime_events_resolved_meta.coverage_from`.
 - `ops.data_invariant_result` is trimmed to 14 days by `ops.job_data_invariants` itself.
-- `silver.plc_link_minutes` has no horizon yet (see above).
 - Current-state tables (`silver.*_live_*`) are overwritten in place.
 - `ops._bkp_*` backups are never purged automatically.
 
