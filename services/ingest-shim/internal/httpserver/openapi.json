@@ -1,0 +1,108 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ingest-shim",
+    "version": "0.1.0",
+    "summary": "Authenticated, scope-guarded HTTPS front door that republishes SparkPlug JSON envelopes to RabbitMQ.",
+    "description": "Accepts one SparkPlug-derived JSON envelope per request from a client's Node-RED tee, checks the shared `X-Ingest-Key`, admits only envelopes whose group (first topic segment) equals the configured scope (SCOPE_GROUP, default `INCOPLAST`), and publishes it to RabbitMQ with publisher confirms. The envelope is republished once per configured flow (FANOUT_SOURCE_TYPES, default `legacy,go,refactored` -> `source_type` \"\", \"go\", \"refactored\"); a failure on any copy returns 503 so the tee retries the whole message (all downstream writers are idempotent).\n\nTransport: the listener is TLS-only (`ListenAndServeTLS`, HTTP_ADDR default `:8444`), with the certificate mounted at /certs. Prometheus metrics are on a separate plaintext listener (METRICS_ADDR, default `:9105`).\n\nPublic exposure: none. No nginx vhost routes to this service on staging or production. Staging publishes the port on the host loopback only (127.0.0.1:8444). Production defines the service behind the `client-ingest` compose profile and publishes 8444 on all host interfaces, but the production security group does not admit 8444. The servers below are in-network addresses.\n\nOps route not described here: `GET /healthz` (200 `{\"status\":\"ok\"}`, or 503 `{\"status\":\"amqp_down\"}`)."
+  },
+  "servers": [
+    {
+      "url": "https://ingest-shim:8444",
+      "description": "In-network on packiot-net (staging and production: static IP 172.18.0.29:8444). TLS with the stack's mounted certificate."
+    },
+    {
+      "url": "https://localhost:8444",
+      "description": "Local development (`make dev SVC=ingest-shim`; self-signed dev cert, use curl -k)"
+    }
+  ],
+  "tags": [
+    { "name": "ingest", "description": "SparkPlug envelope ingest" }
+  ],
+  "security": [ { "ingestKey": [] } ],
+  "paths": {
+    "/ingest/sparkplug": {
+      "post": {
+        "tags": [ "ingest" ],
+        "operationId": "ingestSparkplug",
+        "summary": "Publish one SparkPlug JSON envelope",
+        "description": "Order of checks: API key (401) -> body read under MAX_BODY_BYTES (default 1 MiB; over the cap, unreadable or empty -> 400) -> group extraction (400 when the body is not a JSON object or carries no topic/group) -> scope check (403) -> fan-out publish (503 on any broker failure). The body is otherwise forwarded verbatim, with a top-level `source_type` added per copy.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SparkplugEnvelope" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Every fan-out copy was confirmed by the broker.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [ "status" ],
+                  "properties": { "status": { "type": "string", "const": "accepted" } }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`payload too large`, `cannot read body`, `empty body`, `unparseable or topicless payload`, or `unparseable payload (fanout)`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": {
+            "description": "Missing or wrong `X-Ingest-Key` (`unauthorized`).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "403": {
+            "description": "`out-of-scope group`: the envelope's group is not the configured scope group.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "`publish failed`: the broker did not confirm a copy. Retry the whole message.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ingestKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Ingest-Key",
+        "description": "Shared ingest key (INGEST_API_KEY), compared in constant time. Never logged."
+      }
+    },
+    "schemas": {
+      "SparkplugEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "A JSON object from the tee. The shim reads only the fields below to find the group (first `/`-separated segment, tried in order: `topic`, `group`, `group_id`, then each `metrics[].name`); all other fields pass through untouched to the downstream worker. Any existing top-level `source_type` is overwritten per fan-out copy.",
+        "properties": {
+          "topic": { "type": "string", "description": "SparkPlug topic, e.g. `INCOPLAST/Site/Area/Machine`." },
+          "group": { "type": "string" },
+          "group_id": { "type": "string" },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "name": { "type": "string", "description": "e.g. `INCOPLAST/Site/Area/Machine/Status/StateCurrent`." }
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [ "error" ],
+        "properties": { "error": { "type": "string" } }
+      }
+    }
+  }
+}

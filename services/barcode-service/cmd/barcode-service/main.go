@@ -26,6 +26,7 @@
 //	                               unhealthy — ADR-0011 rule 4 (fail the probe,
 //	                               don't serve writes you can't durably persist)
 //	GET  /metrics                — reserved (PHASE-2: Prometheus RED metrics)
+//	GET  /openapi.json           — OpenAPI 3.1 description (openapi.go)
 package main
 
 import (
@@ -132,12 +133,7 @@ func main() {
 	srv := &scanServer{store: store, broker: broker, logger: logger}
 
 	mux := http.NewServeMux()
-	// Write + stream sit behind the auth middleware (tenant from JWT only).
-	mux.Handle("POST /v1/scans", auth.middleware(http.HandlerFunc(srv.handlePostScan)))
-	mux.Handle("GET /v1/scans/stream", auth.middleware(http.HandlerFunc(srv.handleStream)))
-	// Ops probes — NO auth (they expose no tenant data). /healthz fails closed.
-	mux.HandleFunc("GET /healthz", healthzHandler(pool))
-	mux.HandleFunc("GET /metrics", metricsHandler) // PHASE-2: real Prometheus registry
+	registerRoutes(mux, auth, srv, pool)
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.httpPort,
@@ -172,6 +168,28 @@ func main() {
 	}
 	broker.Close()
 	logger.Info("stopped")
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs. It is an
+// interface so the OpenAPI drift test (openapi_test.go) can record every
+// pattern without standing up a DB or a JWT verifier.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the HTTP surface is defined. Every
+// non-ops route here must be described in openapi.json — the drift test fails
+// otherwise.
+func registerRoutes(mux routeRegistrar, auth *authenticator, srv *scanServer, pool *pgxpool.Pool) {
+	// Write + stream sit behind the auth middleware (tenant from JWT only).
+	mux.Handle("POST /v1/scans", auth.middleware(http.HandlerFunc(srv.handlePostScan)))
+	mux.Handle("GET /v1/scans/stream", auth.middleware(http.HandlerFunc(srv.handleStream)))
+	// Ops probes — NO auth (they expose no tenant data). /healthz fails closed.
+	mux.Handle("GET /healthz", healthzHandler(pool))
+	mux.Handle("GET /metrics", http.HandlerFunc(metricsHandler)) // PHASE-2: real Prometheus registry
+	// API description — NO auth: it holds no tenant data, and public exposure is
+	// decided by nginx (the scan vhost proxies only the exact /v1/scans paths).
+	mux.Handle("GET /openapi.json", http.HandlerFunc(openAPIHandler))
 }
 
 // healthzHandler returns 503 when the DB is unreachable — ADR-0011 rule 4: a

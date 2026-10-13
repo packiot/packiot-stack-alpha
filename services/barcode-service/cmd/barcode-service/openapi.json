@@ -1,0 +1,179 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "barcode-service",
+    "version": "0.1.0",
+    "summary": "Durable box-scan ingest with a server-authoritative, gapless per-production-order label sequence.",
+    "description": "Phase-0 box-scan write API. Every write for one production order runs in a single Postgres transaction under a per-PO advisory lock, so the `production` label sequence is dense (1,2,3,...) with no gaps or duplicates even under concurrent scanners or client retries. `scan_uuid` is a client-generated idempotency key: replaying an accepted scan returns the original row with `replayed: true` and writes nothing.\n\nTenancy: the client never names a tenant. `id_enterprise` is derived server-side from the verified JWT (Cognito `custom:id_enterprise` claim, or a users-table lookup for a Firebase uid) and every write is fenced by it.\n\nDeployment: staging only. The service is not defined in the production compose file, so there is no production server. The public `scan.<domain>` vhost proxies only the exact paths `/v1/scans`, `/v1/scans/stream` and `/healthz`; this document (`/openapi.json`) is reachable only in-network.\n\nOps routes not described here: `GET /healthz` (503 when the DB is unreachable) and `GET /metrics` (Phase-0 placeholder)."
+  },
+  "servers": [
+    {
+      "url": "https://scan.staging.packiot.app",
+      "description": "Staging public host (nginx exact-path proxy; JWT is the only gate)"
+    },
+    {
+      "url": "http://barcode-service:8446",
+      "description": "Staging in-network (packiot-net, static IP 172.18.0.36:8446)"
+    },
+    {
+      "url": "http://localhost:8446",
+      "description": "Local development (HTTP_PORT default 8446)"
+    }
+  ],
+  "tags": [
+    { "name": "scans", "description": "Box-scan write path and live fan-out" }
+  ],
+  "security": [ { "bearerAuth": [] } ],
+  "paths": {
+    "/v1/scans": {
+      "post": {
+        "tags": [ "scans" ],
+        "operationId": "postScan",
+        "summary": "Record one box scan",
+        "description": "Validates the body, then (inside one advisory-locked transaction) replays an existing `scan_uuid`, checks that the production order and equipment belong to the caller's tenant, and allocates or validates the next label. Only `production` scans consume the label sequence and count toward `total`; `sample`, `void`, `reprint` and `rework` are recorded with no label and `label_seq` 0 in the response.\n\nAn accepted (non-replayed) scan is also published to `GET /v1/scans/stream` subscribers of the same PO and tenant.",
+        "requestBody": {
+          "required": true,
+          "description": "Max 64 KiB. Unknown fields are rejected (400 `invalid json body`).",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ScanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Scan accepted and written.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScanResult" } } }
+          },
+          "200": {
+            "description": "Idempotent replay: `scan_uuid` was already accepted; the original result is returned with `replayed: true` and nothing is written.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScanResult" } } }
+          },
+          "400": {
+            "description": "Malformed JSON / unknown field (`invalid json body`), or a validation code: `scan_uuid_required`, `id_production_order_required`, `id_equipment_required`, `qty_invalid`, `scan_type_invalid`, `mode_invalid`, `label_seq_required` (validate mode without `label_seq`).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DomainError" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "`tenant_mismatch`: the production order or equipment does not belong to the caller's tenant.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DomainError" } } }
+          },
+          "409": {
+            "description": "`label_seq_gap` (validate mode): the asserted `label_seq` is not the next one. `expected` is the server's next label, `got` is what was sent.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DomainError" } } }
+          },
+          "500": {
+            "description": "Infrastructure failure (`record failed`).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DomainError" } } }
+          }
+        }
+      }
+    },
+    "/v1/scans/stream": {
+      "get": {
+        "tags": [ "scans" ],
+        "operationId": "streamScans",
+        "summary": "Server-Sent Events feed of accepted scans for one production order",
+        "description": "Long-lived SSE stream. Sends `: connected` on open, then one `event: scan` frame per accepted scan whose `data:` is a `ScanResult` JSON object, plus a `: heartbeat` comment every 25 s. Only scans written under the caller's tenant are delivered. Delivery is best-effort (a slow client's events are dropped, never blocking the write path); the durable record is the database. Replays are not re-published. In-memory, single-replica fan-out.",
+        "parameters": [
+          {
+            "name": "id_production_order",
+            "in": "query",
+            "required": true,
+            "description": "Production order to subscribe to (positive integer).",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream. Each `event: scan` frame's `data:` line is a JSON `ScanResult`.",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" },
+                "example": ": connected\n\nevent: scan\ndata: {\"box_scan_id\":42,\"label_seq\":7,\"total\":7,\"scan_uuid\":\"0f5c...\",\"replayed\":false}\n\n"
+              }
+            }
+          },
+          "400": {
+            "description": "`id_production_order` missing or not a positive integer.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DomainError" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": {
+            "description": "`streaming unsupported` (the response writer cannot flush).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DomainError" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "`Authorization: Bearer <ID token>`. The issuer is read from the token's `iss` and routed to the matching verifier: an Amazon Cognito user-pool token (tenant from the signed `custom:id_enterprise` claim; `aud` checked when COGNITO_CLIENT_ID is set) or a Firebase ID token (tenant looked up in `users` by `id_user_firebase`, active users only). Either verifier is enabled only when configured. Any unknown issuer, invalid token or unresolved tenant is a generic 401."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing, malformed or unverifiable bearer token, or no tenant could be derived. Note: the body is written with `http.Error`, so the Content-Type is `text/plain` even though the body text is JSON.",
+        "content": {
+          "text/plain": {
+            "schema": { "type": "string" },
+            "example": "{\"error\":\"missing or invalid credentials\"}\n"
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ScanRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "scan_uuid", "id_production_order", "id_equipment" ],
+        "description": "No tenant field: the tenant comes only from the JWT.",
+        "properties": {
+          "scan_uuid": { "type": "string", "minLength": 1, "description": "Client-generated idempotency key (UNIQUE)." },
+          "raw_barcode": { "type": "string", "description": "Raw scanned barcode text, stored as-is (GS1 parsing is Phase 2)." },
+          "id_production_order": { "type": "integer", "format": "int64", "minimum": 1, "description": "Production order the scan belongs to; must belong to the caller's tenant." },
+          "id_equipment": { "type": "integer", "minimum": 1, "description": "Scanning station; must belong to the caller's tenant." },
+          "qty": { "type": "integer", "minimum": 0, "default": 1, "description": "Units on the box. 0 or absent means 1; negative is rejected." },
+          "scan_type": {
+            "type": "string",
+            "enum": [ "production", "sample", "void", "reprint", "rework" ],
+            "default": "production",
+            "description": "Case-insensitive. Only `production` consumes a label and counts toward the total."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [ "assign", "validate" ],
+            "default": "assign",
+            "description": "Case-insensitive. `assign`: the server allocates the next label. `validate`: the client asserts `label_seq`, which must equal the server's next label (else 409)."
+          },
+          "label_seq": { "type": "integer", "format": "int64", "description": "Required in `validate` mode for `production` scans; ignored otherwise." }
+        }
+      },
+      "ScanResult": {
+        "type": "object",
+        "required": [ "box_scan_id", "label_seq", "total", "scan_uuid", "replayed" ],
+        "properties": {
+          "box_scan_id": { "type": "integer", "format": "int64" },
+          "label_seq": { "type": "integer", "format": "int64", "description": "Allocated label; 0 for non-production scans." },
+          "total": { "type": "integer", "format": "int64", "description": "Running total quantity of `production` scans for the PO." },
+          "scan_uuid": { "type": "string" },
+          "replayed": { "type": "boolean", "description": "true when this is an idempotent replay and nothing new was written." }
+        }
+      },
+      "DomainError": {
+        "type": "object",
+        "required": [ "error" ],
+        "properties": {
+          "error": { "type": "string", "description": "Stable machine code or short message." },
+          "expected": { "type": "integer", "format": "int64", "description": "`label_seq_gap` only: the next label the server would allocate." },
+          "got": { "type": "integer", "format": "int64", "description": "`label_seq_gap` only: the label the client asserted." }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1006 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "operator-gateway",
+    "version": "0.1.0",
+    "summary": "Anti-corruption layer that turns a bespoke client's operator actions into edge-api calls.",
+    "description": "A client's Node-RED tee posts operator actions (downtime justification/edit, PO start/stop/setup/replace/status/time, event split) here. For every action the gateway: requires POST (405 otherwise), checks `X-Ingest-Key` (401), decodes the JSON body (400; unknown fields are allowed), checks the tenant scope (403), resolves `packml_topic` to the tenant's equipment via `packml_register` (422 when it does not resolve, 503 on DB failure), maps the request to the edge-api DTO (422 when a required field is missing), and forwards it to edge-api with the gateway's own edge-api key.\n\nTenant scope: one enterprise per instance (INCOPLAST_ENTERPRISE_ID, INCOPLAST_TOPIC_PREFIX). A request passes only if it positively matches: `enterprise` equals the configured id, or `packml_topic` starts with the configured prefix; a mismatch on either is rejected.\n\nServer-side resolution: `id_equipment`, `id_site`, `id_area` and `cd_machine` always come from the resolved `packml_topic`; values supplied in the body are ignored.\n\nResult translation: edge-api 2xx -> 202 `{\"status\":\"accepted\"}`; edge-api 4xx -> the same status and edge-api's body passed through; edge-api 5xx -> 502; edge-api unreachable -> 503.\n\nTransport: TLS-only listener (PORT default 8443; cert/key from TLS_CERT_FILE/TLS_KEY_FILE). Public exposure: none. No nginx vhost routes to this service (the `operator.<domain>` vhosts serve the operator SPA, a different container). Staging publishes 127.0.0.1:8445 -> 8443 on the host loopback only. Production defines it behind the `client-ingest` compose profile and publishes 8445 on all host interfaces, but the production security group does not admit 8445. The servers below are in-network addresses.\n\nOps routes not described here: `/healthz` (503 when the resolver DB pool is unreachable) and `/metrics` (Prometheus)."
+  },
+  "servers": [
+    {
+      "url": "https://operator-gateway:8443",
+      "description": "In-network on packiot-net (alias operator-adapter). Staging static IP 172.18.0.30:8443; production 172.18.0.31:8443."
+    },
+    {
+      "url": "https://localhost:8445",
+      "description": "Local development / staging host loopback publish (127.0.0.1:8445 -> 8443)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "downtime",
+      "description": "Downtime justification, edit and split"
+    },
+    {
+      "name": "production-orders",
+      "description": "Production-order lifecycle"
+    }
+  ],
+  "security": [
+    {
+      "ingestKey": []
+    }
+  ],
+  "paths": {
+    "/operator/downtime": {
+      "post": {
+        "tags": [
+          "downtime"
+        ],
+        "operationId": "operatorDowntime",
+        "summary": "Justify (create) or edit a downtime event",
+        "description": "Routed on `id_param`: 30810 (justify) and 30811 (manual) call edge-api `POST /api/downtimes/create-manual-event`; 30812 (manual change), 30813 and 30814 (trim) call `POST /api/downtimes/edit-manual-event` and additionally require `id_equipment_event`. Any other `id_param` is 422.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/Downtime"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOCreateAndStart",
+        "summary": "Create and start a production order",
+        "description": "Calls edge-api `POST /api/production-orders/create-and-start`. The order number is forwarded as text in both `idOrder` and `orderNumber` (ADR-0062).",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/PO"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/stop": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOStop",
+        "summary": "Pause or finish the running production order",
+        "description": "Calls edge-api `POST /api/production-orders/stop`.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/POStop"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/setup": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOSetup",
+        "summary": "Close the current production order and optionally open the next",
+        "description": "Calls edge-api `POST /api/production-orders/setup`. When `should_open_new_po` is true: with `should_create_po` true, `id_order` is required (a new PO is created); otherwise `id_production_order` (an existing PO) is required.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/POSetup"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/replace": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOReplace",
+        "summary": "Stop the running production order and start an existing one",
+        "description": "Calls edge-api `POST /api/production-orders/replace`.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/POReplace"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/change-status": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOChangeStatus",
+        "summary": "Toggle a production order between paused and finished",
+        "description": "Calls edge-api `POST /api/production-orders/change-status`.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/POStatus"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/po/change-time": {
+      "post": {
+        "tags": [
+          "production-orders"
+        ],
+        "operationId": "operatorPOChangeTime",
+        "summary": "Edit a production-order runtime interval's timestamps",
+        "description": "Calls edge-api `POST /api/production-orders/change-time`.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/POTime"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/operator/split": {
+      "post": {
+        "tags": [
+          "downtime"
+        ],
+        "operationId": "operatorSplitEvent",
+        "summary": "Split one event into re-categorised sub-intervals",
+        "description": "Calls edge-api `POST /api/downtimes/split`. Each sub-interval's machine code is the resolved `cd_machine`. 422 when the event id is missing, `event_type` is not one of the allowed values, `events` is empty, or a sub-interval misses a required field.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/Split"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/Accepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/EdgePassthrough"
+          },
+          "502": {
+            "$ref": "#/components/responses/EdgeError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ingestKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Ingest-Key",
+        "description": "Shared key for the client's tee node (OPERATOR_API_KEY), compared in constant time. An unset key on the server denies every request."
+      }
+    },
+    "responses": {
+      "Accepted": {
+        "description": "edge-api accepted the call (2xx).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "accepted"
+                }
+              }
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "`invalid JSON body` (malformed JSON, a wrongly typed field, an `id_order` that is neither string nor number, or a body over 1 MiB).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "`invalid or missing X-Ingest-Key`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "`action is not scoped to the configured Incoplast enterprise`: `enterprise` / `packml_topic` do not positively match the configured tenant.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "`method not allowed`: only POST is accepted.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unprocessable": {
+        "description": "`packml_topic` missing or not resolvable to exactly one active equipment of this tenant, or a required field could not be mapped to the edge-api DTO. The message names the field.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "EdgePassthrough": {
+        "description": "edge-api rejected the call with a 4xx; its status code and body are returned unchanged (shape defined by edge-api).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "edge-api error body, passed through verbatim."
+            }
+          }
+        }
+      },
+      "EdgeError": {
+        "description": "`edge-api error`: edge-api answered 5xx.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Retryable: `edge-api unreachable`, `topic resolver unavailable` (DB error) or `topic resolver is not configured`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "requestBodies": {
+      "Downtime": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DowntimeRequest"
+            }
+          }
+        }
+      },
+      "PO": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PORequest"
+            }
+          }
+        }
+      },
+      "POStop": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/POStopRequest"
+            }
+          }
+        }
+      },
+      "POSetup": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/POSetupRequest"
+            }
+          }
+        }
+      },
+      "POReplace": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/POReplaceRequest"
+            }
+          }
+        }
+      },
+      "POStatus": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/POStatusRequest"
+            }
+          }
+        }
+      },
+      "POTime": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/POTimeRequest"
+            }
+          }
+        }
+      },
+      "Split": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SplitRequest"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "OrderNumber": {
+        "description": "Client production-order number (ADR-0062): kept as text exactly as given, only surrounding whitespace trimmed. A JSON number keeps its literal text (e.g. 834.058 -> \"834.058\"). null or blank means not supplied.",
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "OperatorScope": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Tenant envelope carried by every action. Unknown fields (Node-RED metadata) are allowed and ignored.",
+        "properties": {
+          "enterprise": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Must equal the configured enterprise id when present."
+          },
+          "topic": {
+            "type": "string",
+            "description": "app_user_topic; audit/debug only."
+          },
+          "packml_topic": {
+            "type": "string",
+            "description": "SparkPlug packml_topic; required in practice (422 when empty). Resolved to the tenant's equipment and scope-checked against the configured topic prefix."
+          },
+          "user": {
+            "type": "string",
+            "description": "Operator id; audit only, never forwarded or logged."
+          }
+        }
+      },
+      "DowntimeRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_param",
+              "ts_event",
+              "ts_end",
+              "category",
+              "category_desc"
+            ],
+            "properties": {
+              "id_param": {
+                "type": "integer",
+                "enum": [
+                  30810,
+                  30811,
+                  30812,
+                  30813,
+                  30814
+                ],
+                "description": "30810/30811 create; 30812/30813/30814 edit."
+              },
+              "id_equipment_event": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Event to edit; required for 30812-30814."
+              },
+              "ts_event": {
+                "type": "string",
+                "description": "ISO 8601 start."
+              },
+              "ts_end": {
+                "type": "string",
+                "description": "ISO 8601 end."
+              },
+              "category": {
+                "type": "string",
+                "description": "cd_category."
+              },
+              "category_desc": {
+                "type": "string",
+                "description": "desc_category."
+              },
+              "subcategory": {
+                "type": "string"
+              },
+              "subcategory_desc": {
+                "type": "string"
+              },
+              "txt_downtime": {
+                "type": "string",
+                "description": "Downtime notes."
+              },
+              "planned_dwt": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Edit path only."
+              },
+              "change_over": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Edit path only."
+              },
+              "idle": {
+                "type": "string",
+                "description": "Edit path only."
+              }
+            }
+          }
+        ]
+      },
+      "PORequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_order",
+              "production_order_quantity",
+              "timestamp"
+            ],
+            "properties": {
+              "id_order": {
+                "$ref": "#/components/schemas/OrderNumber"
+              },
+              "production_order_quantity": {
+                "type": "integer",
+                "description": "Programmed quantity."
+              },
+              "timestamp": {
+                "type": "string",
+                "description": "`YYYY-MM-DD HH:mm:ss`."
+              },
+              "nm_production_order": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              },
+              "id_label": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "POStopRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "stop_type",
+              "id_production_order",
+              "production_order_quantity"
+            ],
+            "properties": {
+              "timestamp": {
+                "type": "string"
+              },
+              "stop_type": {
+                "type": "string",
+                "description": "`pause` (also `interrupt` or `1`) or `finish` (also `2`); case-insensitive."
+              },
+              "id_production_order": {
+                "type": "integer",
+                "description": "Internal id of the running PO."
+              },
+              "production_order_quantity": {
+                "type": "integer",
+                "description": "Final good count."
+              }
+            }
+          }
+        ]
+      },
+      "POSetupRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "timestamp",
+              "should_open_new_po",
+              "stop_type",
+              "old_id_production_order",
+              "old_production_order_prod_final"
+            ],
+            "properties": {
+              "timestamp": {
+                "type": "string"
+              },
+              "should_open_new_po": {
+                "type": "boolean",
+                "description": "true = close current and open next; false = close only."
+              },
+              "stop_type": {
+                "type": "string",
+                "description": "`pause`/`interrupt`/`1` or `finish`/`2`."
+              },
+              "old_id_production_order": {
+                "type": "integer",
+                "description": "PO being closed."
+              },
+              "old_production_order_prod_final": {
+                "type": "integer",
+                "description": "Final good count of the PO being closed."
+              },
+              "should_create_po": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Open-next needs a new PO row."
+              },
+              "id_order": {
+                "$ref": "#/components/schemas/OrderNumber"
+              },
+              "id_production_order": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Existing next PO (when not creating)."
+              },
+              "production_order_quantity": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Programmed quantity of the new PO."
+              },
+              "id_label": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "nm_production_order": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "POReplaceRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_production_order"
+            ],
+            "properties": {
+              "id_production_order": {
+                "type": "integer",
+                "description": "PO to switch to."
+              }
+            }
+          }
+        ]
+      },
+      "POStatusRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_production_order"
+            ],
+            "properties": {
+              "id_production_order": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "POTimeRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_production_order_runtime",
+              "id_production_order",
+              "start"
+            ],
+            "properties": {
+              "id_production_order_runtime": {
+                "type": "integer",
+                "description": "Runtime interval to edit."
+              },
+              "id_production_order": {
+                "type": "integer"
+              },
+              "start": {
+                "type": "string",
+                "description": "New start."
+              },
+              "end": {
+                "type": "string",
+                "description": "New end (optional)."
+              }
+            }
+          }
+        ]
+      },
+      "SplitRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OperatorScope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id_equipment_event",
+              "event_type",
+              "events"
+            ],
+            "properties": {
+              "id_equipment_event": {
+                "type": "integer",
+                "description": "Event being split."
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "downtime",
+                  "manual",
+                  "low_speed"
+                ]
+              },
+              "events": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/components/schemas/SplitEvent"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SplitEvent": {
+        "type": "object",
+        "required": [
+          "start_time",
+          "category_code",
+          "desc_category",
+          "idle",
+          "change_over",
+          "planned_dwt"
+        ],
+        "properties": {
+          "start_time": {
+            "type": "string",
+            "description": "ISO 8601."
+          },
+          "end_time": {
+            "type": "string",
+            "description": "ISO 8601."
+          },
+          "note": {
+            "type": "string"
+          },
+          "category_code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "subcategory_code": {
+            "type": "string"
+          },
+          "desc_category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "desc_subcategory": {
+            "type": "string"
+          },
+          "idle": {
+            "type": "string",
+            "enum": [
+              "Yes",
+              "yes",
+              "No",
+              "no"
+            ]
+          },
+          "change_over": {
+            "type": "boolean"
+          },
+          "planned_dwt": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

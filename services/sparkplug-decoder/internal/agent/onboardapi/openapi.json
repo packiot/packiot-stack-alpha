@@ -1,0 +1,212 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "onboard API",
+    "version": "0.1.0",
+    "summary": "Config-as-data control plane: client descriptor in, onboarding artifacts out (ADR-0045 P1, ADR-0058).",
+    "description": "Turns one client descriptor (the CS-Admin source of truth) into the downstream onboarding artifacts, and previews a descriptor's derive/expression rules against sample tags. Generation uses the exact code path of the `onboard-gen` CLI, so both produce byte-identical artifacts.\n\nServed on its own plaintext listener (ONBOARD_API_PORT, default 9105) only when ONBOARD_API_ENABLED=true and ONBOARD_API_KEY is set (the process refuses to start when enabled without a key). Two binaries mount it: the cloud `sparkplug-decoder` container (edge-transformer binary) — the instance edge-api calls via ONBOARD_GENERATE_URL — and, optionally, `sparkplug-agent` on edge boxes (not enabled on the staging agents).\n\nPublic exposure: none. No nginx vhost routes to port 9105 on staging or production. In production `sparkplug-decoder` is behind the `client-ingest` compose profile, so it runs only when that profile is enabled."
+  },
+  "servers": [
+    {
+      "url": "http://sparkplug-decoder:9105",
+      "description": "In-network on packiot-net (alias edge-transformer). Static IP 172.18.0.23:9105 on staging and production."
+    },
+    {
+      "url": "http://localhost:9105",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    { "name": "onboard", "description": "Descriptor generation and rule simulation" }
+  ],
+  "security": [ { "bearerKey": [] } ],
+  "paths": {
+    "/v1/onboard/generate": {
+      "post": {
+        "tags": [ "onboard" ],
+        "operationId": "generateOnboardArtifacts",
+        "summary": "Generate onboarding artifacts from a client descriptor",
+        "description": "The body is the descriptor itself, as YAML or JSON (JSON is parsed as YAML). Artifacts are always generated in draft/observe mode; cutover readiness is reported in `validation` instead of blocking generation. Body cap ONBOARD_API_MAX_BODY_BYTES (default 4 MiB) on the agent; the cloud instance uses the 4 MiB default.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": { "schema": { "$ref": "#/components/schemas/ClientDescriptor" } },
+            "application/json": { "schema": { "$ref": "#/components/schemas/ClientDescriptor" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Artifacts generated.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GenerateResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": {
+            "description": "`generation failed: ...` or `validation failed: ...` — an internal generator fault for a descriptor that passed validation.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/v1/onboard/simulate": {
+      "post": {
+        "tags": [ "onboard" ],
+        "operationId": "simulateDerivedRules",
+        "summary": "Run a descriptor's derive/expression rules against sample input tags",
+        "description": "Builds the tenant profile from `descriptor` and feeds `samples` in order through the same derive core the `derive-replay` CLI uses; each sample is processed as its own one-tag envelope. Returns the active rules and every synthesized tag. All samples are treated as good quality.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/SimulateRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Simulation result.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SimulateResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": {
+            "description": "`cannot build profile: ...`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`Authorization: Bearer <ONBOARD_API_KEY>` — a shared static key (not a JWT), compared in constant time. Scheme is case-insensitive."
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "`payload too large`, `cannot read body`, `empty body`, `invalid JSON body: ...` / `missing descriptor` (simulate), or the descriptor's parse/validation/authoring error message.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Unauthorized": {
+        "description": "Missing or wrong bearer key (`unauthorized`).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [ "error" ],
+        "properties": { "error": { "type": "string" } }
+      },
+      "ClientDescriptor": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Client descriptor (services/sparkplug-decoder/internal/agent/clientdescriptor). Large and evolving, so only the top-level keys are listed; the authoritative shape and validation rules are in clientdescriptor.go.",
+        "properties": {
+          "tenant": { "type": "string", "description": "SparkPlug group_id / enterprise short name, e.g. `CPACK`." },
+          "enterprise_id": { "type": "integer" },
+          "canonical": { "type": "object", "additionalProperties": true, "description": "Canonical topic model." },
+          "mapping": { "type": "object", "additionalProperties": true, "description": "Raw -> canonical quirk absorber, copied into the tenant profile." },
+          "metric_templates": { "type": "object", "additionalProperties": true, "description": "Per-class canonical metric leaves." },
+          "equipment": { "type": "array", "items": { "type": "object", "additionalProperties": true }, "description": "Tenant inventory: lines (tp=3) and members (tp=1)." },
+          "agent": { "type": "object", "additionalProperties": true, "description": "sparkplug-agent wiring (client.yaml)." },
+          "tee": { "type": "object", "additionalProperties": true, "description": "Node-RED tee snippet parameters." },
+          "plc": { "type": "object", "additionalProperties": true, "description": "Optional PLC connectivity + tag map; enables `client_yaml` and `reader_flow`." }
+        }
+      },
+      "GenerateResponse": {
+        "type": "object",
+        "required": [ "tenant", "artifacts", "validation" ],
+        "properties": {
+          "tenant": { "type": "string" },
+          "artifacts": {
+            "type": "object",
+            "description": "Artifacts as strings, to be stored/applied verbatim.",
+            "required": [ "profile_yaml", "register_sql", "position_sql", "agent_yaml", "tee_node_json" ],
+            "properties": {
+              "profile_yaml": { "type": "string", "description": "Tenant conversion profile (YAML)." },
+              "register_sql": { "type": "string", "description": "packml_register SQL." },
+              "position_sql": { "type": "string", "description": "equipments.position backfill SQL (line flow order)." },
+              "agent_yaml": { "type": "string", "description": "sparkplug-agent client config (YAML)." },
+              "tee_node_json": { "type": "string", "description": "Node-RED tee node (JSON text)." },
+              "client_yaml": { "type": "string", "description": "PLC reader client.yaml; present only when the descriptor has a `plc` block." },
+              "reader_flow": { "type": "string", "description": "Node-RED PLC-reader flow including authored customizations; present only when the descriptor has a `plc` block." }
+            }
+          },
+          "validation": {
+            "type": "object",
+            "required": [ "inferred_count_indices", "cutover_eligible", "unmapped" ],
+            "properties": {
+              "inferred_count_indices": {
+                "type": "array",
+                "description": "Count indices not yet confirmed on a live tee.",
+                "items": {
+                  "type": "object",
+                  "required": [ "topic", "index" ],
+                  "properties": { "topic": { "type": "string" }, "index": { "type": "integer" } }
+                }
+              },
+              "cutover_eligible": { "type": "boolean", "description": "false when any count index is inferred." },
+              "unmapped": { "type": "array", "items": { "type": "string" }, "description": "Descriptor topics that synthesize no canonical metric." }
+            }
+          }
+        }
+      },
+      "SimulateRequest": {
+        "type": "object",
+        "required": [ "descriptor" ],
+        "properties": {
+          "descriptor": {
+            "$ref": "#/components/schemas/ClientDescriptor",
+            "description": "The client descriptor as a JSON object. (The handler comment mentions a YAML string, but the raw value is parsed as YAML into the descriptor struct, so a JSON string is rejected with 400.)"
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "metric": { "type": "string" },
+                "value": { "type": "number" },
+                "ts_millis": { "type": "integer", "format": "int64" }
+              }
+            }
+          }
+        }
+      },
+      "SimulateResponse": {
+        "type": "object",
+        "required": [ "tenant", "derived_rules", "emitted" ],
+        "properties": {
+          "tenant": { "type": "string" },
+          "derived_rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [ "segment", "emit", "kind" ],
+              "properties": {
+                "segment": { "type": "string" },
+                "emit": { "type": [ "array", "null" ], "items": { "type": "string" } },
+                "kind": { "type": "string", "enum": [ "integral", "sum", "expr" ] },
+                "expr": { "type": "string", "description": "Present for `expr` rules." }
+              }
+            }
+          },
+          "emitted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [ "metric", "value", "ts_millis", "after_input" ],
+              "properties": {
+                "metric": { "type": "string" },
+                "value": { "description": "Synthesized value (number, boolean or string)." },
+                "ts_millis": { "type": "integer", "format": "int64" },
+                "after_input": { "type": "string", "description": "Input metric whose arrival produced this tag." }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

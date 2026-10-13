@@ -103,12 +103,27 @@ func New(cfg Config, outcomes *prometheus.CounterVec, logger *slog.Logger) *Serv
 	}
 }
 
-// Handler returns the routed mux (POST /v1/onboard/generate only).
+// Handler returns the routed mux (POST /v1/onboard/generate,
+// POST /v1/onboard/simulate, GET /openapi.json).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/onboard/generate", s.handleGenerate)
-	mux.HandleFunc("POST /v1/onboard/simulate", s.handleSimulate)
+	s.registerRoutes(mux)
 	return mux
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs — an
+// interface so the OpenAPI drift test can enumerate every pattern.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the control-plane routes are defined.
+// Every non-ops route must be described in openapi.json (openapi_test.go).
+func (s *Server) registerRoutes(mux routeRegistrar) {
+	mux.Handle("POST /v1/onboard/generate", http.HandlerFunc(s.handleGenerate))
+	mux.Handle("POST /v1/onboard/simulate", http.HandlerFunc(s.handleSimulate))
+	// API description — no auth: it holds no tenant data; exposure is nginx's call.
+	mux.Handle("GET /openapi.json", http.HandlerFunc(handleOpenAPI))
 }
 
 // ── response contract (Phase-1b consumes this) ───────────────────────────────

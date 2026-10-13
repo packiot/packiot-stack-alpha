@@ -1,0 +1,219 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "sparkplug-agent ingest API",
+    "version": "0.1.0",
+    "summary": "HTTP raw-tag front door of the sparkplug-agent (ADR-0042 Mode A).",
+    "description": "A connectivity plane (a client's Node-RED tee or the Go PLC readers) POSTs plain-JSON raw-tag envelopes here; the agent resolves them against the tenant's tag map, assigns SparkPlug aliases and publishes SparkPlug B upstream. Served by the `sparkplug-agent` binary on its ingest listener (AGENT_INGEST_PORT, default 9104, plaintext HTTP) when AGENT_HTTP_INGEST_ENABLED=true. `/healthz` and `/metrics` live on the agent's separate health listener (HEALTH_PORT).\n\nTwo modes, fixed at start-up:\n- Single-tenant (`--config <client.yaml>`): an envelope that declares a different group is 403; an envelope with no group is accepted. `X-Ingest-Group` is ignored. `POST /v1/counters` exists only in this mode and only when AGENT_NUMERIC_INGEST_ENABLED=true (404 otherwise).\n- Multi-tenant (AGENT_TENANTS_DIR, e.g. `sparkplug-agent-shared`): the group is mandatory. The body's `group`/`group_id`/`tenant` wins, else the `X-Ingest-Group` header, else 403; an unknown group is 403.\n\nPublic hosts (staging only; the agent is not deployed by the production compose file):\n- `https://ingest.staging.packiot.app:8449/v1/tags` -> sparkplug-agent-shared. Exact path only; the security group admits 8449 from registered box egress addresses only.\n- `https://cpack-ingest.staging.packiot.app:8447/v2/tags` -> sparkplug-agent-shared `/v1/tags`, with nginx injecting `X-Ingest-Group: CPACK`. `/v1/tags` on that host is closed (444). Port 8447 is admitted for CPACK's egress address only.\nNeither public host proxies `/v1/counters` or `/openapi.json`.\n\nOn-prem edge boxes run the same agent with the listener published on the box loopback (127.0.0.1:9104)."
+  },
+  "servers": [
+    {
+      "url": "https://ingest.staging.packiot.app:8449",
+      "description": "Staging shared multi-tenant public front door (nginx exact-path /v1/tags only; source-IP allowlisted)"
+    },
+    {
+      "url": "http://sparkplug-agent-shared:9104",
+      "description": "Staging in-network (packiot-net alias edge-agent-shared, static IP 172.18.0.44:9104)"
+    },
+    {
+      "url": "http://localhost:9104",
+      "description": "On-prem edge box loopback / local development"
+    }
+  ],
+  "tags": [
+    { "name": "ingest", "description": "Raw-tag and legacy counter ingest" }
+  ],
+  "security": [ { "ingestKey": [] } ],
+  "paths": {
+    "/v1/tags": {
+      "post": {
+        "tags": [ "ingest" ],
+        "operationId": "postTags",
+        "summary": "Ingest one raw-tag envelope",
+        "description": "Order of checks: `X-Ingest-Key` (401) -> body read under AGENT_INGEST_MAX_BODY_BYTES (default 1 MiB; over the cap, unreadable or empty -> 400) -> tenant routing / scope (403) -> envelope decode (400) -> optional PLC link report recorded -> tags fed to the tenant pipeline. Tags whose suffix is not in the tenant's tag map are dropped and counted, not rejected, so `accepted` may be lower than `total`. An empty `tags` list is valid (heartbeat, or a failed PLC read reported through `link`).",
+        "parameters": [ { "$ref": "#/components/parameters/IngestGroup" } ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RawTagEnvelope" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Envelope accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [ "status", "accepted", "total" ],
+                  "properties": {
+                    "status": { "type": "string", "const": "accepted" },
+                    "accepted": { "type": "integer", "description": "Tags that resolved to a mapped metric." },
+                    "total": { "type": "integer", "description": "Tags in the envelope." }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`payload too large`, `cannot read body`, `empty body`, or `undecodable envelope` (malformed JSON, a tag with an empty `metric`, or a non-scalar `value`).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/counters": {
+      "post": {
+        "tags": [ "ingest" ],
+        "operationId": "postCounters",
+        "summary": "Ingest a legacy numeric counter envelope (ADR-0045 option B)",
+        "description": "Single-tenant agents with AGENT_NUMERIC_INGEST_ENABLED=true only; otherwise this path is not mounted (404). Accepts the legacy `counterData: [{id, value}]` shape (flat, or nested per endpoint under `counters`), translates each numeric count index to a canonical tag through the tenant's count-index table, and feeds the same pipeline as `/v1/tags`. Unknown count ids are counted (`unmapped_index`), not rejected. A declared group other than the agent's scope is 403.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CounterEnvelope" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Envelope accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [ "status", "counters", "translated", "accepted", "unmapped_index" ],
+                  "properties": {
+                    "status": { "type": "string", "const": "accepted" },
+                    "counters": { "type": "integer", "description": "Counters in the envelope (flat + nested)." },
+                    "translated": { "type": "integer", "description": "Counters translated to canonical tags." },
+                    "accepted": { "type": "integer", "description": "Translated tags the resolver accepted." },
+                    "unmapped_index": { "type": "integer", "description": "Counter ids with no canonical metric." }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`payload too large`, `cannot read body`, `empty body`, or `undecodable counter envelope`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ingestKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Ingest-Key",
+        "description": "Shared ingest key (AGENT_INGEST_API_KEY), compared in constant time. The agent refuses to start the listener without a key. Never logged."
+      }
+    },
+    "parameters": {
+      "IngestGroup": {
+        "name": "X-Ingest-Group",
+        "in": "header",
+        "required": false,
+        "description": "Multi-tenant mode only: routing key used when the body carries no `group`/`group_id`/`tenant`. Case-insensitive. A per-tenant nginx front door sets it (cpack-ingest injects `CPACK`). Ignored in single-tenant mode.",
+        "schema": { "type": "string" }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or wrong `X-Ingest-Key` (`unauthorized`).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Forbidden": {
+        "description": "Tenant routing/scope rejection: `out-of-scope group` (single-tenant), `missing group (...)` or `unknown group` (multi-tenant).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [ "error" ],
+        "properties": { "error": { "type": "string" } }
+      },
+      "RawTagEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Tier-1 raw-tag envelope (ADR-0042 section 2.3). Tag names are metric SUFFIXES; the agent prepends the equipment's packml_topic. Unknown fields are ignored.",
+        "properties": {
+          "group": { "type": "string", "description": "Tenant SparkPlug group. `group_id` and `tenant` are accepted as aliases (first non-empty wins)." },
+          "group_id": { "type": "string" },
+          "tenant": { "type": "string" },
+          "endpoint": { "type": "string", "description": "Connectivity endpoint/device the readings came from." },
+          "scan_ts": { "type": "integer", "format": "int64", "description": "Scan time, unix milliseconds; default for tags without `ts`." },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [ "metric" ],
+              "properties": {
+                "metric": { "type": "string", "minLength": 1, "description": "Tag suffix, e.g. `/Status/MachSpeed`." },
+                "value": { "type": [ "number", "boolean", "string", "null" ], "description": "Scalar reading. The SparkPlug datatype comes from the tag map, not from this JSON type." },
+                "q": { "type": "boolean", "description": "Quality; absent means good." },
+                "long": { "type": "boolean", "description": "Advisory 64-bit integer type hint." },
+                "ts": { "type": "integer", "format": "int64", "description": "Per-tag time, unix milliseconds; overrides `scan_ts`." },
+                "param": { "type": "integer", "description": "PackML parameter id carried by an id-bearing Parameter metric (e.g. 30701); 0 or absent means none." }
+              }
+            }
+          },
+          "link": {
+            "type": "object",
+            "description": "Optional PLC connection report for this scan. Recorded only when `endpoint` and a positive `scan_ts` are present and the request passed auth and routing.",
+            "properties": {
+              "ok": { "type": "boolean", "description": "true when the scan connected to and read the PLC." },
+              "err": { "type": "string", "description": "Failure reason (stored truncated to 300 characters)." },
+              "ms": { "type": "integer", "description": "Scan latency in milliseconds." }
+            }
+          }
+        }
+      },
+      "Counter": {
+        "type": "object",
+        "required": [ "id", "value" ],
+        "properties": {
+          "id": { "type": "integer", "description": "Legacy numeric count index." },
+          "value": { "type": "number" },
+          "q": { "type": "boolean", "description": "Quality; absent means good." },
+          "ts": { "type": "integer", "format": "int64", "description": "Per-counter time, unix milliseconds." }
+        }
+      },
+      "CounterEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Legacy numeric counter body. Both `counterData` and nested `counters[].counterData` are flattened into one list. Unknown fields are ignored.",
+        "properties": {
+          "group": { "type": "string", "description": "Checked against the agent's scope when present (`group_id`/`tenant` are aliases)." },
+          "group_id": { "type": "string" },
+          "tenant": { "type": "string" },
+          "gateway": { "type": "string", "description": "Used as the endpoint when `endpoint` is empty." },
+          "endpoint": { "type": "string" },
+          "timestamp": { "type": "integer", "format": "int64", "description": "Envelope time, unix milliseconds (preferred over `scan_ts`)." },
+          "scan_ts": { "type": "integer", "format": "int64" },
+          "counterData": { "type": "array", "items": { "$ref": "#/components/schemas/Counter" } },
+          "counters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "endpoint": { "type": "string" },
+                "counterData": { "type": "array", "items": { "$ref": "#/components/schemas/Counter" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
