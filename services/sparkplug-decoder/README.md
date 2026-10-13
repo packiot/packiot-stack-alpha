@@ -109,7 +109,7 @@ Staging values are in `compose.staging.yml`; secrets come from Secrets Manager
 | `RABBITMQ_HOST`, `RABBITMQ_PORT` | `rabbitmq`, `5672` | broker |
 | `AMQP_SOURCE_ENABLED` | `true` | legacy AMQP input (staging `false`) |
 | `SOURCE_EXCHANGE`, `WORKER_QUEUE`, `RETRY_EXCHANGE`, `RETRY_QUEUE`, `FAILED_EXCHANGE`, `FAILED_QUEUE` | `plc.normalized`, `edge-transformer-q`, `plc.normalized-retry`, `edge-transformer-q-retry-30s`, `plc.normalized-failed`, `edge-transformer-q-failed` | legacy input topology |
-| `RETRY_TTL_MS`, `MAX_RETRIES`, `PREFETCH` | `30000`, `5`, `50` | legacy input retry |
+| `RETRY_TTL_MS`, `MAX_RETRIES`, `PREFETCH` | `30000`, `5`, `50` | legacy input and edge-command retry; `MAX_RETRIES` = retries after the first run (counted from the consumed queue's `rejected` `x-death` entry), so 5 = six handler runs, then the failed queue |
 | `CLIENT_YAML_PATH` | `/etc/packiot/client.yaml` | tenant list and capabilities |
 | `HEALTH_PORT`, `LOG_LEVEL` | `9102`, `info` | |
 
