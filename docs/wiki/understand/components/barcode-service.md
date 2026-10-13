@@ -128,7 +128,8 @@ Prometheus job. Health via the docker healthcheck (`barcode-service --healthchec
 | Symptom | Cause |
 |---|---|
 | 401 | Token missing, expired, wrong issuer/audience, or no positive `custom:id_enterprise` claim |
-| 400 `invalid json body` | Malformed JSON, an unknown field, or a body over 64 KiB (the service answers 400, not 413; nginx answers 413 above 128 KiB) |
+| 400 `invalid json body` | Malformed JSON or an unknown field |
+| 413 `request body too large` | Body over 64 KiB (the service). nginx answers its own 413 above 128 KiB before the request reaches the service |
 | 403 `tenant_mismatch` | PO or equipment belongs to another enterprise |
 | 409 `scan_uuid_conflict` | The `scan_uuid` was already used by another tenant; generate a fresh uuid |
 | 409 `label_seq_gap` | Validate mode with a stale client counter |

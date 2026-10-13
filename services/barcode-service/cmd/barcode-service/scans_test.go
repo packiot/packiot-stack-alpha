@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -267,5 +269,44 @@ func TestReplay_ForeignTenantUUIDIsConflictNotLeak(t *testing.T) {
 	}
 	if tx.inserts != inserts {
 		t.Fatalf("foreign replay wrote a row (%d → %d)", inserts, tx.inserts)
+	}
+}
+
+// TestPostScan_OversizedBodyIs413 pins the size cap: any body over
+// maxScanBodyBytes answers 413 (not 400), including the 64–128 KiB band where
+// the decoder hit the cap mid-parse and the old code reported "invalid json body".
+func TestPostScan_OversizedBodyIs413(t *testing.T) {
+	srv := &scanServer{} // decode fails before the store/broker are touched
+	for _, size := range []int{maxScanBodyBytes + 1, 70 << 10, 127 << 10, 200 << 10} {
+		pad := strings.Repeat("x", size)
+		body := `{"scan_uuid":"u1","id_production_order":1,"id_equipment":1,"raw_barcode":"` + pad + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/scans", strings.NewReader(body))
+		req = req.WithContext(withEnterpriseID(req.Context(), testEnt))
+		rec := httptest.NewRecorder()
+		srv.handlePostScan(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("size=%d: status = %d, want 413 (body %s)", size, rec.Code, rec.Body.String())
+		}
+		if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"request body too large"}` {
+			t.Fatalf("size=%d: body = %s", size, got)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("size=%d: Content-Type = %q", size, ct)
+		}
+	}
+}
+
+// TestPostScan_MalformedSmallBodyStays400 keeps the syntax error path a 400.
+func TestPostScan_MalformedSmallBodyStays400(t *testing.T) {
+	srv := &scanServer{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/scans", strings.NewReader(`{"scan_uuid":`))
+	req = req.WithContext(withEnterpriseID(req.Context(), testEnt))
+	rec := httptest.NewRecorder()
+	srv.handlePostScan(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"invalid json body"}` {
+		t.Fatalf("body = %s", got)
 	}
 }
