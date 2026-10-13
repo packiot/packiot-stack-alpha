@@ -227,7 +227,7 @@ Slack runs only when the `alerting` profile is on, which the deploy enables once
 | Prometheus TSDB | 15 days or 2 GB, whichever first (`compose.staging.yml`) |
 | Loki logs | 72 h, enforced by the compactor (`monitoring/loki/loki-local-config.yaml`) |
 | Tempo traces | 48 h (`monitoring/tempo/tempo.yaml`) |
-| EBS snapshots of the app host | AWS Backup daily 03:00 UTC, 7-day retention (`terraform/staging/snapshots.tf`) |
+| EBS snapshots of both staging hosts (app and DB) | AWS Backup daily 03:00 UTC, 7-day retention (`terraform/staging/snapshots.tf`; DB selection verified 2026-10-13) |
 | DB and historian dumps | S3 via `packiot-db-backup.timer` (02:00 UTC) and `packiot-historian-backup.timer` (04:30 UTC); see [Backups and restore](../../build/operate/backups-and-restore.md) |
 | Terraform state | S3 backend with native locking (`use_lockfile`), separate keys for staging and production |
 

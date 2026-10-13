@@ -11,7 +11,7 @@ last_verified: 2026-09-28
 > 2026-09-28. For lookups; explanations are in the linked pages.
 > Up: [Analytics DB](../understand/subsystems/analytics-db.md)
 
-Abbreviations: **SE** = `stream-engine` (oeecloud-worker), **EA** = `edge-api`,
+Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 **RA** = `read-api`, **AS** = `analytics-sync` / `legacy-replicator`, **BS** =
 `barcode-service`, **SS** = Superset, **HG** = historian gateway. "∞" = kept forever.
 "RLS" = FORCE row-level security on `app.tenant_id`.

@@ -65,7 +65,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "historian" {
   }
 }
 
-# Versioning ON (2026-09-30 backup audit; NOT YET APPLIED — live is unversioned).
+# Versioning ON (2026-09-30 backup audit; applied — live status Enabled, checked 2026-10-13).
 # Raw telemetry older than the analytics 90-day hot window exists ONLY in this
 # bucket, and our own jobs overwrite (historian-append, cold re-unloads) and
 # delete (historian-prune-by-data-age.sh) objects in it. Re-runs still overwrite

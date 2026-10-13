@@ -63,5 +63,6 @@ There is also a **barcode app** for factories that scan the boxes they pack.
 | Make a new value from counters (scrap, line totals) | [Calculations](customize/calculations.md) |
 | Add logic on the factory box (alerts, extra processing) | [Node-RED flows](customize/node-red-flows.md) |
 | Send production data to an ERP, a database or another system | [Connecting to an ERP / other systems](customize/connecting-other-systems.md) |
+| Find out why a number looks wrong (OEE 0, no data, Performance above 100 %) | [Troubleshooting OEE](troubleshooting-oee.md) |
 | Understand a word | [Glossary](../reference/glossary.md) |
 | See how the system is built | [For engineers](../understand/index.md) |

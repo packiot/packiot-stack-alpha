@@ -112,7 +112,7 @@
       "id": 8,
       "type": "table",
       "title": "OEE by client (last 24h, producing shifts)",
-      "description": "gold.equipment_oee_shift averaged over shifts with running_time>0 in the last 24h, clamped to valid [0,1]. Blank OEE = a client with shifts but no production in-window (idle) — not an error. A × P × Q are the three OEE factors.",
+      "description": "gold.equipment_oee_shift averaged over shifts with running_time>0 in the last 24h. Each column only averages shifts whose value lies in [0,1]: since 2026-09-29 Performance and Quality are stored uncapped, so a shift running above its rated speed is LEFT OUT of these averages rather than capped. Blank OEE = a client with shifts but no production in-window (idle) — not an error. A × P × Q are the three OEE factors.",
       "datasource": { "type": "postgres", "uid": "packiot-postgres-shadow" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "OEE %" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "color-background" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 65 } ] } } ] } ] },

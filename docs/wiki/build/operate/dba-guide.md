@@ -175,6 +175,8 @@ check the `historian-integrity-monitor` systemd unit.
 | Moving a hypertable | `ALTER TABLE … SET SCHEMA` is catalog-only; chunks, caggs and policies follow by OID | take it under `lock_timeout` in its own transaction |
 | `merge_chunks` | merges only time-adjacent chunks | group by runs where `range_start = lag(range_end)` (`scripts/consolidate-event-chunks.sh`) |
 | `compress_chunk_time_interval` | not visible in `reloptions` | read `_timescaledb_catalog.dimension.compress_interval_length` |
+| DML with a *stable* time bound on compressed chunks | `UPDATE … WHERE ts < date '…' + 1` or `< now()` matched **0 rows** silently during the 2026-10-09 L6 repair: chunk exclusion needs a literal bound | write literal timestamps (`'2026-10-09 00:00+00'`), and read the rows back after every repair |
+| `decompress_chunk` on the shared DB | decompressing a chunk by hand blew up CPACK operator reads with 500s (2026-09-30) | never; repair compressed data with row-wise DML under the max-tuples setting above, with a watchdog |
 | Sequences after a schema move | `pg_get_serial_sequence()` returns NULL when the sequence is not `OWNED BY` the column; `nextval(NULL)` inserts NULL ids | name the sequence from the column default |
 
 ## RLS and definer views
@@ -251,14 +253,17 @@ re-flagging, as above. See
 
 ## Backups
 
+The full procedure (what is covered, restore, drills, known gaps) is
+[Backups & restore](backups-and-restore.md); the table below is the DBA view.
+
 | Layer | What | Where / schedule | Retention |
 |---|---|---|---|
 | Row backups before repairs | `ops._bkp_*` tables | in the analytics DB, by hand | until dropped by hand |
 | Nightly logical dump (DB box) | `pg_dump --format=custom` (owners + grants kept) → gzip → S3, plus cluster roles and each DB's `ALTER DATABASE … SET` settings | `terraform/staging/scripts/backup-db.sh`, `packiot-db-backup.timer` 02:00 UTC; DBs `packiot packiot_analytics superset` (`/etc/packiot/backup.env`); bucket `packiot-staging-db-backups-<account>` | 14 daily, 4 weekly, 3 monthly; S3 lifecycle hard cap 90 days |
 | Nightly historian backup (app box) | hist-gateway catalog DB `packiot_historian` dump (same script) | `backup-historian.sh`, `packiot-historian-backup.timer` 04:30 UTC; interim target `s3://packiot-staging-historian-<account>/_backup/` | 14 daily, 4 weekly, 3 monthly |
 | EBS snapshots | before risky operations, by hand (for example `snap-0f535e3c42d4e2ae0` before the 2026-09-23 resize) | AWS console / CLI | manual |
-| AWS Backup plan | daily snapshots, 7-day retention | app host (covers the hist-gateway volume); DB host selection is in `snapshots.tf` but **not applied** | 7 days |
-| Historian archive | Parquet on S3 (the only copy of raw data older than 90 days) | versioning **off**; no copy until `app_backup_ops` (backups.tf) is applied and the app box runs `MODE=target` | the archive itself |
+| AWS Backup plan | daily snapshots, 7-day retention | **both** staging hosts: selections `packiot-staging-app-ec2` and `packiot-staging-db-ec2` (verified 2026-10-13) | 7 days |
+| Historian archive | Parquet on S3 (the only copy of raw data older than 90 days) | bucket versioning **Enabled** (verified 2026-10-13), so overwrites and deletes are recoverable; still **no copy outside that bucket** | the archive itself |
 
 Verified 2026-09-30 (restore drills in isolated `--network none` containers): analytics
 0 `pg_restore` errors, RLS policies / forced-RLS tables / non-superuser view owners identical to

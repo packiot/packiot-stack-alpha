@@ -46,8 +46,8 @@ CS-Admin SSO).
 - **Credentials**: services with `internal/secrets/` read DB/RabbitMQ credentials from AWS Secrets Manager by
   default and from plain env with `CREDS_SOURCE=env` (what dev uses). Each README names the secrets it reads.
 - **CI**: `.github/workflows/go-services.yml` runs `go vet`, `go test -race` and `go build` for analytics-sync,
-  barcode-service, ingest-shim, mirror-worker-go, operator-gateway, read-api, sparkplug-decoder and
-  stream-engine (plus stream-engine's golden tests). **oeecloud-fanout is not in that matrix.** The dev slices
+  barcode-service, ingest-shim, mirror-worker-go, oeecloud-fanout, operator-gateway, read-api, sparkplug-decoder
+  and stream-engine (plus stream-engine's golden tests). The dev slices
   (`dev-slices.yml`, required check "dev slices gate") boot and smoke-test the services that have a slice.
 - **Deploy**: merge to `staging` → **Deploy to Staging** (`.github/workflows/deploy-staging.yml`). These are
   first-party directories, so the submodule auto-bump chain does not apply.

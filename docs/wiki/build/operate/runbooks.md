@@ -300,3 +300,4 @@ The serving box pulls from S3 every 5 minutes. Details: [wiki pipeline](../../un
 - [Platform & operations](../../understand/subsystems/platform.md) · [CI/CD](../../understand/components/ci-cd.md) ·
   [Compose topology](../../understand/components/compose-topology.md) · [Observability](../../understand/components/observability.md)
 - [Environments](../../understand/architecture/environments.md) for hosts and URLs
+- [Backups & restore](backups-and-restore.md) · [Deploy](deploy.md) · [Rotate secrets](secrets-rotation.md) · [Change nginx config](nginx-config-changes.md)

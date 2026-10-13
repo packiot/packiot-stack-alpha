@@ -11,7 +11,7 @@ last_verified: 2026-09-29
 
 ## The one question per line
 
-**OEE = Availability × Performance × Quality** (see the example on [Start here](../../index.md)).
+**OEE = Availability × Performance × Quality** (see the example on [Use Packiot — start here](../index.md)). If Performance shows above 100 %, see [Troubleshooting OEE](../troubleshooting-oee.md#performance-above-100).
 To know **Availability**, Packiot must know when a line was running. There are two ways:
 
 | The line… | Choose | How "running" is decided |

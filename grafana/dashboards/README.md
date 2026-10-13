@@ -1,56 +1,72 @@
-# Packiot dashboards v2
+# Packiot Grafana dashboards
 
-Reviewed, rebuilt Grafana boards, loaded into a **separate "Packiot v2" folder**
-(provider `packiot-v2`) so the original "Packiot" set is untouched during the
-flip bake. **v1 retires once v2 is blessed** — A/B them side by side first.
+Provisioned from this directory by `grafana/provisioning/dashboards/all.yml` into two
+Grafana folders. Staging Grafana: `https://grafana.staging.packiot.app/d/<uid>` (SSO).
 
-Design contract + the live-verified metric universe: [`_SPEC.md`](./_SPEC.md).
+| Folder | Purpose |
+|---|---|
+| **Audience** (`audience/`) | One board per reader: overview, Customer Success, platform/SRE, data engineering, ingest debugging. Start here. |
+| **Library** (`library/`) | Deep-dive boards per subsystem (engine, ingest, operator, database, API, RabbitMQ, data quality, traces). |
 
-## Why v1 had blank tiles (all fixed here)
+| Folder | File | uid | Title |
+|---|---|---|---|
+| Audience | `00-overview.json` | `v2-overview` | Overview |
+| Audience | `01-cs-client-health.json` | `aud-cs` | ① CS · Client health |
+| Audience | `02-platform-sre.json` | `aud-sre` | ② Platform · SRE |
+| Audience | `03-pipeline-data.json` | `aud-data` | ③ Pipeline · Data eng |
+| Audience | `04-ingest-debug.json` | `aud-debug-ingest` | 🔎 Ingest debug — why isn't a client's data arriving? |
+| Library | `03-oee-business.json` | `v2-oee` | OEE — per equipment |
+| Library | `04-engine.json` | `v2-engine` | Engine — stream-engine |
+| Library | `05-ingest.json` | `v2-ingest` | Ingest — edge-transformer |
+| Library | `07-operator.json` | `v2-operator` | Operator — actions & adapter |
+| Library | `08-logs.json` | `v2-logs` | Logs — Loki |
+| Library | `09-equipment.json` | `v2-equipment` | Equipment & reference data |
+| Library | `10-infra.json` | `v2-infra` | Infra — host / DB / runtime |
+| Library | `11-database.json` | `v2-database` | Database — Postgres / TimescaleDB |
+| Library | `12-api.json` | `v2-api` | API — RED |
+| Library | `13-rabbitmq.json` | `v2-rabbitmq` | Bus — RabbitMQ |
+| Library | `14-uptime-containers.json` | `v2-uptime-containers` | Uptime & containers |
+| Library | `15-po-staleness-gate.json` | `v2-po-staleness-gate` | PO staleness gate |
+| Library | `16-database-dbm.json` | `v2-database-dbm` | Database — deep (DBM) |
+| Library | `17-data-quality.json` | `v2-data-quality` | Data quality — OEE invariants |
+| Library | `18-query-traces.json` | `v2-query-traces` | DB query traces — Tempo |
+| Library | `19-factory-analysis.json` | `v2-factory-analysis` | Factory / OEE analysis |
 
-- **Datasource-null** on v1 boards 07/08/09/10 → PromQL silently hit the default
-  Postgres datasource and died. **v2 pins an explicit datasource on every panel
-  AND every target.**
-- **Phantom metric** `bake_tenant_converged` (queried by v1's flip gate + an
-  alert, never emitted) → dropped; flip-readiness is **derived** from real
-  `bake_surface_mismatches`/`bake_identity_mismatch`.
-- **Scrape gaps** — `ingest-shim` + `operator-adapter` (the live Incoplast path)
-  weren't scraped → jobs added in `monitoring/prometheus/prometheus.yml`.
+Design contract and the verified metric universe: [`_SPEC.md`](./_SPEC.md). Changes are
+linted in CI (`.github/workflows/dashboard-lint.yml`). The wiki's
+[service catalog](../../docs/wiki/reference/service-catalog.md) links each service to its
+board; update it when you add one.
 
 ## Reading a blank tile
 
-Every v2 panel is one of three, and its `description` says which:
+Every panel is one of three, and its `description` says which:
 
 | A blank/zero tile means | Because |
 |---|---|
 | ✅ **real, currently zero** | e.g. an error-rate line — flat 0 is *healthy* |
 | 🟡 **truthful-empty (gated/inert)** | the metric ships behind a flag or a retiring service; the description names the flag |
-| 🔴 **would have been a bug** | fixed at the source (datasource, phantom, scrape) — should not recur in v2 |
+| 🔴 **would have been a bug** | fixed at the source (datasource, phantom, scrape) — should not recur |
 
 If a tile is blank and its description doesn't explain it, that's a real signal —
 check the source metric on the **Infra** board's `up`-by-job scrape-health table.
 
-## Boards
+## Datasources (pinned on every panel)
 
-| Board | uid | Answers | Notable expected-empties |
-|---|---|---|---|
-| **00 Overview** | `v2-overview` | Firing alerts + is-the-stack-alive + does-data-land, one glance | "Firing alerts" empty = nothing firing (good) |
-| **03 OEE (business)** | `v2-oee` | OEE/A/P/Q per equipment, `$enterprise/$site/$area/$equipment` chain | SQL over `equipment_values`; cross-check vs the engine's `production_orders_runtime` (noted on each panel); `$datasource` defaults to **F3** (equipment_values only lands fresh there post-flip) |
-| **04 Engine** | `v2-engine` | oeecloud-worker: AMQP→jobs→writes, `$tenant`/`$flow` | job error/panic rate flat 0 = healthy; `skipped_30700/30800_30899` are expected (config params handled elsewhere) |
-| **05 Ingest** | `v2-ingest` | edge-transformer: MQTT→calc→emit→outbox | one annotated tile explains `commands_*`/`erp_*` read 0 by design (inert flags); `amqp_deliveries` not charted (unused in MQTT-in topology) |
-| **07 Operator** | `v2-operator` | operator-adapter/ingest-shim request metrics + `user_logs` actions | adapter/shim metrics were just scraped — flat 0 right after deploy = scrape-lag, not silence (check `up{job=...}` on Infra); `$datasource` defaults to **F1** — `user_logs` only ever lands there, never F3 (fixed 2026-08-20, see below) |
-| **08 Logs** | `v2-logs` | Unified Loki, `$service`(dynamic)/`$level`/`$search` | `$service` is `label_values(service)` — never a hardcoded list; no `tenant` label on logs |
-| **09 Equipment** | `v2-equipment` | Reference data — hierarchy, packml_register, POs, shifts | pure config browser (SQL); `$datasource` defaults to **F3** (the post-flip source of truth) |
-| **10 Infra** | `v2-infra` | host disk/mem/cpu, pg_up, go/process runtime, **scrape health** | the `up`-by-job table surfaces any target that stops being scraped |
-| **11 Database** | `v2-database` | Postgres/TimescaleDB via **Prometheus** (postgres-exporter): cache hit ratio, xact/tuple rates, connections by state, longest query, DB size, hypertable size/chunks/compression | depends entirely on postgres-exporter's scrape succeeding — see the queries.yaml collision fix below; was fully dark until 2026-08-20 |
-| **12 API** | `v2-api` | RED (rate/errors/duration) for edge-api, read-api, operator-adapter/operator-gateway, ingest-shim via `http_request_duration_seconds_*` | `operator_adapter_requests_total` can read 0-series (not flat-0) right after an operator-gateway restart — the CounterVec only materializes a label combo after first use, unlike ingest-shim which pre-registers; self-heals once operator traffic flows |
-| **13 Bus (RabbitMQ)** | `v2-rabbitmq` | `rabbitmq_global_messages_{received,delivered,redelivered}_total` via the built-in `rabbitmq_prometheus` plugin | live, confirmed |
-| **14 Uptime & Containers** | `v2-uptime-containers` | cAdvisor container CPU/mem/net per container | live, confirmed (74 series) |
-| **15 PO staleness gate** | `v2-po-staleness-gate` | ADR-0023 PO-route 409/traffic/latency (real, live edge-api RED metrics) + degrade-to-ALLOW rate (**not yet emitted** — ADR-0023 lists the gate as "Foundation, in flight") | traffic/latency/409 panels work today; the two degrade-to-ALLOW panels are truthful-empty until `po_gate_degraded_total` ships (annotated on the panels) |
-| **16 Database DBM** | `v2-database-dbm` | Deep ("Datadog-style") DB internals on the **F3 plane** (`$datname`=`packiot_analytics`): session saturation, throughput/efficiency, table+index health, TimescaleDB jobs/cagg-lag/compression, per-tenant load | catalog-view panels (seq-scans, unused indexes, cagg lag, jobs, compression) are **native SQL over `packiot_analytics`**, unaffected by the postgres-exporter fix below; the Prometheus-sourced panels on this board (session/throughput/hypertable-size stats) were dark until 2026-08-20 same as board 11; `pg_stat_statements` section is PENDING a DB restart (prereqs on the panel) |
-| **17 Data Quality** | `v2-data-quality` | OEE-invariant violations from `data_quality_event` (F3) — `OEE_GT_1`/`NET_GT_GROSS`/`NEGATIVE_METRIC` by rule×enterprise×equipment; feeds P11 andon | native SQL over `packiot-postgres-shadow`; empty only if `DQ_ALARMS_ENABLED` never ran (405 violations present in the last 7 days as of 2026-08-20) |
-| **18 DB Query Traces** | `v2-query-traces` | **Tempo/TraceQL** — jump from a latency spike to the exact slow SQL trace; slow-DB-span table, p95/rate by service, saved by-table TraceQL + cookbook | span search works today (confirmed live); exemplar *dots* need per-service `trace_id` on `http_request_duration_seconds` (separate PR) |
-| **19 Factory / OEE analysis** | `v2-factory-analysis` | The deep client-factory board — per-line/area/equipment OEE trends, PO timeline, data-quality cross-cut, all SQL over F3 (`packiot-postgres-shadow`) | native SQL over live F3 data (equipment_values, production_orders, equipment_oee_shift all confirmed populated); links out to OEE/Equipment/Data-Quality boards |
+`packiot-prometheus` · `packiot-loki` · `packiot-tempo` (traces / TraceQL) ·
+`packiot-postgres` (F1+F2, DB `packiot`) · `packiot-postgres-shadow` (F3, DB `packiot_analytics`).
+
+## Conventions
+
+- Grafana 11 schema (`schemaVersion: 39`). Every panel + target carries an
+  explicit `{type,uid}` datasource. `text` panels + `row` dividers don't query,
+  so carry none.
+- New `v2-*` uids → provision cleanly into the v2 folder without colliding with
+  v1's uids. **Files are the source of truth** — export UI edits back to JSON or
+  they're lost on the 10s reload.
+- Every panel sets a unit + (for stats) thresholds; timeseries use table legends
+  with `lastNotNull`/`mean`; tables color-code the meaningful column.
+
+## History
 
 ### Retired boards
 
@@ -122,26 +138,3 @@ one high-blast-radius bug and a few smaller ones:
   staging Grafana container was crash-looping on a datasource provisioning
   conflict from the recent F3 rename. See the review's final report / PR
   description for the live diagnosis and the human-actionable fix.
-
-## Datasources (pinned on every panel)
-
-`packiot-prometheus` · `packiot-loki` · `packiot-tempo` (traces / TraceQL) ·
-`packiot-postgres` (F1+F2, DB `packiot`) · `packiot-postgres-shadow` (F3, DB `packiot_analytics`).
-
-## Conventions
-
-- Grafana 11 schema (`schemaVersion: 39`). Every panel + target carries an
-  explicit `{type,uid}` datasource. `text` panels + `row` dividers don't query,
-  so carry none.
-- New `v2-*` uids → provision cleanly into the v2 folder without colliding with
-  v1's uids. **Files are the source of truth** — export UI edits back to JSON or
-  they're lost on the 10s reload.
-- Every panel sets a unit + (for stats) thresholds; timeseries use table legends
-  with `lastNotNull`/`mean`; tables color-code the meaningful column.
-
-## Retiring v1 — DONE (2026-07)
-
-v2 was blessed. The `packiot` provider block was removed from
-`provisioning/dashboards/all.yml` and `grafana/dashboards/` (13 v1 boards) deleted.
-The v1 set was a full duplicate that still carried dead
-primary-api/back4-api/hasura panels + 3-flow/bake artifacts.

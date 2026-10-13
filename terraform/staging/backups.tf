@@ -33,8 +33,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "db_backups" {
   }
 }
 
-# Versioning ON (2026-09-30 backup audit; NOT YET APPLIED — live is still
-# unversioned). Without it one bad prune loop, a compromised DB-box role (it holds
+# Versioning ON (2026-09-30 backup audit; applied — live status Enabled, checked
+# 2026-10-13). Without it one bad prune loop, a compromised DB-box role (it holds
 # s3:DeleteObject on the whole bucket) or an overwrite of the `latest` keys
 # destroys backups irrecoverably. With it, deletes become delete markers and
 # overwritten objects become noncurrent versions, expired by the lifecycle rule
@@ -122,10 +122,10 @@ resource "aws_iam_role_policy_attachment" "db_backup_writer" {
 # the self-hosted staging runner (this box) and drives restore-db.sh on the DB box
 # through SSM. Scoped by the DB instance's Name tag. The app box already holds the
 # DB superuser password in /opt/packiot/.env, so this adds no new blast radius.
-# NOT YET APPLIED (2026-09-30): until it is, backup-historian.sh runs in its
-# "interim" configuration (catalog dumps into the historian bucket's _backup/, no
-# Parquet mirror) and the emergency workflow can only restore the historian —
-# analytics/superset restores fall back to the manual runbook commands.
+# Applied (policy packiot-staging-app-backup-ops is on the app role, checked
+# 2026-10-13). The Parquet mirror additionally needs the app box switched to
+# backup-historian.sh MODE=target (install-historian-backup.sh); until then it runs
+# the "interim" configuration (catalog dumps into the historian bucket's _backup/).
 # Apply: terraform apply -target=aws_iam_role_policy.app_backup_ops
 resource "aws_iam_role_policy" "app_backup_ops" {
   name = "packiot-staging-app-backup-ops"
