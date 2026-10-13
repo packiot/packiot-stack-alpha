@@ -156,10 +156,13 @@ CANDIDATE_DSN=<dsn> ./scripts/prod-f3-schema-parity-check.sh gate   # PASS ⇔ F
 - **`pg_cron`.** Installed for scheduled stored-proc jobs. *(VERIFY: the specific
   `cron.schedule` jobs live in the edge-node-red DDL submodule, not in `db/`; the
   cagg **refresh** cadence is TimescaleDB policies, not `pg_cron`.)*
-- **OEE output invariant (ADR-0037).** Rollup code clamps every served ratio to
-  `GREATEST(LEAST(r,1),0)`; `init/07`/`08` backfill historical rows and add
-  `*_oee_bounds BETWEEN 0 AND 1` CHECK constraints across 7 tables. A negative or
-  >1 OEE is a bug, not data.
+- **OEE output invariant (ADR-0037, relaxed 2026-09-29).** `init/07`/`08` added
+  `*_oee_bounds` CHECK constraints (originally every ratio `BETWEEN 0 AND 1`).
+  Since `migrations/t-oee-uncapped-data` the data stores what was measured: only
+  availability `oee_a` is capped to `[0,1]`; `oee`, `oee_p` and `oee_q` must be
+  `>= 0` but are **not** capped at 1 (performance > 1 = ideal speed set too low;
+  hourly quality > 1 = units in transit). A negative ratio, or `oee_a > 1`, is a
+  bug, not data; the UI decides how to display values above 1.
 - **`active` soft-delete.** `active=true/false` is the soft-delete flag on
   `enterprises`, `users`, and `packml_register` (oeecloud only routes topics with
   `active=true`). The CS-Admin PR series extends `active` to `sites`, `areas`,

@@ -55,7 +55,7 @@ production host, which is not promoted (draft PR #1653).
  │ sparkplug-agent-shared (HTTPS │  Sparkplug B
  │  front doors ← factory tees)  │  spBv1.0/<GROUP>/…     ┌───────────────────────────┐
  │ optional simulators: plc-sim, │ ─────────────────────▶ │ Mosquitto :1883           │
- │ bispharma-twin, s7 profile    │                        └────────────┬──────────────┘
+ │ bispharma-twin                │                        └────────────┬──────────────┘
  └───────────────────────────────┘                                     │ spBv1.0/#  QoS 0
                                                                        ▼
                                           ┌──────────────────────────────────────────────┐
@@ -81,7 +81,10 @@ production host, which is not promoted (draft PR #1653).
 1. **Publish.** An edge publisher sends Sparkplug B (NBIRTH once with aliases, then NDATA with values)
    under its group, for example `CPACK`. Real client data reaches the cloud through the shared
    agent's HTTPS front doors (see [Edge](edge.md#how-it-works)); `plc-sim`, `bispharma-twin`
-   (`BISPHARMA_TWIN_ENABLED`, default off) and the `s7` profile are staging simulators.
+   (`BISPHARMA_TWIN_ENABLED`, default off) are staging simulators. The opt-in `s7` profile
+   (`s7-softplc` + `s7-reader`) is not a Sparkplug publisher: `s7-reader` runs in its default
+   raw-emit mode and publishes plain raw-tag JSON to `edge/raw/incoplast`, which no staging agent
+   subscribes to (there is no `incoplast` tenant file for the shared agent).
 2. **Decode.** The decoder resolves aliases, and for every `Prod{Processed,Consumed,Defective}Count`
    runs Calc: the first sample of a new counter seeds the baseline, a counter reset re-seeds
    (reset heal), and a rate guard drops glitches (machines with no speed sensor fall back to
@@ -97,7 +100,7 @@ production host, which is not promoted (draft PR #1653).
    triple per tenant (`stream-engine-q-<t>`, `…-retry-30s`, `…-failed`) for tenants discovered from
    `packml_register` and listed in `WORKER_TENANT_ALLOWLIST`, re-discovered every 60 s. When
    `FANOUT_CPACK_TO_SBXCPACK_ENABLED=true`, `oeecloud-fanout` copies CPACK envelopes to the sandbox
-   group. Messages no queue binds go to `oee-unroutable-q`.
+   group. Messages no queue binds go to `oee-unroutable-q` (alternate exchange via policy `oee-ae`).
 5. **Write.** stream-engine resolves each metric's topic to an equipment, rejects phantom increments
    (increment sanity check; each rejection is a `data_quality_event`), and in one batch appends
    Bronze and upserts Silver. Unregistered topics are skipped and counted. On a DB error the message
@@ -134,7 +137,7 @@ ingest-shim publishes its OpenAPI document at `GET /openapi.json`; see the gener
 | Per-counter baselines | decoder memory, checkpointed in the outbox DB (`calc_state`) | restored at boot (`calc_state_restored_entries` gauge) |
 | Alias tables | decoder memory | rebuilt from the next birth |
 | Undelivered envelopes | decoder SQLite outbox `/var/lib/edge-transformer/outbox.db`, volume `edge_transformer_outbox` | deleted on broker confirm; capped at 100 000 rows (oldest dropped) |
-| In-flight messages | RabbitMQ queues (durable, persistent) | until acked; `-failed` and `oee-unroutable-q` until purged |
+| In-flight messages | RabbitMQ queues (durable, persistent) | until acked; `-failed` until purged; `oee-unroutable-q` capped by policy `oee-unroutable-cap` (50,000 messages, 14-day TTL, #1670) |
 | Raw samples | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | append-only (no-mutate trigger); 90 days |
 | Clean facts | `silver.equipment_values` (unique `(ts_value, id_equipment)`) | 90 days; a daily cold copy goes to the [historian](historian.md) |
 

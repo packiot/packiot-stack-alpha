@@ -47,8 +47,8 @@ The image ships these binaries (`Dockerfile`); other `cmd/` tools are CLIs run w
 | `sparkplug-agent` | staging `sparkplug-agent-shared` (profile `shared-tee`, the multi-tenant cloud ingest), `sparkplug-agent-cpack` (profile `cpack-tee`); on-prem `sparkplug-agent` (`127.0.0.1:9104`) | HTTP raw tags → tag map / derive → SparkPlug B upstream |
 | `edge-dashboard` | on-prem `edge-dashboard` (`:8080`) | floor board over the local current-state DB |
 | `plc-sim` | staging `plc-sim` (profile `plc-sim`) | synthetic SparkPlug PLC; receives DCMD |
-| `s7-reader`, `s7-softplc` | staging, profile `s7` | Siemens S7 reader and a pure-Go soft PLC |
-| `modbus-reader`, `opcua-reader` | shipped in the image; no compose file runs them | Modbus / OPC UA readers → SparkPlug |
+| `s7-reader`, `s7-softplc` | staging, profile `s7`; on-prem `s7-reader` in [`compose.edge.yml`](../../docs/clients/edge-deployment/compose.edge.yml) (profiles `reader`, `reader-s7`) | Siemens S7 reader (raw tags to `edge/raw/<tenant>` for the local agent; `RAW_EMIT=false` = direct SparkPlug B) and a pure-Go soft PLC (staging only) |
+| `modbus-reader`, `opcua-reader` | on-prem, [`compose.edge.yml`](../../docs/clients/edge-deployment/compose.edge.yml) (profiles `reader` + `reader-modbus` / `reader-opcua`), also the sandbox replica [`compose.replica.yml`](../../docs/clients/sandbox-edge/compose.replica.yml); not in staging or dev compose | Modbus / OPC UA readers (same emit modes as `s7-reader`) |
 | `bispharma-twin` | staging `bispharma-twin` (no profile; inert unless `BISPHARMA_TWIN_ENABLED=true`) | synthetic Bispharma staging line |
 | `seed-replay` | dev `seed-replay` | replays the dev seed's rows from one week earlier as SparkPlug |
 | CLIs: `onboard`, `onboard-gen`, `onboard-import`, `onboard-capture`, `capture-fixtures`, `derive-replay`, `inject-counter-fixture`, `numeric-sim` | `go run ./cmd/<name>` | onboarding artifacts, fixtures, replays |
