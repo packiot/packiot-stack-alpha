@@ -1283,7 +1283,444 @@
         }
       }
     },
-    "examples": {"ErrInvalidJSON": {"summary": "Malformed or wrongly typed body", "value": {"error": "invalid JSON body"}}, "ErrUnauthorized": {"summary": "Missing or wrong X-Ingest-Key", "value": {"error": "invalid or missing X-Ingest-Key"}}, "ErrForbidden": {"summary": "enterprise / topic outside the configured tenant", "value": {"error": "action is not scoped to the configured Incoplast enterprise"}, "description": "Byte-exact handler message (server.go pre). The tenant name in it is a literal in the code, not your tenant."}, "ErrMethod": {"summary": "Anything but POST", "value": {"error": "method not allowed"}}, "ErrTopicMissing": {"summary": "SparkPlug topic field empty or absent", "value": {"error": "packml_topic is required — the tee node must send the SparkPlug topic so the adapter can resolve the staging equipment"}}, "ErrTopicUnresolved": {"summary": "Topic unknown, inactive, cross-tenant or ambiguous", "value": {"error": "topic \"ACME/Plant1/Extrusion/Line99\" did not resolve to a staging equipment (unknown, inactive, cross-tenant, or ambiguous in packml_register)"}}, "ErrEdgeUnreachable": {"summary": "edge-api down, timed out (10 s) or response unreadable", "value": {"error": "edge-api unreachable"}}, "ErrResolverDown": {"summary": "Resolver database error", "value": {"error": "topic resolver unavailable"}}, "ErrResolverUnset": {"summary": "Resolver not wired (misconfiguration)", "value": {"error": "topic resolver is not configured"}}, "ErrEdge5xx": {"summary": "edge-api answered 5xx (or a non-2xx/4xx status)", "value": {"error": "edge-api error"}}, "EdgeValidation400": {"summary": "edge-api validation error, passed through", "value": {"statusCode": 400, "message": ["timestamp must be a valid ISO 8601 date string"], "error": "Bad Request"}, "description": "Illustrative NestJS class-validator body; the exact shape and text are edge-api's."}, "EdgeAuth401": {"summary": "edge-api rejected the gateway's own EDGE_API_KEY, passed through", "value": {"statusCode": 401, "message": "Unauthorized"}, "description": "Illustrative. This 401 is about the gateway's server-side edge-api key, not your X-Ingest-Key."}, "EdgeForbidden403": {"summary": "edge-api refused the call, passed through", "value": {"statusCode": 403, "message": "Forbidden resource", "error": "Forbidden"}, "description": "Illustrative edge-api body."}, "EdgeNotFound404": {"summary": "edge-api could not find the referenced row, passed through", "value": {"statusCode": 404, "message": "Production order not found", "error": "Not Found"}, "description": "Illustrative edge-api body."}, "EdgeConflict409": {"summary": "edge-api state conflict, passed through", "value": {"statusCode": 409, "message": "There is already a running production order on this equipment", "error": "Conflict"}, "description": "Illustrative edge-api body."}, "DowntimeJustify": {"summary": "Justify a downtime (id_param 30810, creates a manual event)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_param": 30810, "ts_event": "2026-10-13T08:15:00-03:00", "ts_end": "2026-10-13T08:42:30-03:00", "category": "12", "category_desc": "Mechanical failure", "subcategory": "1203", "subcategory_desc": "Screw jam", "txt_downtime": "Cleared the jam, replaced shear pin"}}, "DowntimeManual": {"summary": "Register a manual downtime (id_param 30811)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_param": 30811, "ts_event": "2026-10-13T13:00:00-03:00", "ts_end": "2026-10-13T13:30:00-03:00", "category": "30", "category_desc": "Planned maintenance", "subcategory": "", "subcategory_desc": "", "txt_downtime": ""}}, "DowntimeEdit": {"summary": "Re-categorise / trim an existing event (id_param 30812, edit path)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_param": 30812, "id_equipment_event": 918273, "ts_event": "2026-10-13T08:15:00-03:00", "ts_end": "2026-10-13T08:35:00-03:00", "category": "20", "category_desc": "Changeover", "subcategory": "2001", "subcategory_desc": "Mould change", "txt_downtime": "Shortened: changeover ended earlier", "planned_dwt": true, "change_over": true, "idle": "No"}}, "POStart": {"summary": "Create and start a PO (order number as text)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_order": "08396260", "production_order_quantity": 12000, "timestamp": "2026-10-13 06:00:00", "nm_production_order": "Bottle cap 28mm blue", "notes": "Priority run", "id_label": null}}, "POStartNumeric": {"summary": "Order number sent as a JSON number (kept as literal text)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_order": 834.058, "production_order_quantity": 5000, "timestamp": "2026-10-13 14:00:00"}}, "POStopFinish": {"summary": "Finish the running PO", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T14:00:00-03:00", "stop_type": "finish", "id_production_order": 55123, "production_order_quantity": 11870}}, "POStopPause": {"summary": "Pause the running PO (numeric convention 1 = pause)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T10:30:00-03:00", "stop_type": "1", "id_production_order": 55123, "production_order_quantity": 6400}}, "POSetupCreateNext": {"summary": "Close current PO and create + open a new one", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T14:00:00-03:00", "should_open_new_po": true, "stop_type": "finish", "old_id_production_order": 55123, "old_production_order_prod_final": 11870, "should_create_po": true, "id_order": "08396261", "production_order_quantity": 8000, "nm_production_order": "Bottle cap 28mm red", "notes": ""}}, "POSetupReuseNext": {"summary": "Close current PO and open an already-created PO", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T14:00:00-03:00", "should_open_new_po": true, "stop_type": "finish", "old_id_production_order": 55123, "old_production_order_prod_final": 11870, "should_create_po": false, "id_production_order": 55124}}, "POSetupCloseOnly": {"summary": "Close the current PO only (pause)", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "timestamp": "2026-10-13T22:00:00-03:00", "should_open_new_po": false, "stop_type": "pause", "old_id_production_order": 55123, "old_production_order_prod_final": 9050}}, "POReplace": {"summary": "Switch the line to an existing PO", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_production_order": 55124}}, "POChangeStatus": {"summary": "Toggle a PO between paused and finished", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_production_order": 55120}}, "POChangeTime": {"summary": "Correct a runtime interval's bounds", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_production_order_runtime": 771204, "id_production_order": 55120, "start": "2026-10-12T06:05:00-03:00", "end": "2026-10-12T13:58:00-03:00"}}, "SplitDowntime": {"summary": "Split one downtime into two re-categorised intervals", "value": {"enterprise": 42, "topic": "ACME/operator-app/Line01", "packml_topic": "ACME/Plant1/Extrusion/Line01", "user": "op-1042", "id_equipment_event": 918273, "event_type": "downtime", "events": [{"start_time": "2026-10-13T08:15:00-03:00", "end_time": "2026-10-13T08:25:00-03:00", "note": "Waiting for maintenance", "category_code": "40", "subcategory_code": "4001", "desc_category": "Waiting", "desc_subcategory": "Maintenance crew", "idle": "No", "change_over": false, "planned_dwt": false}, {"start_time": "2026-10-13T08:25:00-03:00", "end_time": "2026-10-13T08:42:30-03:00", "note": "", "category_code": "12", "subcategory_code": "1203", "desc_category": "Mechanical failure", "desc_subcategory": "Screw jam", "idle": "No", "change_over": false, "planned_dwt": false}]}}, "Dt422Category": {"summary": "category empty", "value": {"error": "category is required but was empty (edge cdCategory @IsNotEmpty)"}}, "Dt422Param": {"summary": "id_param outside 30810-30814", "value": {"error": "id_param 30899 is not a recognised downtime parameter (expected 30810-30814)"}}, "Dt422EditId": {"summary": "Edit path without id_equipment_event", "value": {"error": "id_equipment_event is required to edit an existing downtime (id_param 30812) but was not supplied"}}, "Po422Order": {"summary": "id_order missing or blank", "value": {"error": "id_order is required but was not supplied (operator-selected order number, msg.payload.new_po)"}}, "Po422Ts": {"summary": "timestamp empty", "value": {"error": "timestamp is required but was empty (expected 'YYYY-MM-DD HH:mm:ss')"}}, "Stop422Type": {"summary": "Unknown stop_type", "value": {"error": "stop_type \"abort\" is not recognised (expected pause|finish or 1|2)"}}, "Stop422Qty": {"summary": "Final count missing", "value": {"error": "production_order_quantity is required but was not supplied (final good count)"}}, "Setup422Open": {"summary": "should_open_new_po absent", "value": {"error": "should_open_new_po is required (true = close current + open next, false = close only) but was not supplied"}}, "Setup422Order": {"summary": "Create-next without id_order", "value": {"error": "id_order is required when should_open_new_po and should_create_po are true (the new order number)"}}, "Setup422Reuse": {"summary": "Reuse-next without id_production_order", "value": {"error": "id_production_order is required when opening an existing next PO (should_create_po false)"}}, "Replace422Id": {"summary": "Target PO missing", "value": {"error": "id_production_order is required but was not supplied (the PO to switch to)"}}, "Status422Id": {"summary": "PO id missing", "value": {"error": "id_production_order is required but was not supplied"}}, "Time422Runtime": {"summary": "Runtime id missing", "value": {"error": "id_production_order_runtime is required but was not supplied (the runtime interval to edit)"}}, "Time422Start": {"summary": "start empty", "value": {"error": "start is required but was empty"}}, "Split422Empty": {"summary": "No sub-intervals", "value": {"error": "events is required but was empty (a split must produce at least one sub-interval)"}}, "Split422Idle": {"summary": "Bad idle value", "value": {"error": "events[0].idle \"maybe\" is not recognised (expected Yes|yes|No|no)"}}, "Split422Type": {"summary": "Unknown event_type", "value": {"error": "event_type \"stop\" is not recognised (expected downtime|manual|low_speed)"}}},
+    "examples": {
+      "ErrInvalidJSON": {
+        "summary": "Malformed or wrongly typed body",
+        "value": {
+          "error": "invalid JSON body"
+        }
+      },
+      "ErrUnauthorized": {
+        "summary": "Missing or wrong X-Ingest-Key",
+        "value": {
+          "error": "invalid or missing X-Ingest-Key"
+        }
+      },
+      "ErrForbidden": {
+        "summary": "enterprise / topic outside the configured tenant",
+        "value": {
+          "error": "action is not scoped to the configured Incoplast enterprise"
+        },
+        "description": "Byte-exact handler message (server.go pre). The tenant name in it is a literal in the code, not your tenant."
+      },
+      "ErrMethod": {
+        "summary": "Anything but POST",
+        "value": {
+          "error": "method not allowed"
+        }
+      },
+      "ErrTopicMissing": {
+        "summary": "SparkPlug topic field empty or absent",
+        "value": {
+          "error": "packml_topic is required — the tee node must send the SparkPlug topic so the adapter can resolve the staging equipment"
+        }
+      },
+      "ErrTopicUnresolved": {
+        "summary": "Topic unknown, inactive, cross-tenant or ambiguous",
+        "value": {
+          "error": "topic \"ACME/Plant1/Extrusion/Line99\" did not resolve to a staging equipment (unknown, inactive, cross-tenant, or ambiguous in packml_register)"
+        }
+      },
+      "ErrEdgeUnreachable": {
+        "summary": "edge-api down, timed out (10 s) or response unreadable",
+        "value": {
+          "error": "edge-api unreachable"
+        }
+      },
+      "ErrResolverDown": {
+        "summary": "Resolver database error",
+        "value": {
+          "error": "topic resolver unavailable"
+        }
+      },
+      "ErrResolverUnset": {
+        "summary": "Resolver not wired (misconfiguration)",
+        "value": {
+          "error": "topic resolver is not configured"
+        }
+      },
+      "ErrEdge5xx": {
+        "summary": "edge-api answered 5xx (or a non-2xx/4xx status)",
+        "value": {
+          "error": "edge-api error"
+        }
+      },
+      "EdgeValidation400": {
+        "summary": "edge-api validation error, passed through",
+        "value": {
+          "statusCode": 400,
+          "message": [
+            "timestamp must be a valid ISO 8601 date string"
+          ],
+          "error": "Bad Request"
+        },
+        "description": "Illustrative NestJS class-validator body; the exact shape and text are edge-api's."
+      },
+      "EdgeAuth401": {
+        "summary": "edge-api rejected the gateway's own EDGE_API_KEY, passed through",
+        "value": {
+          "statusCode": 401,
+          "message": "Unauthorized"
+        },
+        "description": "Illustrative. This 401 is about the gateway's server-side edge-api key, not your X-Ingest-Key."
+      },
+      "EdgeForbidden403": {
+        "summary": "edge-api refused the call, passed through",
+        "value": {
+          "statusCode": 403,
+          "message": "Forbidden resource",
+          "error": "Forbidden"
+        },
+        "description": "Illustrative edge-api body."
+      },
+      "EdgeNotFound404": {
+        "summary": "edge-api could not find the referenced row, passed through",
+        "value": {
+          "statusCode": 404,
+          "message": "Production order not found",
+          "error": "Not Found"
+        },
+        "description": "Illustrative edge-api body."
+      },
+      "EdgeConflict409": {
+        "summary": "edge-api state conflict, passed through",
+        "value": {
+          "statusCode": 409,
+          "message": "There is already a running production order on this equipment",
+          "error": "Conflict"
+        },
+        "description": "Illustrative edge-api body."
+      },
+      "DowntimeJustify": {
+        "summary": "Justify a downtime (id_param 30810, creates a manual event)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_param": 30810,
+          "ts_event": "2026-10-13T08:15:00-03:00",
+          "ts_end": "2026-10-13T08:42:30-03:00",
+          "category": "12",
+          "category_desc": "Mechanical failure",
+          "subcategory": "1203",
+          "subcategory_desc": "Screw jam",
+          "txt_downtime": "Cleared the jam, replaced shear pin"
+        }
+      },
+      "DowntimeManual": {
+        "summary": "Register a manual downtime (id_param 30811)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_param": 30811,
+          "ts_event": "2026-10-13T13:00:00-03:00",
+          "ts_end": "2026-10-13T13:30:00-03:00",
+          "category": "30",
+          "category_desc": "Planned maintenance",
+          "subcategory": "",
+          "subcategory_desc": "",
+          "txt_downtime": ""
+        }
+      },
+      "DowntimeEdit": {
+        "summary": "Re-categorise / trim an existing event (id_param 30812, edit path)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_param": 30812,
+          "id_equipment_event": 918273,
+          "ts_event": "2026-10-13T08:15:00-03:00",
+          "ts_end": "2026-10-13T08:35:00-03:00",
+          "category": "20",
+          "category_desc": "Changeover",
+          "subcategory": "2001",
+          "subcategory_desc": "Mould change",
+          "txt_downtime": "Shortened: changeover ended earlier",
+          "planned_dwt": true,
+          "change_over": true,
+          "idle": "No"
+        }
+      },
+      "POStart": {
+        "summary": "Create and start a PO (order number as text)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_order": "08396260",
+          "production_order_quantity": 12000,
+          "timestamp": "2026-10-13 06:00:00",
+          "nm_production_order": "Bottle cap 28mm blue",
+          "notes": "Priority run",
+          "id_label": null
+        }
+      },
+      "POStartNumeric": {
+        "summary": "Order number sent as a JSON number (kept as literal text)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_order": 834.058,
+          "production_order_quantity": 5000,
+          "timestamp": "2026-10-13 14:00:00"
+        }
+      },
+      "POStopFinish": {
+        "summary": "Finish the running PO",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "timestamp": "2026-10-13T14:00:00-03:00",
+          "stop_type": "finish",
+          "id_production_order": 55123,
+          "production_order_quantity": 11870
+        }
+      },
+      "POStopPause": {
+        "summary": "Pause the running PO (numeric convention 1 = pause)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "timestamp": "2026-10-13T10:30:00-03:00",
+          "stop_type": "1",
+          "id_production_order": 55123,
+          "production_order_quantity": 6400
+        }
+      },
+      "POSetupCreateNext": {
+        "summary": "Close current PO and create + open a new one",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "timestamp": "2026-10-13T14:00:00-03:00",
+          "should_open_new_po": true,
+          "stop_type": "finish",
+          "old_id_production_order": 55123,
+          "old_production_order_prod_final": 11870,
+          "should_create_po": true,
+          "id_order": "08396261",
+          "production_order_quantity": 8000,
+          "nm_production_order": "Bottle cap 28mm red",
+          "notes": ""
+        }
+      },
+      "POSetupReuseNext": {
+        "summary": "Close current PO and open an already-created PO",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "timestamp": "2026-10-13T14:00:00-03:00",
+          "should_open_new_po": true,
+          "stop_type": "finish",
+          "old_id_production_order": 55123,
+          "old_production_order_prod_final": 11870,
+          "should_create_po": false,
+          "id_production_order": 55124
+        }
+      },
+      "POSetupCloseOnly": {
+        "summary": "Close the current PO only (pause)",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "timestamp": "2026-10-13T22:00:00-03:00",
+          "should_open_new_po": false,
+          "stop_type": "pause",
+          "old_id_production_order": 55123,
+          "old_production_order_prod_final": 9050
+        }
+      },
+      "POReplace": {
+        "summary": "Switch the line to an existing PO",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_production_order": 55124
+        }
+      },
+      "POChangeStatus": {
+        "summary": "Toggle a PO between paused and finished",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_production_order": 55120
+        }
+      },
+      "POChangeTime": {
+        "summary": "Correct a runtime interval's bounds",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_production_order_runtime": 771204,
+          "id_production_order": 55120,
+          "start": "2026-10-12T06:05:00-03:00",
+          "end": "2026-10-12T13:58:00-03:00"
+        }
+      },
+      "SplitDowntime": {
+        "summary": "Split one downtime into two re-categorised intervals",
+        "value": {
+          "enterprise": 42,
+          "topic": "ACME/operator-app/Line01",
+          "packml_topic": "ACME/Plant1/Extrusion/Line01",
+          "user": "op-1042",
+          "id_equipment_event": 918273,
+          "event_type": "downtime",
+          "events": [
+            {
+              "start_time": "2026-10-13T08:15:00-03:00",
+              "end_time": "2026-10-13T08:25:00-03:00",
+              "note": "Waiting for maintenance",
+              "category_code": "40",
+              "subcategory_code": "4001",
+              "desc_category": "Waiting",
+              "desc_subcategory": "Maintenance crew",
+              "idle": "No",
+              "change_over": false,
+              "planned_dwt": false
+            },
+            {
+              "start_time": "2026-10-13T08:25:00-03:00",
+              "end_time": "2026-10-13T08:42:30-03:00",
+              "note": "",
+              "category_code": "12",
+              "subcategory_code": "1203",
+              "desc_category": "Mechanical failure",
+              "desc_subcategory": "Screw jam",
+              "idle": "No",
+              "change_over": false,
+              "planned_dwt": false
+            }
+          ]
+        }
+      },
+      "Dt422Category": {
+        "summary": "category empty",
+        "value": {
+          "error": "category is required but was empty (edge cdCategory @IsNotEmpty)"
+        }
+      },
+      "Dt422Param": {
+        "summary": "id_param outside 30810-30814",
+        "value": {
+          "error": "id_param 30899 is not a recognised downtime parameter (expected 30810-30814)"
+        }
+      },
+      "Dt422EditId": {
+        "summary": "Edit path without id_equipment_event",
+        "value": {
+          "error": "id_equipment_event is required to edit an existing downtime (id_param 30812) but was not supplied"
+        }
+      },
+      "Po422Order": {
+        "summary": "id_order missing or blank",
+        "value": {
+          "error": "id_order is required but was not supplied (operator-selected order number, msg.payload.new_po)"
+        }
+      },
+      "Po422Ts": {
+        "summary": "timestamp empty",
+        "value": {
+          "error": "timestamp is required but was empty (expected 'YYYY-MM-DD HH:mm:ss')"
+        }
+      },
+      "Stop422Type": {
+        "summary": "Unknown stop_type",
+        "value": {
+          "error": "stop_type \"abort\" is not recognised (expected pause|finish or 1|2)"
+        }
+      },
+      "Stop422Qty": {
+        "summary": "Final count missing",
+        "value": {
+          "error": "production_order_quantity is required but was not supplied (final good count)"
+        }
+      },
+      "Setup422Open": {
+        "summary": "should_open_new_po absent",
+        "value": {
+          "error": "should_open_new_po is required (true = close current + open next, false = close only) but was not supplied"
+        }
+      },
+      "Setup422Order": {
+        "summary": "Create-next without id_order",
+        "value": {
+          "error": "id_order is required when should_open_new_po and should_create_po are true (the new order number)"
+        }
+      },
+      "Setup422Reuse": {
+        "summary": "Reuse-next without id_production_order",
+        "value": {
+          "error": "id_production_order is required when opening an existing next PO (should_create_po false)"
+        }
+      },
+      "Replace422Id": {
+        "summary": "Target PO missing",
+        "value": {
+          "error": "id_production_order is required but was not supplied (the PO to switch to)"
+        }
+      },
+      "Status422Id": {
+        "summary": "PO id missing",
+        "value": {
+          "error": "id_production_order is required but was not supplied"
+        }
+      },
+      "Time422Runtime": {
+        "summary": "Runtime id missing",
+        "value": {
+          "error": "id_production_order_runtime is required but was not supplied (the runtime interval to edit)"
+        }
+      },
+      "Time422Start": {
+        "summary": "start empty",
+        "value": {
+          "error": "start is required but was empty"
+        }
+      },
+      "Split422Empty": {
+        "summary": "No sub-intervals",
+        "value": {
+          "error": "events is required but was empty (a split must produce at least one sub-interval)"
+        }
+      },
+      "Split422Idle": {
+        "summary": "Bad idle value",
+        "value": {
+          "error": "events[0].idle \"maybe\" is not recognised (expected Yes|yes|No|no)"
+        }
+      },
+      "Split422Type": {
+        "summary": "Unknown event_type",
+        "value": {
+          "error": "event_type \"stop\" is not recognised (expected downtime|manual|low_speed)"
+        }
+      }
+    },
     "schemas": {
       "Error": {
         "type": "object",
