@@ -164,12 +164,13 @@ oeecloud-fanout authenticates with the `stream-engine` secret. ingest-shim authe
                                    │ handler error: nack(requeue=false)
                                    ▼
                               oee-retry ──▶ …-retry-30s (TTL 30 s) ──▶ back to oee
- after MAX_RETRIES (x-death count ≥ 5): stream-engine publishes to oee-failed and acks
+ after MAX_RETRIES retries (rejected count > 5): stream-engine publishes to oee-failed and acks
                               oee-failed ──▶ …-failed  (kept until someone purges it)
 ```
 
-The retry count is the sum of the `x-death` header counts (`xDeathCount` in
-`internal/amqp/consumer.go`). Messages the handler cannot ever succeed on (bad JSON with legacy
+The retry count is the `count` of the `x-death` entry with `reason: rejected` for the queue being
+consumed (`retryCount` in `internal/amqp/consumer.go`). The `expired` entry the retry queue adds
+on each round trip is not a handler failure and is not counted. Messages the handler cannot ever succeed on (bad JSON with legacy
 ingest off, double-encoded envelopes, non-numeric values, unregistered topics) are **acked and
 counted**, not retried, so they never loop.
 
