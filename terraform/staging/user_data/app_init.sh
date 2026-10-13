@@ -118,6 +118,16 @@ ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
 # (see ADR-0020 / production-recut-runbook). Empty default keeps the box booting
 # if the secret key is absent; operator writes stay 401 until it is populated.
 OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
+# read-api tenant key map + the operator apps' server-side read keys. SECRETS
+# (refdata.staging is public): never committed, only in packiot/staging/app.
+# compose.staging.yml interpolates them fail-closed (VAR:? form), so an absent key makes
+# `compose up` below fail loudly naming the variable — no service starts with
+# empty auth. deploy-staging.yml re-mirrors them on every deploy
+# (scripts/ops/materialize-readapi-keys.py); runbook docs/runbooks/rotate-readapi-keys.md.
+REFDATA_QUERY_API_KEYS=$(echo "$APP_SECRET" | jq -r '.query_api_keys // ""')
+OPERATOR_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_refdata_api_key // ""')
+OPERATOR_SBX_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_sbx_refdata_api_key // ""')
+OPERATOR_BISPHARMA_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_bispharma_refdata_api_key // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 # oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
@@ -260,6 +270,11 @@ ONBOARD_API_KEY=$ONBOARD_API_KEY
 # Operator SPA enterprise api_key (CPACK / enterprise 3) — nginx injects it on
 # proxied /api/* writes; consumed by the operator + operator-adapter services.
 OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
+# read-api keys (packiot/staging/app; rewritten every deploy by deploy-staging.yml)
+REFDATA_QUERY_API_KEYS=$REFDATA_QUERY_API_KEYS
+OPERATOR_REFDATA_API_KEY=$OPERATOR_REFDATA_API_KEY
+OPERATOR_SBX_REFDATA_API_KEY=$OPERATOR_SBX_REFDATA_API_KEY
+OPERATOR_BISPHARMA_REFDATA_API_KEY=$OPERATOR_BISPHARMA_REFDATA_API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 # NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward

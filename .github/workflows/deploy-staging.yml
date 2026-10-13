@@ -146,6 +146,20 @@ jobs:
             echo "HIST_GW_SVC_PASSWORD present"
           fi
 
+      - name: Materialize read-api keys (REQUIRED — fails the deploy if absent)
+        # read-api's tenant key map (QUERY_API_KEYS) and the operator apps' server-side
+        # read keys used to be literals in compose.staging.yml — refdata.staging is
+        # PUBLIC, so repo access == staging tenant data. They now live ONLY in Secrets
+        # Manager packiot/staging/app and are re-written into /opt/packiot/.env on EVERY
+        # deploy (not append-if-absent), so a rotation is "update the secret, redeploy".
+        # compose.staging.yml interpolates them with ${VAR:?}: nothing starts with an
+        # empty key. Runbook: docs/runbooks/rotate-readapi-keys.md. Never echo values.
+        run: |
+          set -euo pipefail
+          APP_SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id packiot/staging/app --region us-east-1 --query SecretString --output text)
+          export APP_SECRET_JSON
+          python3 scripts/ops/materialize-readapi-keys.py /opt/packiot/.env
+
       - name: Generate RabbitMQ definitions (durable least-priv users)
         # rabbitmq.conf sets load_definitions, which re-imports users/perms on
         # every broker boot so a container recreate can't lose the least-priv

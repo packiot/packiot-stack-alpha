@@ -96,7 +96,7 @@ The artifacts in this ADR's PR are inert files. To bring Incoplast up on staging
    (mounts `docs/clients/incoplast.yaml`, own health port), and a second `operator`
    (nginx → the Incoplast edge-nodered, `OPERATOR_EDGE_API_KEY` = Incoplast's
    `enterprises.api_key`).
-4. **Append the refdata key** — `QUERY_API_KEYS += "stg-incoplast-key:$IID"`.
+4. **Append the refdata key** — `QUERY_API_KEYS += "<incoplast-read-key>:$IID"`.
 5. **No `mirror-worker-go`** for Incoplast — it has no real prod enterprise to
    mirror; its data comes entirely from the simulator.
 6. Verify: Incoplast equipment appears in refdata reads and the operator SPA; OEE

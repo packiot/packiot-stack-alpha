@@ -15,9 +15,11 @@ import { front4Login } from '../fixtures/auth';
 const USER = process.env.SANDBOX_USER || '';
 const PASS = process.env.SANDBOX_PASSWORD || '';
 const REFDATA = process.env.REFDATA_URL || 'https://refdata.staging.packiot.app';
-// Staging-only read-api tenant keys (compose.staging.yml QUERY_API_KEYS); override via env.
-const KEY_CPACK = process.env.REFDATA_KEY_CPACK || 'stg-cpack-key';
-const KEY_SBX = process.env.REFDATA_KEY_SBX || 'stg-sbxcpack-key';
+// read-api tenant keys are SECRETS (refdata is public) — never commit them. Export the
+// CPACK and sandbox entries of packiot/staging/app `query_api_keys` (equal to
+// operator_refdata_api_key / operator_sbx_refdata_api_key); unset → the suite skips.
+const KEY_CPACK = process.env.REFDATA_KEY_CPACK || '';
+const KEY_SBX = process.env.REFDATA_KEY_SBX || '';
 
 async function dataset(request: APIRequestContext, key: string, body: object) {
   const r = await request.post(`${REFDATA}/v1/query`, {
@@ -58,6 +60,7 @@ test.describe('sandbox front4 (ent 2000003) — reflection of CPACK', () => {
     // firing 2 keys × 3 tests at once pushed one past read-api's 40 s timeout (500) — the
     // test contending with itself, not a parity failure (2026-09-24: 2,685 = 2,685 serially).
     test.describe.configure({ mode: 'serial', timeout: 150_000 });
+    test.skip(!KEY_CPACK || !KEY_SBX, 'REFDATA_KEY_CPACK/REFDATA_KEY_SBX not set');
     test('history: 2023 OEE score is identical (history reflection)', async ({ request }) => {
       const body = { dataset: 'oee-score-full', window: { from: '2023-03-01T00:00:00Z', to: '2023-04-01T00:00:00Z' } };
       const c = await dataset(request, KEY_CPACK, body);

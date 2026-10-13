@@ -49,6 +49,10 @@ jobs:
 
       - name: AMQP least privilege (no broker admin creds; stream-engine perms cover its topology)
         run: scripts/ci/check-amqp-least-priv.py
+      - name: No literal read-api keys (QUERY_API_KEYS / REFDATA_API_KEY from env only)
+        # refdata is public: a committed key == tenant data. In this required job on
+        # purpose (gitleaks scans full history, which still holds the burned values).
+        run: scripts/ci/no-literal-readapi-keys.sh
 
   packml-ratchet:
     # ADR-0061 D8: PackML / topic-derived identity is being removed from the cloud. Until P5 deletes the rest,
