@@ -62,11 +62,11 @@ var openAPIServers = []any{
 // endpointSummaries: one line per `endpoints` row. The table carries path, SQL,
 // class and args; the gate requires a summary for every row.
 var endpointSummaries = map[string]string{
-	"/v1/events-timeline":           "Event timeline rows for the given packml topics (serving.events_timeline).",
-	"/v1/pending-downtime":          "Downtime events still waiting for a reason, for the given packml topics.",
-	"/v1/shift-hours":               "Shift hours for one packml topic.",
-	"/v1/shift-hours-by-enterprise": "Shift hours for one packml topic (enterprise variant; the enterprise is the caller's tenant).",
-	"/v1/day-week-begin":            "Day/week begin offsets for one packml topic.",
+	"/v1/events-timeline":           "Event timeline rows for the given equipment topics (serving.events_timeline).",
+	"/v1/pending-downtime":          "Downtime events still waiting for a reason, for the given equipment topics.",
+	"/v1/shift-hours":               "Shift hours for one equipment topic.",
+	"/v1/shift-hours-by-enterprise": "Shift hours for one equipment topic (enterprise variant; the enterprise is the caller's tenant).",
+	"/v1/day-week-begin":            "Day/week begin offsets for one equipment topic.",
 	"/v1/operator-po-list":          "Operator production-order list (v_operator_po_list_setup_4).",
 	"/v2/operator-po-list":          "Operator production-order list by id_equipment (ADR-0061 P3).",
 	"/v1/operator-po-details":       "Operator production-order details (v_operator_po_details_3).",
@@ -76,7 +76,7 @@ var endpointSummaries = map[string]string{
 	"/v2/events-timeline":           "Event timeline rows by id_equipment (ADR-0061 P3).",
 	"/v2/pending-downtime":          "Downtime events still waiting for a reason, by id_equipment (ADR-0061 P3).",
 	"/v2/downtime-reasons":          "Downtime + scrap reason trees by id_equipment (line-only reasons rule).",
-	"/v1/downtime-reasons":          "Downtime + scrap reason trees for the given packml topics (line-only reasons rule).",
+	"/v1/downtime-reasons":          "Downtime + scrap reason trees for the given equipment topics (line-only reasons rule).",
 }
 
 // endpointArgParams maps an endpoint's args func to the query parameters it
@@ -89,9 +89,9 @@ func endpointArgParams(ep endpoint) ([]any, error) {
 	}
 	switch reflect.ValueOf(ep.args).Pointer() {
 	case reflect.ValueOf(topicsArg).Pointer():
-		return []any{queryParam("topics", true, strSchema(), "Comma-separated packml topics. Narrows WITHIN the caller's tenant; it never selects a tenant.")}, nil
+		return []any{queryParam("topics", true, strSchema(), "Comma-separated equipment topics. Narrows WITHIN the caller's tenant; it never selects a tenant.")}, nil
 	case reflect.ValueOf(topicArg).Pointer():
-		return []any{queryParam("topic", true, strSchema(), "One packml topic (within the caller's tenant).")}, nil
+		return []any{queryParam("topic", true, strSchema(), "One equipment topic (within the caller's tenant).")}, nil
 	case reflect.ValueOf(equipmentIDsArg).Pointer():
 		return []any{queryParam("equipment", true, strSchema(),
 			fmt.Sprintf("Comma-separated positive id_equipment values (at most %d). Identity is id_equipment, never a topic.", maxEquipmentIDs))}, nil
@@ -201,7 +201,7 @@ var shimDocs = map[string]shimDoc{
 		security: secExtQuery,
 		params: []any{
 			queryParam("days_interval", true, intSchema(), "Days back, 1–41."),
-			queryParam("site", false, strSchema(), "Optional site suffix used to resolve the packml topic."),
+			queryParam("site", false, strSchema(), "Optional site suffix used to resolve the equipment topic."),
 		},
 		envelope: envelope(map[string]any{"shift_data": rowsRef}, "shift_data"),
 		errors: map[int]string{500: "Not authorized! | Site does not exist! | Enterprise topic not found! | " +
