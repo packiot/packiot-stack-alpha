@@ -235,7 +235,7 @@ unless the host `/opt/packiot/.env` (not in git) sets it.
 | `SOURCE_EXCHANGE` | `plc.normalized` | `edge.plc-normalized` | legacy AMQP input |
 | `AMQP_SOURCE_ENABLED` | `true` | `false` | consume the legacy AMQP input; MQTT is the input on staging |
 | `WORKER_QUEUE`, `RETRY_EXCHANGE`, `RETRY_QUEUE`, `FAILED_EXCHANGE`, `FAILED_QUEUE` | `edge-transformer-q`, `plc.normalized-retry`, … | `edge-transformer-q`, `edge.plc-normalized-retry`, `edge-transformer-q-retry-30s`, `dlx.edge.plc-normalized`, `edge-transformer-q-failed` | legacy AMQP input topology (unused while disabled) |
-| `RETRY_TTL_MS` / `MAX_RETRIES` / `PREFETCH` | 30000 / 5 / 50 | same | |
+| `RETRY_TTL_MS` / `MAX_RETRIES` / `PREFETCH` | 30000 / 5 / 50 | same | `MAX_RETRIES` = retries after the first run (legacy input and edge commands): counted from the `x-death` `rejected` entry of the consumed queue, so 5 = six handler runs, then the failed queue |
 | `HEALTH_PORT` | 9102 | 9102 | |
 | `CLIENT_YAML_PATH` | `/etc/packiot/client.yaml` | same (`docs/clients/cpack.yaml`) | tenant list, capabilities |
 | `MQTT_ENABLED` | `false` | `true` | start the MQTT subscriber (the real input) |

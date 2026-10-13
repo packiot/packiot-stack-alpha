@@ -236,14 +236,15 @@ func (c *Consumer) consumeOne(ctx context.Context, conn *amqp.Connection, tenant
 			if !ok {
 				return fmt.Errorf("delivery channel closed for %s", mainQ)
 			}
-			c.handleDelivery(ctx, d, tenant)
+			c.handleDelivery(ctx, d, mainQ, tenant)
 		}
 	}
 }
 
 // handleDelivery is the per-command decision tree:
 //
-//  1. Retry-exhausted (x-death >= MaxRetries) → route the original to the
+//  1. Retry-exhausted (more than MaxRetries failed runs, counted from this
+//     queue's `rejected` x-death entry — amqptopo.RetryCount) → route the original to the
 //     failed exchange + ack, so a persistently-failing command lands in the
 //     terminal queue for human triage instead of looping forever.
 //  2. Execute. Transient error (broker/MQTT down) → nack(false,false) → DLX →
@@ -253,10 +254,10 @@ func (c *Consumer) consumeOne(ctx context.Context, conn *amqp.Connection, tenant
 //     (dead-letter it) + ack. The ack-rejected has already been published by
 //     the executor.
 //  4. Delivered → ack.
-func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery, tenant string) {
+func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery, queue, tenant string) {
 	c.delivered.Add(1)
 
-	if xDeathCount(d.Headers) >= c.cfg.MaxRetries {
+	if amqptopo.RetriesExhausted(amqptopo.RetryCount(d.Headers, queue), c.cfg.MaxRetries) {
 		c.deadLetter(ctx, d, tenant, "retry_exhausted")
 		c.exhausted.Add(1)
 		return
@@ -299,31 +300,6 @@ func (c *Consumer) deadLetter(ctx context.Context, d amqp.Delivery, tenant, reas
 	_ = d.Ack(false)
 	c.logger.Warn("command: dead-lettered to failed queue",
 		slog.String("tenant", tenant), slog.String("reason", reason))
-}
-
-// xDeathCount sums the count fields of x-death header entries (one per retry
-// round-trip). Local copy of the ingest consumer's helper — the header shape
-// is identical.
-func xDeathCount(h amqp.Table) int {
-	xd, ok := h["x-death"]
-	if !ok {
-		return 0
-	}
-	deaths, ok := xd.([]any)
-	if !ok {
-		return 0
-	}
-	total := 0
-	for _, e := range deaths {
-		entry, ok := e.(amqp.Table)
-		if !ok {
-			continue
-		}
-		if v, ok := entry["count"].(int64); ok {
-			total += int(v)
-		}
-	}
-	return total
 }
 
 // ── health.ComponentSnapshotter (ADR-0011 P0-4) ──────────────────────────────
