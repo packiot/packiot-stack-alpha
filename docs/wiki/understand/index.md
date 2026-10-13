@@ -2,12 +2,12 @@
 title: Understand Packiot
 layer: 0
 owner_area: platform
-last_verified: 2026-09-29
+last_verified: 2026-10-13
 ---
 # Understand Packiot
 
-> **Understand · entry point.** How Packiot works and why: architecture,
-> subsystems, components, reference and operations, with ADR links. If you are on the
+> **Understand · entry point.** How Packiot works and why: architecture, subsystems and
+> components, with ADR links. If you are on the
 > automation or Customer Success team, start at [Use Packiot](../use/index.md) instead.
 
 ## What Packiot is
@@ -26,7 +26,7 @@ Two platforms exist side by side today:
 | Where | Staging on AWS EC2 (Docker Compose), historian on S3 | Production (`packiot40`, a.k.a. tsp12) |
 | Compute | Go services (`sparkplug-decoder`, `stream-engine`) | Node-RED `oeecloud` + PostgreSQL triggers/procedures |
 | Storage | TimescaleDB `packiot_analytics` + historian (DuckDB over S3 Parquet) | PostgreSQL + Hasura |
-| Status | Receives real client data (CPACK, Bispharma) in parallel; not yet the system of record for most clients | Serves production clients |
+| Status | Staging only. Receives real client data (CPACK, Bispharma) in parallel. Production promotion is prepared but not done (draft PR #1653, `release/prod-promotion-2026-10`) | Serves every production client |
 
 The legacy platform is the **reference** ("oracle") the new stack is validated against, and
 the source it replicates from during the migration. See
@@ -46,7 +46,7 @@ layer and still have a correct picture.
     │
  Layer 3  Components           how one service works, to the last knob   components/
     │
- Layer 4  Reference & ops      look it up · do the task                  reference/  operations/
+ Layer 4  Reference · how-to   look it up · do the task                  reference/  build/
 ```
 
 ## Reading paths
@@ -70,5 +70,8 @@ layer and still have a correct picture.
 | [Domain model](architecture/domain-model.md) | [Serving & APIs](subsystems/serving-apis.md) · [Frontends](subsystems/frontends.md) · [Identity](subsystems/identity.md) |
 | [Tenancy & security](architecture/tenancy-and-security.md) · [Environments](architecture/environments.md) | [Platform & operations](subsystems/platform.md) |
 
-Terms you don't know are in the [glossary](../reference/glossary.md). How to write for this wiki:
+Service-by-service facts (README, component page, API page, dashboard) are in the
+[service catalog](../reference/service-catalog.md); generated API pages are under
+[API reference](../reference/api/index.md). Terms you don't know are in the
+[glossary](../reference/glossary.md). How to write for this wiki:
 `docs/WIKI-STYLE.md` in the repo.
