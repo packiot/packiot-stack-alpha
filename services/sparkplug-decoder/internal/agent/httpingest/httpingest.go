@@ -191,15 +191,30 @@ func newServer(cfg Config, outcomes *prometheus.CounterVec, logger *slog.Logger)
 }
 
 // Handler returns the routed mux (POST /v1/tags always; POST /v1/counters only
-// when a numeric translator is configured). /healthz stays on the agent's
-// health server.
+// when a numeric translator is configured; GET /openapi.json always).
+// /healthz stays on the agent's health server.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/tags", s.handleTags)
-	if s.numeric != nil {
-		mux.HandleFunc("POST /v1/counters", s.handleCounters)
-	}
+	s.registerRoutes(mux)
 	return mux
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs — an
+// interface so the OpenAPI drift test can enumerate every pattern.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the front-door's routes are defined. Every
+// non-ops route must be described in openapi.json (openapi_test.go enforces it).
+func (s *Server) registerRoutes(mux routeRegistrar) {
+	mux.Handle("POST /v1/tags", http.HandlerFunc(s.handleTags))
+	if s.numeric != nil {
+		mux.Handle("POST /v1/counters", http.HandlerFunc(s.handleCounters))
+	}
+	// API description — no auth: it holds no tenant data. The public ingest
+	// vhosts proxy only exact tag paths, so this stays in-network.
+	mux.Handle("GET /openapi.json", http.HandlerFunc(handleOpenAPI))
 }
 
 func (s *Server) inc(outcome string) {
