@@ -2,107 +2,114 @@
 title: analytics-sync (legacy-replicator and shadow-mirror)
 layer: 3
 owner_area: legacy-bridge
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # analytics-sync (legacy-replicator and shadow-mirror)
 
-> **Layer 3 · Components** — the Go module that replays operator actions into the analytics
-> DB: the live `legacy-replicator` (legacy `packiot40` → staging) and the idle
-> `shadow-mirror`. For whoever debugs a missing PO or downtime on the CPACK twin.
-> Up: [Legacy bridge](../subsystems/legacy-bridge.md)
+> **Layer 3 · Components** — the Go module that mirrors CPACK's legacy activity into the
+> analytics DB: the live `legacy-replicator` (legacy `packiot40` → staging, plus a sandbox
+> instance) and the idle `analytics-sync` (shadow-mirror). For whoever debugs a missing or
+> wrong PO or downtime on the CPACK twin.
+> Up: [Legacy bridge](../subsystems/legacy-bridge.md) ·
+> [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/analytics-sync/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
-Make the staging analytics DB reflect, within seconds, every PO and downtime action that
-CPACK's operators perform on the legacy platform, by re-applying each legacy audit row
-(`user_logs`) idempotently under the analytics tenant, then closing the gaps the audit
-trail cannot see (reconciler, enrich pass). It never computes OEE and never writes to the
-legacy DB.
+Make the staging analytics DB reflect what CPACK's operators and PLCs do on the legacy
+platform: replay each legacy audit row (`user_logs`) idempotently under the analytics
+tenant, then copy, by periodic reconcile passes, everything the audit trail cannot carry
+(POs created outside it, header and runtime-window drift, product/client links, PLC base
+events, manual downtimes). It never computes OEE and never writes to the legacy DB.
+It serves no business HTTP API (only `/healthz` and `/metrics`).
 
 ## At a glance
 
 | | legacy-replicator | legacy-replicator-sbx | analytics-sync (shadow-mirror) |
 |---|---|---|---|
-| Language / runtime | Go 1.25, distroless static | same binary | Go, same module |
+| Language / runtime | Go, distroless static | same binary | Go, same module |
 | Repo path | `services/analytics-sync/cmd/legacy-replicator` | same | `services/analytics-sync/cmd/shadow-mirror` |
-| Image / Dockerfile | `Dockerfile.replicator` | `Dockerfile.replicator` | `Dockerfile` |
-| Container (staging) | `legacy-replicator` | `legacy-replicator-sbx` | `analytics-sync` (alias `shadow-mirror`) |
-| Host (staging) | app host `i-06c9547a2c7091ab7` | same | same |
-| Ports | `:9104` `/healthz` `/metrics` (not published) | `:9114` | `:9103` |
-| Source DB | legacy `packiot40`, SELECT-only user, password from Secrets Manager `databaseCredentials` via `.env` `LEGACY_DB_PASSWORD` | same | staging `packiot` (F1) |
-| Destination DB | `packiot_analytics`, direct to the DB host (not pgbouncer) | same | `shadow_go_port` schema + `packiot_analytics.public` |
+| Dockerfile | `Dockerfile.replicator` | `Dockerfile.replicator` | `Dockerfile` |
+| Container (staging) | `legacy-replicator` | `legacy-replicator-sbx` | `analytics-sync` (network alias `shadow-mirror`) |
+| Host (staging) | app host | same | same |
+| Ports (not published) | `:9104` `/healthz` `/metrics` | `:9114` | `:9103` |
+| Source DB | legacy `packiot40`, SELECT-only user; password `.env` `LEGACY_DB_PASSWORD` | same | retired F1 `packiot` DB |
+| Destination DB | `packiot_analytics`, direct to the DB host (not pgbouncer) | same | `shadow_go_port` + `packiot_analytics` |
 | Tenant map | legacy ent 1 → analytics ent 3 | legacy ent 1 → 2000003 | same id |
-| State | **running** | compose default off; `.env` `REPLICATE_SBX_ENABLED=true` turns it on | **idle** (`SHADOW_MIRROR_ENABLED=false`) |
+| State | **running** | off unless `.env` `REPLICATE_SBX_ENABLED=true`; `SANDBOX_HOLD_ENABLED=true` | **idle** (`SHADOW_MIRROR_ENABLED=false`) |
 | Limits | 128 MiB, 0.25 CPU | same | same |
-| Depends on | legacy DB reachability, analytics DB | same | — |
-| Depended on by | stream-engine PO runtime, serving functions, operator app, front4, Superset | sandbox tenant consumers | nothing (retired) |
-| Production (new stack) | not deployed (`compose.production.yml` has no bridge) | — | — |
+| Depended on by | stream-engine PO compute, serving functions, operator app, front4, Superset | sandbox tenant consumers | nothing |
+| Production (new stack) | not deployed (`compose.production.yml` has no replicator) | — | — |
 
 ## Inputs & outputs
 
 | Kind | Object | Notes |
 |---|---|---|
 | Read (legacy) | `user_logs` | `WHERE id_enterprise = $SRC AND id_user_logs > cursor ORDER BY id_user_logs LIMIT BATCH_SIZE` |
-| Read (legacy) | `production_orders`, `products`, `product_families`, `clients` | natural-key resolution, reconciler, enrich |
-| Read (legacy) | `equipment_events`, `equipment_events_man` | resolve the legacy event behind a justify/split |
-| Read (both) | `packml_register`, analytics `equipments` | build the equipment map at startup |
-| Write | `core.production_orders` | insert `ON CONFLICT (id_enterprise, id_order) DO NOTHING`; guarded UPDATEs |
-| Write | `gold.production_orders_runtime` | open/close `[ts, ∞)` windows, set `recalc_needed = true` |
+| Read (legacy) | `production_orders`, `production_orders_runtime`, `products`, `product_families`, `clients` | PO resolution, reconciler, convergence, enrich |
+| Read (legacy) | `equipment_events`, `equipment_events_man` | event resolution, base-event and manual-event reconcilers |
+| Read (both) | `packml_register`, analytics `equipments` | equipment map at startup |
+| Write | `core.production_orders` | inserts `ON CONFLICT (id_enterprise, id_order) DO NOTHING`; guarded, monotonic UPDATEs |
+| Write | `gold.production_orders_runtime` | open/close/replace windows (overlap-guarded), `recalc_needed = true` |
 | Write | `silver.equipment_events` | base events, classification UPDATEs, split segments |
-| Write | `public.equipment_events_man` | manual downtimes |
+| Write | `silver.equipment_events_man` | manual downtimes (the `public.*` shim was dropped on 2026-09-13) |
 | Write | `core.products`, `core.product_families`, `core.clients` | only when enrich must create a missing dimension |
-| Write | `ops.mirror_replay_cursor`, `ops.mirror_replay_dlq` | created on demand (schema-qualified to `ops`) |
+| Write | `ops.mirror_replay_cursor`, `ops.mirror_replay_dlq`, `ops.legacy_manual_event_link` | own bookkeeping |
+| Call | `serving.downtime_events_resolved` refresh | for each UTC day an event reconciler touched |
 
 ## Internal design
 
 ```text
  main (cmd/legacy-replicator/main.go)
-  ├─ BuildResolver()         once at startup: legacy id_equipment → analytics id_equipment
-  ├─ Dispatcher              category → Handler (14 registered)
-  ├─ go POReconciler.RunForever   pass at boot, then every RECONCILE_PO_INTERVAL_SEC
-  │                               └─ runEnrich() at the end of each pass
-  ├─ go DLQRetrier.RunForever     every DLQ_RETRY_INTERVAL_SEC
-  └─ Loop()                  poll → dispatch → DLQ on error → advance cursor, forever
+  ├─ BuildResolver()            once at boot: legacy id_equipment → analytics id_equipment
+  ├─ Dispatcher                 user_logs.category → Handler (14; 12 when the manual
+  │                             reconciler is on, it replaces the two manual handlers)
+  ├─ Hold (sbx only)            ops.sandbox_hold_mode(DST) polled, 10 s cache
+  ├─ go POReconciler            every RECONCILE_PO_INTERVAL_SEC: insert/finish, converge, enrich
+  ├─ go ManualReconciler        every RECONCILE_MANUAL_EVENTS_INTERVAL_SEC
+  ├─ go BaseReconciler          every RECONCILE_BASE_EVENTS_INTERVAL_SEC
+  ├─ go DLQRetrier              every DLQ_RETRY_INTERVAL_SEC
+  └─ Loop()                     poll → dispatch → DLQ on error → advance cursor, forever
 ```
 
 ### Id mapping (`internal/replicate/resolver.go`)
 
-Legacy and analytics allocate ids independently, so every id is translated by a
-**natural key**, never copied:
+Legacy and analytics allocate ids independently, so ids are translated by **natural key**,
+never copied:
 
 | Entity | Rule |
 |---|---|
 | Enterprise | fixed `SRC_ENTERPRISE` → `DST_ENTERPRISE` |
-| Equipment | shortest non-`/Admin/`, non-`/Status` `packml_topic` per equipment, first segment (enterprise name) stripped, uppercased: `C-PACK/SC/LINHAS/L5/BREYER` and `CPACK/SC/LINHAS/L5/BREYER` both become `SC/LINHAS/L5/BREYER`. Topics with an empty segment (`…/LINHAS//`) are ignored. Names are not unique in CPACK, so names are never used. |
-| Site / area | taken from the **analytics** `equipments` row, never from the payload |
-| PO | legacy surrogate `id_production_order` → legacy `id_order` (SELECT on legacy) → analytics `(id_enterprise, id_order)` |
+| Equipment | shortest non-`/Admin/`, non-`/Status` `packml_topic`, first segment (enterprise name) stripped, uppercased: `C-PACK/SC/LINHAS/L5/BREYER` and `CPACK/SC/LINHAS/L5/BREYER` both become `SC/LINHAS/L5/BREYER`. Topics with an empty segment (`…/LINHAS//`) are ignored. Names are never used (not unique in CPACK). |
+| Site / area | from the **analytics** `equipments` row, never from the payload |
+| PO | legacy `id_production_order` → legacy `id_order` → analytics `(id_enterprise, id_order)` |
 | Event | legacy `id_equipment_event` → legacy `(id_equipment, ts_event, ts_end, status)` → analytics row by exact ts, then overlap |
 
-The map is built **once at startup**. Equipment added to either side later stays unresolved
-until the container restarts.
+The map is built **once at startup**: equipment added on either side later stays
+unresolved until the container restarts.
 
 ### Handlers (`internal/replicate/handlers.go`)
 
 | `user_logs.category` | Effect in analytics |
 |---|---|
-| `downtime-event-created` | Insert base events into `silver.equipment_events` with `forced_creation_system=false`, `ON CONFLICT (id_equipment, ts_event) DO NOTHING`. `id_equipment_event` is synthesised (`ts_ms*1000 + equip%1000`); it has no unique meaning. Gated by `REPLICATE_BASE_EVENTS`. |
-| `event-justified`, `event-edited` | UPDATE classification (category, subcategory, machine, notes, change-over, planned, idle). Exact `(id_equipment, ts_event)` first; else interval-overlap match (below). |
-| `manual-event-created` | Insert into `equipment_events_man` (omits `id_equipment_event`, an IDENTITY). |
-| `manual-event-edited` | Best-effort UPDATE keyed on the current legacy `ts_event`; a moved start time is a counted no-op. |
-| `event-splitted` | Segment 0 shrinks the matched base event in place; segments 1..N-1 are inserted as new `equipment_events` rows with `forced_creation_system=true` (matches legacy `downtimes-dao.ts::split`). |
-| `order-created` | Insert PO with status 1. Unresolved equipment returns an **error** (DLQ + retry), not a skip, so the PO is not silently lost. |
-| `order-created-started` | Open runtime window, insert PO with status 2 and `ts_start`. |
-| `order-started` | UPDATE status 2 + `ts_start`; open the window on the PO's **own** `id_equipment` (PR #1389). |
-| `order-stopped` | Close window; UPDATE status 3 (or 4 for `stopType=pause`), `ts_end`, `production_real`. |
-| `order-changed` | Close the old PO (status, `ts_end`, `production_final`); if `shouldCreatePo`, insert and open the new one. |
-| `order-time-changed` | UPDATE `ts_start`. |
-| `order-replaced`, `order-status-changed` | Set `recalc_needed = true`. |
+| `downtime-event-created` | Insert base events into `silver.equipment_events` (`forced_creation_system=false`, `ON CONFLICT (id_equipment, ts_event) DO NOTHING`). Gated by `REPLICATE_BASE_EVENTS`. |
+| `event-justified`, `event-edited` | UPDATE classification. Exact `(id_equipment, ts_event)` first, else the interval-overlap matcher. |
+| `manual-event-created`, `manual-event-edited` | Insert / best-effort update `silver.equipment_events_man`. **Not registered** when `RECONCILE_MANUAL_EVENTS_ENABLED=true` (staging), so every mirrored row has provenance. |
+| `event-splitted` | Segment 0 shrinks the matched base event; segments 1..N-1 are inserted with `forced_creation_system=true` (as legacy `downtimes-dao.ts::split`). |
+| `order-created` | Insert PO, status 1. Unresolved equipment is an **error** (DLQ + retry), not a skip, so the PO is not silently lost. |
+| `order-created-started`, `order-started` | Insert or start the PO (a never-run status-1 PO is first re-homed to the equipment it starts on; `ts_start` keeps the first start), then open a window on the PO's own equipment. |
+| `order-stopped` | Close the window; status 3 (or 4 for a pause), `ts_end`, `production_real`. Monotonic: never moves an end backwards. |
+| `order-changed` | Close the old PO; insert-and-start a new one, or start a pre-existing one (`shouldCreatePo=false`). |
+| `order-time-changed` | UPDATE `ts_start` (the payload's end is ignored; convergence fixes it). |
+| `order-replaced` | Move the runtime that was running at `ts_log` to the new PO; re-derive both headers from their windows (old PO → status 4 with what is left, or back to 1). |
+| `order-status-changed` | Set `recalc_needed = true`. |
 
-Contract of a handler: `ErrSkip` (malformed or not applicable) advances the cursor quietly;
-any other error is counted, written to the DLQ, and the cursor still advances. A missing
-destination table (SQLSTATE `42P01`) is logged and treated as success so a partly
-provisioned DB cannot wedge the loop. An UPDATE that touches zero rows increments
-`shadow_mirror_update_noop_total{table}` (a "replay gap").
+Handler contract: `ErrSkip` (malformed or not applicable) advances the cursor quietly; any
+other error is counted, written to the DLQ, and the cursor still advances. A missing
+destination table (SQLSTATE `42P01`) is logged and treated as success, so a partly
+provisioned DB cannot wedge the loop (this is also how the dropped `public.equipment_events_man`
+shim silently swallowed manual events from 2026-09-12; see Failure modes). An UPDATE that
+touches zero rows increments `shadow_mirror_update_noop_total{table}` (a "replay gap").
 
 ### Runtime windows and the overlap guard (#1335)
 
@@ -113,12 +120,12 @@ constraint on `(id_equipment, runtime_timerange)`. Opening a window runs three s
 -- 1. close any open window on the equipment that started before ts
 UPDATE gold.production_orders_runtime
    SET runtime_timerange = tstzrange(lower(runtime_timerange), $ts), recalc_needed = true
- WHERE id_equipment = $eq AND upper(runtime_timerange) IS NULL
-   AND lower(runtime_timerange) < $ts;
--- 2. finish any other running PO on the equipment
-UPDATE core.production_orders SET status = 3
- WHERE id_equipment = $eq AND status = 2 AND NOT (<this PO>);
--- 3. insert [ts, ∞) only if NOTHING on this equipment overlaps it (open OR closed, any PO)
+ WHERE id_equipment = $eq AND upper(runtime_timerange) IS NULL AND lower(runtime_timerange) < $ts;
+-- 2. finish any other running PO on the equipment, ending it at ts
+UPDATE core.production_orders SET status = 3, ts_end = $ts, recalc_needed = true
+ WHERE id_equipment = $eq AND status = 2 AND NOT (<this PO>)
+   AND (ts_start IS NULL OR ts_start <= $ts);
+-- 3. insert [ts, ∞) only if NOTHING on this equipment overlaps it (open or closed, any PO)
 INSERT INTO gold.production_orders_runtime (...) SELECT ... FROM core.production_orders po
  WHERE po.id_enterprise = $ent AND po.id_order = $ord
    AND NOT EXISTS (SELECT 1 FROM gold.production_orders_runtime x
@@ -126,62 +133,87 @@ INSERT INTO gold.production_orders_runtime (...) SELECT ... FROM core.production
                       AND x.runtime_timerange && tstzrange($ts, NULL));
 ```
 
-Before 2026-09-20 step 3 only checked for an open window of *the same PO*. Legacy replay is
-not strictly chronological, so a closed window or another PO's window could already overlap
-and the insert failed with 23P01. The `&&` guard turns that into an idempotent no-op.
-PO stop/change UPDATEs also carry `AND (ts_start IS NULL OR ts_start <= $ts_end)` so an
-out-of-order stop never writes an inverted range (23514).
+Replay is not strictly chronological, so before 2026-09-20 (when step 3 only checked this
+PO's own open window) the insert could fail with 23P01. The `&&` guard turns that into an
+idempotent no-op. Stop/change UPDATEs carry `ts_start <= $ts_end` (no inverted range, 23514)
+and `ts_end IS NULL OR ts_end <= $ts_end` (a late DLQ retry cannot reopen a later finish).
 
 ### Interval-overlap matcher
 
-When the exact twin event is missing (the co-tee derived it at a slightly different time),
-`findTwinEventByOverlap` picks the same-`(equipment, status)` analytics event whose
-`[ts_event, COALESCE(ts_end, now())]` overlaps the legacy event's window by at least
-`EVENT_MIN_OVERLAP_SEC`, and whose start is no earlier than legacy start minus
-`EVENT_MAX_START_DRIFT_SEC` (so a stale open event from days ago cannot match everything).
-It is a port of mirror-worker-go's `translate.EquipmentEvent`. Exact matches cover about 96%
-of live traffic (2026-08-27 measurement).
+When the exact twin event is missing (the tee derived it at a slightly different time),
+the same-`(equipment, status)` analytics event whose `[ts_event, COALESCE(ts_end, now())]`
+overlaps the legacy window by ≥ `EVENT_MIN_OVERLAP_SEC` is picked, if its start is no
+earlier than legacy start minus `EVENT_MAX_START_DRIFT_SEC` (a stale open event cannot
+match everything). It is a port of mirror-worker-go's `translate.EquipmentEvent`.
 
-### PO reconciler (`reconcile.go`)
+### PO reconciler (`reconcile.go`, `reconcile_converge.go`, `enrich.go`)
 
-Every `RECONCILE_PO_INTERVAL_SEC` (300 s) it reads legacy POs with `ts_start` or `ts_end`
-inside the last `RECONCILE_PO_WINDOW_DAYS` (14):
+Each pass reads legacy POs of `SRC_ENTERPRISE` that started, ended, were created or were
+updated in the last `RECONCILE_PO_WINDOW_DAYS`, plus every `id_order` the twin holds as
+started/ended in the window:
 
-- **Missing in analytics** → insert the header from legacy's row (status, counters, times,
-  `id_order_text` as name, notes) with `recalc_needed = true`. A status-2 PO is skipped if
-  the equipment already has a running PO (unique partial index). **No runtime window is
-  created** for these (a blind insert would hit the exclusion constraint).
-- **Running in analytics, finished/paused in legacy** → close the window at legacy `ts_end`
-  and set the legacy status.
+- **Missing in analytics** → insert the header from legacy (status, counters, times,
+  `id_order_text`, notes; `recalc_needed = true`). Since 2026-10-09 this includes
+  **available** POs created by the ERP/import path, which never reach `user_logs`.
+- **Running in analytics, finished/paused in legacy** → close the window at legacy
+  `ts_end` and set legacy's status.
+- **Started PO without a runtime row** (#1555, 2026-10-02) → open one, overlap-guarded;
+  a blocked insert is retried on a later pass.
+- **Convergence** (#1674, 2026-10-09) — each rule moves the twin *toward* legacy and is a
+  no-op once equal: *retime* (both finished → header times = legacy's), *revert* (legacy
+  available, twin finished/paused → back to 1, re-checked just before writing), *windows*
+  (both settled → twin windows become exactly legacy's `production_orders_runtime` rows in
+  one transaction; any blocked insert rolls that PO back and is retried later).
+- **Enrich** (#1452) — POs created in the last `RECONCILE_PO_ENRICH_WINDOW_DAYS` with NULL
+  `id_product`/`id_client` get legacy's product, family and client, resolved by the unique
+  natural keys (`nm_product`, `nm_product_family`, `nm_client`); a missing dimension is
+  created, keeping legacy's id only when it is free and `RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS=true`.
+  Only NULL columns are filled.
 
-### Enrich pass (`enrich.go`, PR #1452)
+### Base-event reconciler (`base_reconcile.go`, #1664)
 
-Runs at the end of each reconciler pass. Candidates: analytics POs created in the last
-`RECONCILE_PO_ENRICH_WINDOW_DAYS` with NULL `id_product` or `id_client`. For each, legacy's
-product (name, code, family name) and client name are resolved in analytics by the unique
-natural keys `(id_enterprise, nm_product)`, `(id_enterprise, nm_client)`,
-`(id_enterprise, nm_product_family)`. Ids are never trusted alone: both sequences sit at
-legacy's max, so the next native row and the next legacy row could share an id while
-meaning different things. A missing dimension is created, keeping legacy's id only when it
-is free **and** `RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS=true` (then the sequence is moved past
-it). One set-based UPDATE fills only NULL columns (`COALESCE`).
+On 2026-10-07 ~14:17 UTC the CPACK edge started publishing events on Pub/Sub to the
+legacy oeecloud, which writes `equipment_events` without an audit row, so
+`downtime-event-created` stopped and every machine's last STOP stayed open on the twin.
+Each pass now reads legacy `forced_creation_system=false` rows with
+`ts_event >= now - RECONCILE_BASE_EVENTS_LOOKBACK_HOURS`, maps them through the resolver
+and **only inserts** the ones the twin lacks (`ON CONFLICT DO NOTHING`, and skipped when
+the twin has an event within ±1 s, because the replay carries milliseconds and legacy
+whole seconds). `ts_end` stays the stream-engine closer's job. Requires
+`REPLICATE_BASE_EVENTS=true`.
+
+### Manual-event reconciler (`manual_reconcile.go`, #1504)
+
+Mirrors legacy `equipment_events_man` → `silver.equipment_events_man` within
+`RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS`: dedupe legacy rows by the analytics unique key
+`(id_equipment, ts_event)`, then update changed rows, move a linked row whose start was
+edited, insert new ones, and delete only rows it owns (`ops.legacy_manual_event_link`)
+that vanished from legacy, at most `RECONCILE_MANUAL_EVENTS_MAX_DELETES` per pass (over the
+cap, deletes are skipped and logged). Unlinked rows (new-stack authored) are never touched.
+One transaction per pass.
+
+### Sandbox hold (`hold.go`)
+
+Only the sbx instance sets `SANDBOX_HOLD_ENABLED`. It reads `ops.sandbox_hold_mode(2000003)`:
+in **session** mode (a person is testing on the sandbox) the loop advances its cursor
+without applying, because the heal at the end of the grace period reflects the source's
+current state; in **healing** mode the loop pauses (no fetch, no advance) so actions
+arriving mid-heal are replayed afterwards. In both modes the reconcilers and the DLQ
+retrier skip their passes. Errors fail open (not held). See
+[Simulators and twins](simulators-and-twins.md).
 
 ### DLQ (`dlq.go`)
 
-`ops.mirror_replay_dlq(id, source, source_log_id, category, subcategory, payload, error,
-retry_attempts, last_retry_at, created_at)`. The retrier selects rows for its own `source`
-with `retry_attempts < DLQ_RETRY_MAX_ATTEMPTS` whose backoff (`2^retry_attempts` minutes
-since `last_retry_at`) has elapsed, re-reads the legacy `user_logs` row, and re-dispatches it
-through the same handlers. Success (or a clean skip) deletes the row; failure bumps
-`retry_attempts`; a vanished legacy row is retired at the cap.
+`ops.mirror_replay_dlq` (shared with mirror-worker-go's history, keyed by `source`). The
+retrier picks rows for its own `source` with `retry_attempts < DLQ_RETRY_MAX_ATTEMPTS`
+whose backoff (`2^retry_attempts` minutes since `last_retry_at`) has elapsed, re-reads the
+legacy `user_logs` row and re-dispatches it. Success or a clean skip deletes the row; a
+vanished legacy row is retired at the cap.
 
 ### shadow-mirror (`cmd/shadow-mirror`, `internal/replay`)
 
-The original ADR-0013 in-instance replayer: it polls staging's own F1 `packiot.user_logs`
-(cursor source `shadow-mirror`) and applies 13 handlers to both `shadow_go_port.*` and
-`packiot_analytics.public.*`. After the F1 plane was retired it had nothing to read (source
-froze around 2026-08-18) and it is kept idle. The legacy-replicator supersedes it for CPACK.
-Do not build on it.
+The original ADR-0013 in-instance replayer of the F1 `packiot.user_logs`. Its source froze
+around 2026-08-18; it runs idle and only serves `/healthz` and `/metrics`. Do not build on it.
 
 ## Configuration
 
@@ -189,148 +221,143 @@ legacy-replicator (`internal/replicate/config.go`). Staging values from `compose
 
 | Variable | Default | Staging (ent 3 / sbx) | Effect |
 |---|---|---|---|
-| `REPLICATE_ENABLED` | `false` | `true` / `${REPLICATE_SBX_ENABLED:-false}` | Master switch |
+| `REPLICATE_ENABLED` | `false` | `true` / `${REPLICATE_SBX_ENABLED:-false}` | Master switch; off = idle HTTP only |
 | `LEGACY_DB_HOST` / `_PORT` / `_USER` / `_NAME` | legacy host / 5432 / SELECT-only user / `packiot40` | same | Source; never written |
-| `LEGACY_DB_PASSWORD` | — | from `.env` (Secrets Manager `databaseCredentials`) | Required when enabled; boot refuses without it |
-| `DEST_DB_HOST` / `_PORT` / `_USER` / `_NAME` | DB host / 5432 / `postgres` / `packiot_analytics` | DB host direct | Destination |
+| `LEGACY_DB_PASSWORD` | — | `.env` | Required when enabled; boot refuses without it |
+| `DEST_DB_HOST` / `_PORT` / `_USER` / `_NAME` | DB host / 5432 / `postgres` / `packiot_analytics` | DB host, `${POSTGRES_USER}` | Destination |
 | `DEST_DB_PASSWORD` | — | `${POSTGRES_PASSWORD}` | Required when enabled |
 | `SRC_ENTERPRISE` / `DST_ENTERPRISE` | `1` / `3` | `1`→`3`; `1`→`2000003` | Tenant map |
 | `BACKFILL_SINCE_DAYS` | `60` | `60` | Cold-start history depth |
 | `BACKFILL_SINCE` | — | — | `YYYY-MM-DD` or RFC3339; overrides days on cold start |
-| `REPLICATE_BASE_EVENTS` | `true` | `true` | Insert base PLC events |
+| `REPLICATE_BASE_EVENTS` | `true` | `true` | Replay and reconcile base PLC events |
 | `CURSOR_SOURCE` | `legacy-cpack` | `legacy-cpack` / `legacy-sbxcpack` | Cursor + DLQ key; must differ per instance |
 | `POLL_INTERVAL_MS` | `3000` | `3000` | Sleep when a poll returns nothing |
 | `BATCH_SIZE` | `200` | `200` | Rows per poll |
 | `HEALTH_PORT` | `9104` | `9104` / `9114` | HTTP port |
 | `HEALTHCHECK_MAX_AGE_SEC` | `0` (off) | `600` | `/healthz` 503 when no successful poll for this long |
 | `LOG_LEVEL` | `info` | `info` | |
-| `RECONCILE_PO_ENABLED` | `false` | `true` | PO reconciler |
-| `RECONCILE_PO_INTERVAL_SEC` | `300` | `300` | |
-| `RECONCILE_PO_WINDOW_DAYS` | `14` | `14` | Legacy activity lookback |
-| `RECONCILE_PO_ENRICH_ENABLED` | `false` | `true` | Enrich pass |
-| `RECONCILE_PO_ENRICH_WINDOW_DAYS` | `14` | `120` | By analytics `ts_creation` |
-| `RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS` | `true` | `true` / `false` | `false` for any id-offset tenant |
-| `EVENT_MIN_OVERLAP_SEC` | `30` | default | Overlap matcher |
-| `EVENT_MAX_START_DRIFT_SEC` | `600` | default | Overlap matcher |
-| `DLQ_CAPTURE_ENABLED` | `true` | default | Write failures to the DLQ |
-| `DLQ_RETRY_ENABLED` | `true` | default | Run the retrier |
-| `DLQ_RETRY_INTERVAL_SEC` | `120` | default | |
-| `DLQ_RETRY_MAX_ATTEMPTS` | `5` | default | |
-| `DLQ_RETRY_BATCH_SIZE` | `100` | default | |
+| `SANDBOX_HOLD_ENABLED` | `false` | unset / `true` | Sandbox hold gate |
+| `RECONCILE_PO_ENABLED` / `_INTERVAL_SEC` / `_WINDOW_DAYS` | `false` / 300 / 14 | `true` / 300 / 14 | PO reconciler + convergence |
+| `RECONCILE_PO_ENRICH_ENABLED` / `_WINDOW_DAYS` | `false` / 14 | `true` / 120 | Enrich pass (window by analytics `ts_creation`) |
+| `RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS` | `true` | default / `false` | `false` for any id-offset tenant |
+| `RECONCILE_BASE_EVENTS_ENABLED` / `_INTERVAL_SEC` / `_LOOKBACK_HOURS` | `false` / 120 / 72 | `true` / 120 / 96 | Base-event reconciler |
+| `RECONCILE_BASE_EVENTS_REFRESH_SERVING` | `true` | default | Refresh `serving.downtime_events_resolved` for touched days |
+| `RECONCILE_MANUAL_EVENTS_ENABLED` / `_INTERVAL_SEC` / `_LOOKBACK_DAYS` | `false` / 300 / 35 | `true` / 300 / 35 | Manual-event reconciler (replaces the manual handlers) |
+| `RECONCILE_MANUAL_EVENTS_MAX_DELETES` | `50` | `50` | Delete cap per pass |
+| `RECONCILE_MANUAL_EVENTS_REFRESH_SERVING` | `true` | `true` | Serving refresh for touched days |
+| `EVENT_MIN_OVERLAP_SEC` / `EVENT_MAX_START_DRIFT_SEC` | `30` / `600` | default | Overlap matcher |
+| `DLQ_CAPTURE_ENABLED` / `DLQ_RETRY_ENABLED` | `true` / `true` | default | DLQ capture and retrier |
+| `DLQ_RETRY_INTERVAL_SEC` / `_MAX_ATTEMPTS` / `_BATCH_SIZE` | `120` / `5` / `100` | default | Retrier tuning |
 
 shadow-mirror (`internal/config/config.go`): `SHADOW_MIRROR_ENABLED` (default `false`),
-`PG_DB_NAME` (`packiot`), `PG_ANALYTICS_DB_NAME` (`packiot_analytics`, empty = only
-`shadow_go_port`), `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`, `POLL_INTERVAL_MS` (2000),
-`BATCH_SIZE` (100), `MAX_RETRIES` (5), `HEALTH_PORT` (9103), `LOG_LEVEL`. `PG_SECRET_ID` and
-`AWS_REGION` are read but Secrets Manager fetch was never implemented (creds come from env).
+`PG_DB_NAME` (`packiot`), `PG_ANALYTICS_DB_NAME` (`packiot_analytics`), `DB_HOST`/`DB_PORT`/
+`DB_USER`/`DB_PASSWORD`, `POLL_INTERVAL_MS` (2000), `BATCH_SIZE` (100), `MAX_RETRIES` (5),
+`HEALTH_PORT` (9103), `LOG_LEVEL`. `PG_SECRET_ID` and `AWS_REGION` are set in compose but the
+Secrets Manager fetch was never implemented (credentials come from env).
 
 ## Data & invariants
 
-- **Legacy is read-only.** Every write and the cursor live in the analytics DB.
-- **Idempotent by natural key.** POs by `(id_enterprise, id_order)`; events by
-  `(id_equipment, ts_event)`; guarded UPDATEs. Re-replaying a window changes no counts
-  (checked when the service was introduced), which makes a cursor rewind safe.
-- **Cursor only moves forward** (`UPDATE … WHERE last_log_id < $1`) and advances even on
-  failure; failures are preserved in the DLQ instead.
-- **One running PO per equipment** is preserved: starts finish the previous PO; the
-  reconciler skips a running insert that would collide.
-- **Never overwrite new-stack edits** in enrich (NULL-fill only).
-- **Tenant isolation**: all writes use the resolver's analytics ids under `DST_ENTERPRISE`.
-  Two instances must use different `CURSOR_SOURCE` values.
-- **Base events are PLC-born** (`forced_creation_system=false`); split segments and manual
-  events are human-born (`true`). `serving.v_operator_po_details_3` counts only `false`.
+- **Legacy is read-only.** Every write, the cursor and the DLQ live in the analytics DB.
+- **Idempotent by natural key**: POs by `(id_enterprise, id_order)`, events by
+  `(id_equipment, ts_event)`; guarded UPDATEs; reconcile rules are no-ops once equal. A
+  cursor rewind is safe.
+- **Monotonic**: the cursor only moves forward (and advances on failure, the DLQ keeps the
+  row); PO ends never move backwards.
+- **One running PO per equipment**: a start finishes the previous PO; window inserts are
+  overlap-guarded against every other PO.
+- **Never overwrite new-stack data**: enrich fills NULLs only; the manual reconciler
+  deletes only rows it linked.
+- **Tenant isolation**: all writes use the resolver's analytics ids under `DST_ENTERPRISE`;
+  two instances must use different `CURSOR_SOURCE` values.
+- **Base events are PLC-born** (`forced_creation_system=false`); split segments are
+  human-born (`true`).
 
 ## Observability
 
 | Signal | Meaning |
 |---|---|
-| `shadow_mirror_dispatched_total{category}` / `_skipped_total` / `_failed_total` | Per-category outcomes (metric names kept from the shadow-mirror era) |
+| `shadow_mirror_dispatched_total{category}` / `_skipped_total` / `_failed_total` | Per-category replay outcomes (names kept from the shadow-mirror era; `skipped{category="sandbox-hold"}` on the sbx) |
 | `shadow_mirror_update_noop_total{table}` | Zero-row UPDATEs = replay gaps. Alert `ReplicatorReplayGaps` (> 0 for 30 min, job `legacy-replicator`) |
 | `shadow_mirror_cursor` | Last replayed `id_user_logs` |
-| `legacy_replicator_reconcile_{inserted,finished,unresolved}_total` | Reconciler outcomes |
-| `legacy_replicator_reconcile_enriched_total`, `_enrich_skipped_total{reason}` | Enrich outcomes |
-| `legacy_replicator_dlq_depth`, `legacy_replicator_dlq_retried_total{outcome}` | DLQ health (`succeeded`/`failed`/`gone`) |
-| Alert `ShadowMirrorFailures` | `increase(shadow_mirror_failed_total[15m]) > 0` (any job) |
-| `/healthz` | 200 while the loop polls successfully; 503 after `HEALTHCHECK_MAX_AGE_SEC` without a poll (Prometheus `up` cannot see a wedged loop) |
+| `legacy_replicator_reconcile_{inserted,finished,unresolved}_total` | PO reconciler |
+| `legacy_replicator_reconcile_enriched_total`, `_enrich_skipped_total{reason}` | Enrich |
+| `legacy_replicator_base_events_total`, `legacy_replicator_manual_events_total` | Event reconcilers (by action) |
+| `legacy_replicator_dlq_depth`, `legacy_replicator_dlq_retried_total{outcome}` | DLQ health |
+| Alert `ShadowMirrorFailures` | `increase(shadow_mirror_failed_total[15m]) > 0` |
+| `/healthz` | 200 while the loop polls; 503 after `HEALTHCHECK_MAX_AGE_SEC` without a successful poll |
 
-Log lines worth grepping: `resolver built` (mapped / unresolved counts at boot),
-`unresolved legacy equipment`, `dispatch failed`, `event-classified: no twin base event`,
-`PO reconcile pass done`, `DLQ retry pass done`.
+Log lines worth grepping: `resolver built`, `unresolved legacy equipment`, `dispatch failed`,
+`event-classified: no twin base event`, `PO reconcile: window convergence blocked by a
+neighbour`, `base-event reconcile pass done`, `manual-event reconcile pass done`,
+`manual-event reconcile: deletes SKIPPED by guard`, `sandbox hold state`.
 
-Prometheus scrapes `legacy-replicator:9104` and `analytics-sync:9103`. The sbx instance is
+Prometheus scrapes `legacy-replicator:9104` and `analytics-sync:9103`; the sbx instance is
 **not** scraped (no job in `monitoring/prometheus/prometheus.yml`).
 
 ## Failure modes
 
 | Failure | Symptom | Cause | Fix |
 |---|---|---|---|
-| DLQ 23P01 flood (2026-09-20) | 1,374 DLQ rows, runtime windows stale | Per-PO open-window guard ignored other POs / closed windows under out-of-order replay | PR #1335 `&&` guard; reset and drain the DLQ (below) |
-| "Fix merged" but nothing changed (2026-09-20) | Same errors after deploy | PRs #1332/#1333 contained only tests + a plan doc | Check `git show origin/staging:<file>` and the container's creation time before draining |
-| 58% of POs without runtime rows (found 2026-09-23) | POs with `ts_start` but no production attributed | `order-started` opened the window only if the payload equipment resolved | PR #1389 + backfill migration `t-cpack-backfill-po-runtime-windows` |
-| Whole POs missing | Legacy has more POs than analytics | `order-created` used to `ErrSkip` unresolved equipment | Now errors into the DLQ; restart after fixing `packml_register`, then let the retrier drain |
-| Client / Product blank (2026-09-25) | 0 of 1,285 September POs linked | Legacy sets them outside `user_logs` | Enrich pass #1452 / #1453 |
-| Operator PO downtime 0 (2026-09-25) | `v_operator_po_details_3` shows 0 | Base events written `forced_creation_system=true` | Writer fixed (#1455), 256,306 rows re-flagged from legacy |
-| Sandbox lead machines unresolved | Downtimes for 7 CPACK lead machines dropped on 2000003 | Junk topics like `SANDBOX_CPACK/SC/LINHAS//` won the shortest-topic pick | Empty-segment guard in `hasEmptySegment` |
-| Manual events look like "pollution" | `equipment_events_man` 100% `forced_creation_system=true` on the twin | That flag bypasses the dedup trigger for replicated manual rows; they are real operator downtimes | Do not delete (see `docs/audits/eem-forced-flag-not-pollution.md`) |
-| Loop wedged / legacy unreachable | Container unhealthy, cursor flat | Network or legacy outage | Check legacy reachability from the app host; the loop resumes by itself |
+| DLQ 23P01 flood (2026-09-20) | 1,374 DLQ rows, stale windows | open-window guard ignored other POs / closed windows | #1335 `&&` guard; re-arm and drain the DLQ |
+| "Fix merged" but nothing changed (2026-09-20) | same errors after deploy | the PRs held only tests + a plan doc | check `git show origin/staging:<file>` and the container's creation time before draining |
+| POs with no runtime window (2026-09-23, again 2026-10-02) | POs with `ts_start` but zero production | start replayed before the PO existed, or unresolved payload equipment | #1389; reconciler opens missing windows (#1555) |
+| Manual events silently dropped (2026-09-12 → fix) | twin manual downtimes stop | handlers wrote the dropped `public.equipment_events_man`; `42P01` is fail-open | handlers write `silver.*`; manual reconciler (#1504) |
+| Stops never close on the twin (from 2026-10-07) | machines frozen in STOP | CPACK edge moved events to Pub/Sub; no audit rows | base-event reconciler (#1664) |
+| PO header/window drift vs legacy (found 2026-10-09) | wrong start/end, twin-only runs, missing windows | re-starts, time edits and reverts the replay cannot express | convergence (#1674) |
+| Client / product blank (2026-09-25) | 0 of 1,285 POs linked | legacy sets them outside `user_logs` | enrich (#1452/#1453) |
+| Sandbox lead machines unresolved | sandbox downtimes dropped for 7 lines | junk topics like `SANDBOX_CPACK/SC/LINHAS//` won the shortest-topic pick | empty-segment guard |
+| Loop wedged / legacy unreachable | container unhealthy, cursor flat | network or legacy outage | check legacy reachability from the app host; the loop resumes by itself |
 
 ## Operating it
 
-**Deploy / restart.** Both instances build from `services/analytics-sync` in the normal
-staging deploy (`deploy-staging.yml`). To restart one without touching the stack, use the
-compose labels on the running container (project `stack`, files from
-`com.docker.compose.project.config_files`) and run
+**Deploy / restart.** All three containers build from `services/analytics-sync` in the
+normal staging deploy (`deploy-staging.yml`). To restart one, use the compose labels on the
+running container (project `stack`, files from `com.docker.compose.project.config_files`):
 `docker compose -p stack -f <files> up -d --no-deps legacy-replicator`. Restart after any
 change to `packml_register` or equipment on either side (the resolver is built at boot).
 
-**Drain a DLQ after a fix** (the 2026-09-20 procedure):
+**Drain a DLQ after a fix:**
 
 1. Confirm the fix is in the *merged* code and the container was recreated after the merge.
-2. Look at what is stuck:
-   `SELECT category, left(error,80), count(*) FROM ops.mirror_replay_dlq WHERE source='legacy-cpack' GROUP BY 1,2;`
-3. Re-arm exhausted rows:
-   `UPDATE ops.mirror_replay_dlq SET retry_attempts = 0, last_retry_at = NULL WHERE source = 'legacy-cpack';`
-4. Watch `legacy_replicator_dlq_depth` fall (100 rows per 120 s pass by default) and the
-   `DLQ retry pass done` log lines.
+2. `SELECT category, left(error,80), count(*) FROM ops.mirror_replay_dlq WHERE source='legacy-cpack' GROUP BY 1,2;`
+3. Re-arm: `UPDATE ops.mirror_replay_dlq SET retry_attempts = 0, last_retry_at = NULL WHERE source = 'legacy-cpack';`
+4. Watch `legacy_replicator_dlq_depth` fall (100 rows per 120 s pass by default).
 
-**Replay a window again.** Safe because writes are idempotent: stop the container, set
+**Replay a window again** (safe, writes are idempotent): stop the container, set
 `UPDATE ops.mirror_replay_cursor SET last_log_id = <id> WHERE source = 'legacy-cpack';`,
-start it. Prefer the reconciler (widen `RECONCILE_PO_WINDOW_DAYS` temporarily) for PO
-headers.
+start it. For PO headers prefer the reconciler (widen `RECONCILE_PO_WINDOW_DAYS` temporarily).
 
-**Deeper backfill on a fresh tenant.** Delete the cursor row for the source and set
-`BACKFILL_SINCE=YYYY-MM-DD`; the next start seeds from there.
+**Deeper backfill on a fresh tenant**: delete the cursor row for the source and set
+`BACKFILL_SINCE=YYYY-MM-DD`.
 
-**Unsafe**: pointing two instances at the same `CURSOR_SOURCE`; enabling
-`KEEP_LEGACY_IDS` for an id-offset tenant; enabling `shadow-mirror` (its source is dead);
-any write to the legacy DB.
+**Unsafe**: two instances on one `CURSOR_SOURCE`; `KEEP_LEGACY_IDS=true` for an id-offset
+tenant; enabling `shadow-mirror`; raising the manual delete cap without reading the skipped
+deletes; any write to the legacy DB.
 
 ## Tests
 
 `cd services/analytics-sync && go test ./...` (CI: `.github/workflows/go-services.yml`).
-Replicator tests in `internal/replicate/`: `handlers_test.go` (includes
-`TestOpenRuntimeWindowOverlapSafeReplay`, `TestStopGuardsAgainstInvertedRange`),
-`resolver_test.go`, `reconcile_test.go`, `enrich_test.go`, `config_enrich_test.go`,
-`dlq_test.go`. Shadow-mirror tests in `internal/replay/`. Most are SQL-shape and pure-logic
-tests; there is no live-DB integration test.
+`internal/replicate/` has unit and golden tests per part: `handlers_test.go`,
+`lifecycle_golden_test.go`, `resolver_test.go`, `reconcile_test.go`,
+`reconcile_converge_test.go` + `_golden_test.go`, `base_reconcile_test.go` + `_golden_test.go`,
+`manual_reconcile_test.go`, `enrich_test.go`, `hold_test.go`, `dlq_test.go`. Most are
+SQL-shape and pure-planning tests; there is no live-DB integration test.
 
 ## Source map
 
 | Path | What's there |
 |---|---|
-| `services/analytics-sync/cmd/legacy-replicator/main.go` | Wiring: pools, resolver, handler registry, reconciler, DLQ retrier, HTTP |
+| `services/analytics-sync/README.md` | How to build, run and change it |
+| `services/analytics-sync/cmd/legacy-replicator/main.go` | Wiring: pools, resolver, handlers, reconcilers, DLQ retrier, HTTP |
 | `services/analytics-sync/internal/replicate/config.go` | Every env var and default |
-| `services/analytics-sync/internal/replicate/loop.go` | Poll → dispatch → DLQ → cursor loop |
-| `services/analytics-sync/internal/replicate/cursor.go` | `ops.mirror_replay_cursor`, cold-start seeding, `FetchBatch` |
+| `services/analytics-sync/internal/replicate/loop.go`, `cursor.go` | Poll → dispatch → DLQ → cursor; cold-start seeding |
 | `services/analytics-sync/internal/replicate/resolver.go` | Base-topic equipment map |
-| `services/analytics-sync/internal/replicate/handlers.go` | All SQL and the 14 handlers, overlap matcher, runtime windows |
-| `services/analytics-sync/internal/replicate/reconcile.go` | PO reconciler |
-| `services/analytics-sync/internal/replicate/enrich.go` | Product/client enrich |
-| `services/analytics-sync/internal/replicate/dlq.go` | DLQ table, capture, retrier |
-| `services/analytics-sync/internal/metrics/metrics.go` | Prometheus metrics |
-| `services/analytics-sync/internal/health/health.go` | Heartbeat `/healthz` |
-| `services/analytics-sync/cmd/shadow-mirror/main.go`, `internal/replay/` | Idle in-instance replayer |
-| `services/analytics-sync/Dockerfile.replicator`, `Dockerfile` | Images |
+| `services/analytics-sync/internal/replicate/handlers.go` | Handlers, overlap matcher, runtime-window SQL |
+| `services/analytics-sync/internal/replicate/reconcile.go`, `reconcile_converge.go`, `enrich.go` | PO reconciler, convergence, enrich |
+| `services/analytics-sync/internal/replicate/base_reconcile.go`, `manual_reconcile.go` | Event reconcilers |
+| `services/analytics-sync/internal/replicate/hold.go`, `dlq.go` | Sandbox hold gate; DLQ and retrier |
+| `services/analytics-sync/internal/metrics/metrics.go`, `internal/health/health.go` | Metrics; heartbeat `/healthz` |
+| `services/analytics-sync/cmd/shadow-mirror/`, `internal/replay/` | Idle in-instance replayer |
 | `compose.staging.yml` (`analytics-sync`, `legacy-replicator`, `legacy-replicator-sbx`) | Deployment and staging values |
-| `monitoring/prometheus/prometheus.yml`, `monitoring/prometheus/rules.yml` | Scrape jobs, `ReplicatorReplayGaps`, `ShadowMirrorFailures` |
+| `monitoring/prometheus/prometheus.yml`, `rules.yml` | Scrape jobs, `ReplicatorReplayGaps`, `ShadowMirrorFailures` |
 | `docs/adr/0013-shadow-mirror-service.md` | Design decision |

@@ -2,7 +2,7 @@
 title: Observability
 layer: 3
 owner_area: platform
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Observability
 
@@ -10,21 +10,24 @@ last_verified: 2026-09-28
 > Alertmanager, Grafana dashboards, Loki/Promtail logs, Tempo traces, the Alloy gateway and
 > DB-box agent, exporters and blackbox probes; what to look at per subsystem and the known
 > traps. For on-call engineers and anyone adding a metric or board.
-> Up: [Platform & operations](../subsystems/platform.md)
+> Up: [Platform & operations](../subsystems/platform.md) ·
+> [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/monitoring/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
 Tell a human, quickly and truthfully, whether data is arriving, being computed and being
 served for every tenant, and give them the metric, log line or trace that explains why not.
 All of it runs as containers in the staging `stack` project; new-stack production runs only
-Grafana, Prometheus, Loki and Promtail.
+Grafana, Prometheus, Loki and Promtail. It serves no Packiot API (each service's own
+`/metrics` and `/healthz` are described on its component page).
 
 ## At a glance
 
 | Piece | Image | Where it listens (on `stack_packiot-net`) | Config |
 |---|---|---|---|
 | Prometheus | `prom/prometheus:v3.1.0` | 9090 (host `127.0.0.1:9090`) | `monitoring/prometheus/prometheus.yml`, `rules.yml` |
-| Alertmanager | `prom/alertmanager:v0.27.0` | 9093 — profile `alerting` (parked) | `monitoring/alertmanager/alertmanager.yml` |
+| Alertmanager | `prom/alertmanager:v0.27.0` | 9093 — **only under compose profile `alerting`**, which the deploy adds only when `slack_api_url` exists; off on 2026-10-13 | `monitoring/alertmanager/alertmanager.yml` |
 | Grafana | `grafana/grafana:11.5.0` | 3000 → `grafana.staging.packiot.app` (cs-admin oauth2 gate) | `grafana/provisioning/`, `grafana/dashboards/` |
 | Loki | `grafana/loki:3.4.2` | 3100 | `monitoring/loki/loki-local-config.yaml`, `rules/` |
 | Promtail | `grafana/promtail:3.4.2` | 9080 | `monitoring/promtail/promtail-config.yaml` |
@@ -53,7 +56,7 @@ Grafana, Prometheus, Loki and Promtail.
 
 ### Prometheus
 
-- Global: `scrape_interval: 15s`, external label `env=staging`; retention 15 d or 2 GB;
+- Global: `scrape_interval: 15s`, external labels `env=staging`, `cluster=packiot-staging`; retention 15 d or 2 GB;
   `--web.enable-lifecycle` (hot reload), `--web.enable-remote-write-receiver` (for Alloy),
   exemplar storage on.
 - Scrape jobs (`prometheus.yml`):
@@ -62,6 +65,7 @@ Grafana, Prometheus, Loki and Promtail.
 |---|---|---|
 | `oeecloud-worker` | `oeecloud-worker:9101` | = stream-engine (network alias); job name kept for dashboard continuity; relabels routing key → `tenant` |
 | `edge-transformer` | `edge-transformer:9102` | = sparkplug-decoder (alias); metric prefix `edge_transformer_` kept |
+| `sparkplug-agent-shared` | `sparkplug-agent-shared:9103` | every client's cloud ingest (added 2026-09-29; was never scraped before) |
 | `analytics-sync` | `analytics-sync:9103` | |
 | `legacy-replicator` | `legacy-replicator:9104` | |
 | `read-api` | `read-api:9104` | |
@@ -72,18 +76,24 @@ Grafana, Prometheus, Loki and Promtail.
 | `postgres-exporter`, `node-exporter`, `redis-exporter`, `cadvisor` | as above | |
 | `blackbox` | probes `https://operator.staging.packiot.app`, `https://grafana.staging.packiot.app`, `http://edge-api:8080/health`, `http://read-api:9104/healthz` | `http_2xx` |
 | `blackbox-historian` | `hist-gateway:5432` | `tcp_connect` |
-| (commented) `mirror-worker-go` | — | retired; the `Mirror*` alerts therefore never fire |
+| (commented) `mirror-worker-go` | — | retired; its `Mirror*` alerts were deleted on 2026-10-01 |
+
+Not scraped: `legacy-replicator-sbx`, `barcode-service` (placeholder `/metrics`),
+`oeecloud-fanout`, `sparkplug-agent-cpack`.
 
 ### Alert rules (`monitoring/prometheus/rules.yml`)
 
 | Group | Alerts (severity) | Meaning in one line |
 |---|---|---|
-| `packiot-staging` | `ScrapeTargetDown` (page), `EngineJobErrorStreak` (page), `EngineStalled` (page), `IngestSilent` (page), `WritePathDry` (page), `ClientIngestStopped` (warn) | a target is down; stream-engine jobs erroring/not ticking; no AMQP deliveries in 10 m; deliveries but no writes; one tenant stopped writing after being active in the prior 6 h |
-| `packiot-flow-and-parity` | `FlowWriteImbalance` (critical), `BatchWriteErrors`, `BakeSurfacePersisting`, `IdentityBrokenPersisting` (critical), `MirrorDLQNotEmpty`, `MQTTDisconnected` (critical) | write legs diverging; batch statement errors; parity bake mismatches; decoder lost Mosquitto |
-| `packiot-durability-and-mirror` | `TransformerOutboxBacklog`, `TransformerOutboxStale` (critical), `TransformerPublishNacked`, `TransformerMqttDrops`, `OeeUnroutableMessages`, `PackmlUnroutableTopic`, `SparkplugSeqGapStream`, `MirrorCursorLag`, `MirrorOeeDivergence`, `ShadowMirrorFailures`, `ReplicatorReplayGaps` | outbox not draining; broker nacks; messages hitting no binding (`oee-unroutable-q`); topics with no active `packml_register`; Sparkplug seq gaps; replicator zero-row updates |
-| `packiot-host-and-db` | `HostDiskFilling` (critical, <15% free), `HostDiskHigh` (<20%), `DbBoxMetricsMissing`, `RetentionPolicyDrift`, `RetentionPurgeErrors`, `PostgresDown` (critical), `PostgresConnectionsHigh` (>160 of 200), `AnalyticsCaggRefreshLag`, `AnalyticsTimescaleJobFailing`, `HistorianGatewayDown` | host/DB health, retention catalog drift, stale continuous aggregates, failing Timescale jobs, cold-store gateway down |
-| `packiot-flip-readiness` | `TenantNotFlipReady` (info) | a tenant's bake surfaces not converged |
+| `packiot-staging` | `ScrapeTargetDown` (page), `EngineJobErrorStreak` (page), `StreamEngineJobStalled` (page), `EngineStalled` (page), `IngestSilent` (page), `WritePathDry` (page), `ClientIngestStopped` (warn) | a target is down; stream-engine jobs erroring/not ticking; no AMQP deliveries in 10 m; deliveries but no writes; one tenant stopped writing after being active in the prior 6 h |
+| `packiot-flow-and-parity` | `FlowWriteImbalance` (critical), `BatchWriteErrors`, `MQTTDisconnected` (critical) | write legs diverging; batch statement errors; decoder lost Mosquitto |
+| `packiot-durability-and-mirror` | `TransformerOutboxBacklog`, `TransformerOutboxStale` (critical), `TransformerPublishNacked`, `TransformerMqttDrops`, `OeeUnroutableMessages`, `PackmlUnroutableTopic`, `BirthBindVerifyMismatch`, `BirthBoundQuarantine` (critical), `SparkplugSeqGapStream`, `ShadowMirrorFailures`, `ReplicatorReplayGaps` | outbox not draining; broker nacks; messages hitting no binding (`oee-unroutable-q`); topics with no active `packml_register`; birth/binding mismatches; Sparkplug seq gaps; replay failures and zero-row updates |
+| `packiot-host-and-db` | `HostDiskFilling` (critical, <15% free), `HostDiskHigh` (<20%), `DbBoxMetricsMissing`, `BackupStale` (critical), `BackupMetricsMissing`, `BackupMirrorIncomplete`, `BackupShrank`, `RetentionPolicyDrift`, `RetentionPurgeErrors`, `PostgresDown` (critical), `PostgresConnectionsHigh` (>160 of 200), `DataInvariantCritical` (critical), `DataInvariantWarn`, `DataInvariantsStale`, `DataInvariantsSlow`, `AnalyticsCaggRefreshLag`, `AnalyticsTimescaleJobFailing`, `HistorianGatewayDown` | host/DB health, backups, the in-DB data invariants (`ops.data_invariant_latest`), retention catalog drift, stale continuous aggregates, failing Timescale jobs, cold-store gateway down |
 | `packiot-po-staleness-gate` | `POStalenessGateRejectingWrites` (critical) | edge-api returning 409 on PO routes for 10 m |
+
+The `packiot-flip-readiness` group is empty: `TenantNotFlipReady`, `BakeSurfacePersisting`,
+`IdentityBrokenPersisting` and the `Mirror*` rules were deleted on 2026-10-01 because nothing
+emitted their metrics (a rule that can never fire reads as coverage it does not give).
 
 Loki ruler (`monitoring/loki/rules/fake/log-alerts.yaml`): `LogErrorSpike`, `LogPanicDetected`,
 `LogOOMDetected`, sent to `alertmanager:9093`.
@@ -93,10 +103,13 @@ Loki ruler (`monitoring/loki/rules/fake/log-alerts.yaml`): `LogErrorSpike`, `Log
 Routes group by `alertname, severity`; `severity="critical"` → receiver `slack-critical`
 (`#alerts-critical`, faster repeat), everything else → `slack-default` (`#alerts`). Inhibits
 warnings under a firing critical, and `ClientIngestStopped` under a global `IngestSilent` /
-`WritePathDry`. The webhook URL is read from a gitignored file the deploy materializes from
-`packiot/staging/app` key `slack_api_url`. **Status: parked.** To enable: put the URL in the
-secret, add `alerting` to `COMPOSE_PROFILES`, deploy. Until then alerts are visible only in
-Prometheus `/alerts` and Grafana.
+`WritePathDry`. The webhook URL is read from a gitignored file
+(`monitoring/alertmanager/slack_api_url`) the deploy materializes from `packiot/staging/app`
+key `slack_api_url`. The deploy's "Resolve compose profiles" step adds the `alerting` profile
+**automatically** when that file is non-empty, so enabling paging is one step: put the
+webhook in the secret and deploy (no `.env` edit). **Status on 2026-10-13: parked** (the
+deploy logged `SKIP: no slack_api_url`); alerts are visible only in Prometheus `/alerts` and
+Grafana, and the Loki ruler's sends to `alertmanager:9093` fail.
 
 ### Grafana
 
@@ -159,8 +172,7 @@ must be empty.
 | Knob | Where | Effect |
 |---|---|---|
 | `ALLOY_GATEWAY_BIND` | `/opt/packiot/.env` | host IP the 3101/3102 relays bind; default loopback silently refuses the DB box |
-| `COMPOSE_PROFILES` contains `alerting` | `.env` | starts Alertmanager |
-| `packiot/staging/app` `slack_api_url` | Secrets Manager | Slack webhook |
+| `packiot/staging/app` `slack_api_url` | Secrets Manager | Slack webhook; its presence makes the deploy add profile `alerting` and start Alertmanager |
 | `--storage.tsdb.retention.time/size` | compose `prometheus.command` | 15d / 2GB |
 | `retention_period` | Loki config | 72h |
 | `block_retention` | Tempo config | 48h |
@@ -192,7 +204,8 @@ This page is the observability of the platform; its own health is `ScrapeTargetD
 | Historian gateway logs absent | nothing in Loki for `hist-gateway` | runs under project `packiot`, which Promtail's keep-regex drops | read with `docker logs hist-gateway` |
 | "Up" but dead services | green deploy, no data | e.g. decoder started before RabbitMQ and disabled its publisher (2026-09-25) | trust `IngestSilent`/`WritePathDry` and write counters, not container state |
 | Memory pressure invisible in cAdvisor | containers shrinking, host thrashing | a host process (historian DuckDB timer) outside cAdvisor's view (2026-09-25) | look at `node_memory_MemAvailable_bytes` and the host journal |
-| Alerts not reaching anyone | alerts fire in Prometheus only | Alertmanager parked | enable `alerting` profile with the webhook |
+| Alerts not reaching anyone | alerts fire in Prometheus only | Alertmanager parked (no `slack_api_url`) | add the webhook to `packiot/staging/app`, deploy |
+| Dashboard tile empty forever | rule or board counted as coverage | metric emitted by nothing (e.g. `bake_*`) | `dashboard-lint.yml` hardproof; delete dead rules (2026-10-01) |
 
 ## Operating it
 

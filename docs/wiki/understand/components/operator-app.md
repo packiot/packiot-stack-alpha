@@ -2,14 +2,16 @@
 title: Operator app (operator4)
 layer: 3
 owner_area: frontends
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # Operator app (operator4)
 
 > **Layer 3 · Components** — the shop-floor tablet app where operators start and change
 > production orders and justify downtime: structure, auth, API calls, the offline write
 > queue, deployment per tenant, and known failures. For operator developers and on-call.
-> Up: [Frontends](../subsystems/frontends.md)
+> Up: [Frontends](../subsystems/frontends.md) ·
+> [README](https://github.com/packiot/operator4/blob/staging/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -18,13 +20,15 @@ machine) they pick it shows the running production order (PO), production so far
 and solved downtime events, and lets them start / create-and-start / replace / change a PO,
 set up a PO, justify a stop, add or edit a manual event and split a downtime. It must keep
 working on flaky factory Wi-Fi, so writes are durable offline (queued in IndexedDB and
-replayed with their original action time).
+replayed with their original action time). It serves no API itself; what it calls is in the
+[edge-api](../../reference/api/edge-api.md) and [read-api](../../reference/api/read-api.md)
+references.
 
 ## At a glance
 
 | | |
 |---|---|
-| Language / framework | JavaScript, React 18, MUI 5, Vite, `vite-plugin-pwa`, `aws-amplify`, `idb`, i18next |
+| Language / framework | JavaScript, React 18, MUI 5, Vite 3, `vite-plugin-pwa`, `aws-amplify` 6, `idb`, i18next |
 | Repo | `packiot/operator4` (submodule `./operator`, branch `staging`) |
 | Containers (staging) | `operator` (CPACK, ent 3, host port 8083), `operator-sbx` (sandbox 2000003, 8085), `operator-bispharma` (ent 5, 8087). One image, three runtime configs |
 | Image | built from `operator/Dockerfile.staging` by `docker compose build`; nginx 1.27-alpine serving `dist/` |
@@ -41,17 +45,26 @@ All calls are same-origin; the container nginx proxies them.
 |---|---|---|---|
 | `/session`, `/session/switch`, `/session/enterprises` | `edge-api:8080` | none; the SPA sends its Cognito Bearer | bootstrap: entity tree, language, `super_user` |
 | `/api/*` | `edge-api:8080` | `x-api-key: ${EDGE_API_KEY}`; `Authorization` is **cleared** | writes |
-| `/v1/*` | `refdata-api:9104` (read-api alias) | `x-api-key: ${REFDATA_API_KEY}`; forwards `x-operator-superadmin-token` | reads |
+| `/v1/*`, `/v2/*` | `refdata-api:9104` (read-api alias) | `x-api-key: ${REFDATA_API_KEY}`; forwards `x-operator-superadmin-token` | reads |
 
 Writes (`src/Services/endpoints.js`): `POST /api/production-orders/{start, create-and-start,
 replace, setup, create}`, `POST /api/downtimes/{justify, create-manual-event,
-edit-manual-event, split}`. Reads: `/v1/operator-entities`, `/v1/operator-po-list`,
-`/v1/operator-po-details`, `/v1/pending-downtime`, `/v1/events-timeline`,
-`/v1/downtime-reasons`, `/v1/language-packs`; translations `GET /api/i18n/front4/:lang`.
+edit-manual-event, split}`. Reads: `/v1/operator-entities`, `/v1/operator-po-details`,
+`/v1/language-packs`, and the line-scoped reads **by equipment id** (ADR-0061 P3, live
+2026-10-07): `/v2/operator-po-list`, `/v2/pending-downtime`, `/v2/events-timeline`,
+`/v2/downtime-reasons` with `?equipment=<ids>` from the session's entity tree. Each falls back
+to the `/v1` topic route when the session has no ids or `/v2` does not answer a JSON array
+(an older nginx or read-api). Translations: `GET /api/i18n/front4/:lang`.
 
 Because nginx replaces the credential, **the tenant of every write is the tenant of the
 container's `EDGE_API_KEY`**, whoever is logged in. The login only decides which lines the
 user sees (their role's entity scope).
+
+!!! note "CPACK container is read-only for POs, downtimes and shifts"
+    Staging edge-api blocks PO, downtime, out-of-service and shift writes for enterprise 3
+    with 403 `MIRROR_TENANT_WRITE_BLOCKED` (edge-api #298/#299), because CPACK's analytics
+    data is replicated from legacy. Writes from `operator.staging…` therefore fail by design;
+    test write flows on `operator-sbx` (2000003).
 
 ## Internal design
 
@@ -125,10 +138,12 @@ Runtime env (container; substituted into the nginx template):
 | Variable | `operator` | `operator-sbx` | `operator-bispharma` |
 |---|---|---|---|
 | `EDGE_API_KEY` | `${OPERATOR_EDGE_API_KEY}` (ent 3 key) | `${OPERATOR_SBX_EDGE_API_KEY}` (2000003) | `${OPERATOR_BISPHARMA_EDGE_API_KEY}` (ent 5) |
-| `REFDATA_API_KEY` | CPACK read key | sandbox read key | Bispharma read key |
+| `REFDATA_API_KEY` | `${OPERATOR_REFDATA_API_KEY}` (CPACK read key) | `${OPERATOR_SBX_REFDATA_API_KEY}` | `${OPERATOR_BISPHARMA_REFDATA_API_KEY}` |
+| Host port | `127.0.0.1:8083` | `127.0.0.1:8085` | `127.0.0.1:8087` |
 
 Values live in `/opt/packiot/.env` on the app host. An empty `EDGE_API_KEY` fails closed
-(edge-api 401). Read keys map to tenants in read-api's `QUERY_API_KEYS`.
+(edge-api 401). The read keys fall back to read-api's static staging demo keys when unset,
+and map to tenants in read-api's `QUERY_API_KEYS`.
 
 ## Data & invariants
 
@@ -140,7 +155,7 @@ Values live in `/opt/packiot/.env` on the app host. An empty `EDGE_API_KEY` fail
 
 ## Observability
 
-- Grafana board `packiot-operator` (operator actions → `user_logs`).
+- Grafana board "Operator — actions & adapter" (uid `v2-operator`, `grafana/dashboards/library/07-operator.json`).
 - `docker logs operator` (nginx access log): no requests at all means the break is
   client-side or at the host gate.
 - edge-api audit rows (`res.locals.logData` → `user_logs`) for every write.
@@ -155,6 +170,8 @@ Values live in `/opt/packiot/.env` on the app host. An empty `EDGE_API_KEY` fail
 | Super-admin writes land at home (#188, fixed 2026-09-06) | reads show the target, writes go home | write verifier expected HS256 | RS256/JWKS verifier in edge-api |
 | Downtime always 0 (2026-09-25) | PO shows no downtime | replicator wrote `forced_creation_system=true` on PLC events; view sums `false` only | fixed in the writer (#1455) + backfill |
 | PO list shows "PO 36432" and polls 19k rows | wrong labels, slow | stub view `v_operator_po_list_setup_4` | ported legacy view (#1456) |
+| Running PO invisible on a line (CER400, 2026-10-07) | PO list empty for a running PO | v1 matched POs by a LIMIT-1 topic pick | `/v2/operator-po-list` by `id_equipment` (#1614, operator4 #133) |
+| 403 `MIRROR_TENANT_WRITE_BLOCKED` on the CPACK operator | every PO/downtime write refused | enterprise 3 is mirror-owned on staging | expected; use `operator-sbx` |
 | ChangeJob empty after reload | no topics | missing localStorage topic fallback | operator4 #129 |
 | Fixed but still broken | old UI persists | PWA service worker cache | hard refresh / unregister SW; Playwright needs `serviceWorkers: 'block'` |
 | operator-sbx 403 (2026-09-20) | vhost missing on the box | host nginx not re-rendered | add vhost, reload nginx |
@@ -164,8 +181,8 @@ Values live in `/opt/packiot/.env` on the app host. An empty `EDGE_API_KEY` fail
 - **Deploy**: merge to operator4 `staging`. Its `bump-stack-submodule.yml` opens a stack PR
   bumping `./operator` (auto-merge after "Validate compose files"); the merge triggers
   `deploy-staging.yml`, which rebuilds the image for all three containers. If the bump
-  workflow fails (its `PARENT_REPO_TOKEN` was invalid from about 2026-09-14 to 2026-09-25),
-  bump the gitlink by hand in a stack PR.
+  workflow fails (its `PARENT_REPO_TOKEN` was invalid from about 2026-09-14 to 2026-09-25,
+  and the run on 2026-10-13 failed again), bump the gitlink by hand in a stack PR.
 - **Recreate one container** after an `.env` change:
   `docker compose -p stack -f compose.staging.yml up -d --no-deps operator-bispharma`
   (recreate, not `docker restart`, so the new env is read).
@@ -187,9 +204,10 @@ Values live in `/opt/packiot/.env` on the app host. An empty `EDGE_API_KEY` fail
 
 | Path | What's there |
 |---|---|
-| `operator/Dockerfile.staging`, `operator/nginx.staging.conf.template` | cloud image and proxy (key injection) |
+| `operator/README.md` | How to run, build and change it |
+| `operator/Dockerfile.staging`, `operator/nginx.staging.conf.template` | cloud image and proxy (key injection, `/v[12]/` → read-api) |
 | `operator/Dockerfile.edge`, `operator/nginx.edge.conf.template` | on-prem edge-operator image |
-| `operator/src/Services/*` | auth, API, offline queue |
+| `operator/src/Services/*` | auth, API (`endpoints.js`: `/v2` with `/v1` fallback), offline queue |
 | `operator/src/Context/AuthContext.jsx` | login + `/session` |
 | `operator/.github/workflows/bump-stack-submodule.yml` | stack pointer bump |
 | `compose.staging.yml` (`operator`, `operator-sbx`, `operator-bispharma`) | containers, build args, keys |

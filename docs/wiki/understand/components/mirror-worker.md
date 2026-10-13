@@ -2,14 +2,16 @@
 title: mirror-worker (retired)
 layer: 3
 owner_area: legacy-bridge
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # mirror-worker (retired)
 
 > **Layer 3 · Components** — `services/mirror-worker-go`, the first legacy → staging mirror.
 > Retired on 2026-08-13 and replaced by the [legacy-replicator](analytics-sync.md). Read
 > this page to understand old data, old metrics and old DLQ rows, or before reviving it.
-> Up: [Legacy bridge](../subsystems/legacy-bridge.md)
+> Up: [Legacy bridge](../subsystems/legacy-bridge.md) ·
+> [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/mirror-worker-go/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -22,9 +24,10 @@ synthesised counter values and events directly in the database.
 !!! warning "Status: retired, not running"
     `compose.staging.yml` keeps the service block but gates it behind the compose profile
     `legacy-comparator`, so a normal deploy does not start it. The Prometheus job is
-    commented out (`up{job="mirror-worker-go"}` was confirmed 0 on 2026-08-20). The code is
-    still built and tested by CI (`go-services.yml`). `compose.production.yml` does not
-    include it.
+    commented out (`up{job="mirror-worker-go"}` was confirmed 0 on 2026-08-20) and its
+    alerts were deleted on 2026-10-01. The code is still vetted, tested and built by CI
+    (`go-services.yml`). `compose.production.yml` does not include it. It serves no
+    business HTTP API (only `/health` and `/metrics`), so it has no API reference page.
 
 ## At a glance
 
@@ -96,6 +99,7 @@ Staging values as last set in `compose.staging.yml` (the service is profile-gate
 | `SHADOW_VALUE_FANOUT` / `SHADOW_FANOUT_F2` | `false` / `true` | `true` / `false` | Fan counter deltas to F3 only |
 | `POSTGRES_ANALYTICS_DB_NAME`, `SHADOW_DB_HOST` | empty | `packiot_analytics`, DB host | F3 fan-out target |
 | `RECONCILE_ENABLED`, `RECONCILE_MODE` | `true`, `poll` | `true`, `tail` | PO reconciler |
+| `RECONCILE_CREATE_INTERVAL_SEC`, `RECONCILE_FINISHER_INTERVAL_SEC` | 3, 300 | 3, 300 | Tail-mode create diff and finisher cadence |
 | `RECONCILE_FINISHER_ENABLED`, `_GRACE_MINUTES` | `false`, 30 | `true`, 30 | Close zombie running POs |
 | `RECONCILE_CLOSE_PROD_TERMINAL_ORPHANS` | `false` | `true` | Close mirror-created POs whose legacy twin finished |
 | `RECONCILE_VALUES_ENABLED`, `RECONCILE_EVENTS_ENABLED` | `true` | `true` | Value / events sync |
@@ -117,9 +121,10 @@ Staging values as last set in `compose.staging.yml` (the service is profile-gate
 
 Metrics are prefixed `mirror_worker_` (for example `mirror_worker_cursor_lag_seconds`,
 `mirror_worker_dlq_depth`, `mirror_worker_reconciler_finisher_total{outcome}`,
-`mirror_worker_comparator_oee_divergence_pct`). Alerts `MirrorDLQNotEmpty`,
-`MirrorCursorLag` and `MirrorOeeDivergence` remain in `monitoring/prometheus/rules.yml` but
-have no data while the job is off.
+`mirror_worker_comparator_oee_divergence_pct`). The alerts `MirrorDLQNotEmpty`,
+`MirrorCursorLag` and `MirrorOeeDivergence` were **removed** from
+`monitoring/prometheus/rules.yml` on 2026-10-01 (a rule that can never fire reads as
+coverage it does not give); restore them together with the scrape job if you revive it.
 
 ## Failure modes
 
@@ -135,7 +140,9 @@ have no data while the job is off.
 Do not start it unless you need the comparator before a cutover:
 `COMPOSE_PROFILES=legacy-comparator docker compose -p stack -f compose.staging.yml up -d mirror-worker-go`.
 Starting it next to the legacy-replicator creates **two writers** for CPACK POs and events;
-stop the replicator first or accept conflicts. Its cursor (`cpack-prod-go`) and DLQ rows
+stop the replicator first or accept conflicts. Its PO replay would also be refused today:
+staging edge-api answers every PO write for enterprise 3 with 403
+`MIRROR_TENANT_WRITE_BLOCKED` (`OPERATOR_WRITE_BLOCKED_ENTERPRISES=3`, edge-api #298). Its cursor (`cpack-prod-go`) and DLQ rows
 are preserved in the staging DB.
 
 ## Tests
@@ -147,6 +154,7 @@ are preserved in the staging DB.
 
 | Path | What's there |
 |---|---|
+| `services/mirror-worker-go/README.md` | How to build and run it |
 | `services/mirror-worker-go/cmd/mirror-worker-go/main.go` | Wiring, handler registry, loops |
 | `services/mirror-worker-go/internal/config/config.go` | All env vars and defaults |
 | `services/mirror-worker-go/internal/translate/translate.go` | Id translation, interval-overlap matcher |

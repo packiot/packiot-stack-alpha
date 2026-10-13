@@ -2,14 +2,16 @@
 title: oauth2-proxy and Cognito
 layer: 3
 owner_area: identity
-last_verified: 2026-09-28
+last_verified: 2026-10-13
 ---
 # oauth2-proxy and Cognito
 
 > **Layer 3 · Components** — the Cognito user pool, its app clients and migration Lambda,
 > and the oauth2-proxy forward-auth gate that host nginx puts in front of the staff and
 > factory UIs. For whoever changes login, adds a vhost or debugs a 302/401/403 loop.
-> Up: [Identity and access](../subsystems/identity.md)
+> Up: [Identity and access](../subsystems/identity.md) ·
+> [Migration Lambda README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/cognito-user-migration/README.md) ·
+> [Service catalog](../../reference/service-catalog.md)
 
 ## Responsibility
 
@@ -17,13 +19,15 @@ Cognito is the only identity provider of the new stack: it stores users and pass
 the `cs-admin` group, and signs the ID tokens every backend verifies. oauth2-proxy is a small
 OIDC relying party that host nginx asks, on every request to a gated vhost, "does this
 browser have a valid Packiot session (and is it in `cs-admin`)?". It gates *page access*
-only; it does not pass identity to the backends.
+only; it does not pass identity to the backends. Neither serves a Packiot API, so there is
+no API reference page; the token each API accepts is listed in the
+[API reference index](../../reference/api/index.md#authentication-at-a-glance).
 
 ## At a glance
 
 | | |
 |---|---|
-| Cognito pool | `packiot-staging`, id `us-east-1_0T9t1sTwt`, tier `LITE` (one pool serves staging **and** the new-stack production csadmin) |
+| Cognito pool | `packiot-staging`, id `us-east-1_0T9t1sTwt`, tier `LITE`, `deletion_protection = INACTIVE`. The same pool is baked into the (not promoted) new-stack production compose; a dedicated prod pool is drafted in PR #1144 (open, unapplied) |
 | Hosted-UI domain | `packiot-auth` (`packiot-auth.auth.us-east-1.amazoncognito.com`) |
 | App clients | `front4-amplify` (public, no secret), `oauth2-proxy-staging`, `oauth2-proxy-prod` (confidential) |
 | Migration Lambda | `cognito-user-migration`, Node 20, arm64, source `services/cognito-user-migration/index.mjs` |
@@ -32,7 +36,7 @@ only; it does not pass identity to the backends.
 | Session store (staging) | redis, `redis://app-redis:6379/1` |
 | Public endpoint | `https://auth.staging.packiot.app/oauth2/{start,callback,sign_out}` |
 | Depends on | Cognito, `app-redis`, host nginx |
-| Depended on by | every vhost with `auth_request` (operator, operator-sbx, operator-bispharma, barcode, grafana, db, rabbitmq, api root) |
+| Depended on by | every vhost with `auth_request` (operator, operator-sbx, operator-bispharma, barcode, grafana, db, rabbitmq, the api root and its `/docs/` API portal) |
 
 ## Inputs & outputs
 
@@ -51,8 +55,9 @@ only; it does not pass identity to the backends.
 - Email is the username (`username_attributes = ["email"]`, case-insensitive); email
   auto-verified; password min 8 with upper, lower and a digit; recovery by verified email.
 - Custom attributes `custom:id_enterprise` and `custom:firebase_uid`. The backends resolve
-  the tenant from the database, not from `custom:id_enterprise`; the Phase-0
-  `barcode-service` scan API (superseded by edge-api `/api/scanned-boxes`) reads the claim.
+  the tenant from the database, not from `custom:id_enterprise`; the exception is
+  [barcode-service](barcode-service.md) (`scan.<domain>`), which takes the tenant from that
+  signed claim.
 - `front4-amplify` client: auth flows `USER_SRP_AUTH`, `USER_PASSWORD_AUTH` (needed so the
   migration Lambda can fire; SRP cannot), `REFRESH_TOKEN_AUTH`; ID and access tokens 1 h,
   refresh 30 days; `prevent_user_existence_errors = ENABLED`; no hosted-UI flows. Every
@@ -115,7 +120,7 @@ Per-vhost tier comes from `service_auth` in `terraform/staging/variables.tf`:
 |---|---|---|
 | `csadmin` | origin-verify + `/oauth2/auth-csadmin` | grafana, rabbitmq, db (CloudBeaver), barcode |
 | `any` | origin-verify + `/oauth2/auth`, with an API-route bypass list | operator, operator-sbx, operator-bispharma |
-| `api` | origin-verify; `/api/*` and `/session*` bypass; `/` needs `cs-admin` | api |
+| `api` | origin-verify; `/api/*` and `/session*` bypass; `/` (Swagger at `/packiot/docs`) and the `/docs/` API portal need `cs-admin` | api |
 | `none-originverify` | origin-verify only; the SPA owns its own Cognito login | csadmin, customize |
 | no gate | deliberately open, own auth | refdata (read-api), scan, cpack-ingest, ingest, mq, auth |
 
@@ -208,7 +213,7 @@ Production (`compose.production.yml`) uses the `oauth2-proxy-prod` client,
 |---|---|
 | `terraform/staging/cognito.tf` | pool, `front4-amplify` client, hosted-UI domain, oauth2-proxy clients |
 | `terraform/staging/cognito_migration_lambda.tf` | Lambda, IAM role, Firebase web-key secret |
-| `services/cognito-user-migration/index.mjs` | migration handler |
+| `services/cognito-user-migration/index.mjs`, `README.md` | migration handler, how to change it |
 | `compose.staging.yml` (`oauth2-proxy`, `app-redis`) | proxy config, session store |
 | `compose.production.yml` (`oauth2-proxy`) | prod proxy config |
 | `terraform/staging/user_data/nginx_setup.sh` | snippets, tiers, per-vhost gates |
