@@ -4,8 +4,8 @@
 //   - Main pool: staging packiot DB (reads user_logs, writes to shadow_go_port schema)
 //   - Shadow pool: packiot_analytics DB (writes to public schema of refactored POC)
 //
-// Both use the same DB credentials from AWS Secrets Manager (packiot/staging/db);
-// only the target database name differs.
+// Both use the same DB login, DB_USER/DB_PASSWORD from env (cmd/shadow-mirror dbCredsFromEnv; no
+// default user); only the target database name differs. Idle mode needs no credentials at all.
 //
 // SHADOW_MIRROR_ENABLED gates the whole thing. Default = false so a
 // deploy with the container present but flag unset is a no-op — same
@@ -18,10 +18,6 @@ import (
 )
 
 type Config struct {
-	// AWS
-	AWSRegion  string
-	PGSecretID string
-
 	// DBs — main = packiot (reads user_logs, writes shadow_go_port),
 	// shadow = packiot_analytics (writes public). Empty PGAnalyticsDBName =
 	// disable shadow-DB writes (writes ONLY shadow_go_port).
@@ -43,8 +39,6 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		AWSRegion:         getenv("AWS_REGION", "us-east-1"),
-		PGSecretID:        getenv("PG_SECRET_ID", "packiot/staging/db"),
 		PGDBName:          getenv("PG_DB_NAME", "packiot"),
 		PGAnalyticsDBName: getenv("PG_ANALYTICS_DB_NAME", "packiot_analytics"),
 		PollIntervalMs:    getenvInt("POLL_INTERVAL_MS", 2000),

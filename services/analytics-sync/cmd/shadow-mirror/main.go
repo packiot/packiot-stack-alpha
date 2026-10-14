@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -52,14 +53,9 @@ func main() {
 
 	// TODO Phase 2: fetch creds from AWS Secrets Manager (packiot/staging/db).
 	// For skeleton, read from env vars — same fallback pattern as other services.
-	creds := &db.DBCreds{
-		Host:     getenv("DB_HOST", "postgres"),
-		Port:     getenvInt("DB_PORT", 5432),
-		User:     getenv("DB_USER", "postgres"),
-		Password: getenv("DB_PASSWORD", ""),
-	}
-	if creds.Password == "" {
-		logger.Error("DB_PASSWORD empty — refusing to boot with insecure creds")
+	creds, err := dbCredsFromEnv()
+	if err != nil {
+		logger.Error("db creds", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
 
@@ -137,6 +133,24 @@ func main() {
 		logger.Error("loop terminated with error", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
+}
+
+// dbCredsFromEnv is the enabled-mode login. Both DB_USER and DB_PASSWORD are required: there is no
+// default user, so the service can never fall back to the Postgres admin. Idle mode (staging and dev)
+// never calls this and gets no DB credentials at all (scripts/ci/check-db-least-priv.py NO_DB). Turning
+// the replay on needs its own least-privilege role first (README § Database).
+func dbCredsFromEnv() (*db.DBCreds, error) {
+	c := &db.DBCreds{
+		Host:     getenv("DB_HOST", "postgres"),
+		Port:     getenvInt("DB_PORT", 5432),
+		User:     os.Getenv("DB_USER"),
+		Password: os.Getenv("DB_PASSWORD"),
+	}
+	if c.User == "" || c.Password == "" {
+		return nil, errors.New("SHADOW_MIRROR_ENABLED=true needs DB_USER and DB_PASSWORD (a dedicated " +
+			"least-privilege role, never the Postgres admin)")
+	}
+	return c, nil
 }
 
 func serveHTTP(port int, metricsHandler http.Handler, logger *slog.Logger) {
