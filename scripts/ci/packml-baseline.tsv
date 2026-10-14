@@ -81,7 +81,7 @@
 6	services/operator-gateway/internal/adapter/mapping.go
 4	services/operator-gateway/internal/adapter/po_lifecycle.go
 17	services/operator-gateway/internal/adapter/po_lifecycle_test.go
-15	services/operator-gateway/internal/adapter/resolver.go
+12	services/operator-gateway/internal/adapter/resolver.go
 12	services/operator-gateway/internal/adapter/server.go
 19	services/operator-gateway/internal/adapter/server_test.go
 2	services/operator-gateway/internal/adapter/split.go
