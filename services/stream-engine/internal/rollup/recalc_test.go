@@ -48,9 +48,9 @@ func TestComputeShape(t *testing.T) {
 		"ee.status IN (5, 10, 11)",     // stopped
 		"greatest(ee.ts_event, el.lo)", // overlap math
 		"LEFT JOIN sums",               // phase A always-updates
-		"recalc_needed    = false",
+		"recalc_needed    = false",       // phase A apply clears the flag
 	} {
-		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL+applyValuesSQL, m) {
 			t.Errorf("compute lost %q", m)
 		}
 	}
@@ -99,7 +99,7 @@ func TestComputeSplitInstrumentation(t *testing.T) {
 	if strings.Contains(computeEventsSQL, "lead_machine") {
 		t.Error("the events pass must not read lead_machine")
 	}
-	if !strings.Contains(computeValuesSQL, "WHEN el.line_lead THEN e.net_production") {
+	if !strings.Contains(computeValuesSQL, "el.line_lead") || !strings.Contains(applyValuesSQL, "WHEN r.line_lead THEN e.net_production") {
 		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
 	}
 	// The enterprise gate is rendered from LineLeadScope; with no per-line overrides

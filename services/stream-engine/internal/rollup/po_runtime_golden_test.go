@@ -340,3 +340,152 @@ func TestGoldenPORuntimeFlagMidPassIsNotLost(t *testing.T) {
 		}
 	}
 }
+
+// shortLockFixture: line-lead line 940 (lead 941, enterprise 3) with an OPEN,
+// flagged runtime row (PO 40, started 2 h ago — what edge-api's Change PO closes)
+// and a CLOSED flagged row (PO 41). The lead counted 10/min for both.
+const shortLockFixture = `
+	INSERT INTO golden.equipments (id_equipment,id_site,id_area,id_enterprise,tp_equipment,production_speed,lead_machine,gross_machine,net_machine)
+	VALUES (940,1,1,3,3,10,941,941,941), (941,1,1,3,1,10,NULL,NULL,NULL);
+	INSERT INTO golden.production_orders (id_production_order,id_enterprise,id_equipment,status,ts_start,ts_end,recalc_needed) VALUES
+	  (40,3,940,2, date_trunc('hour', now()) - interval '2 hours', NULL, true),
+	  (41,3,940,3, date_trunc('hour', now()) - interval '1 day 1 hour', date_trunc('hour', now()) - interval '1 day', true);
+	INSERT INTO golden.production_orders_runtime (id_production_order,id_equipment,runtime_timerange,recalc_needed) VALUES
+	  (40,940, tstzrange(date_trunc('hour', now()) - interval '2 hours', NULL), true),
+	  (41,940, tstzrange(date_trunc('hour', now()) - interval '1 day 1 hour', date_trunc('hour', now()) - interval '1 day'), true);
+	INSERT INTO golden.equipment_categorical_1min (id_equipment, ts_value, gross_production_incr, net_production_incr)
+	SELECT 941, b + make_interval(mins => m), 10, 10
+	  FROM generate_series(0,59) m,
+	       (VALUES (date_trunc('hour', now()) - interval '2 hours'), (date_trunc('hour', now()) - interval '1 day 1 hour')) v(b);`
+
+func shortLockSetup(t *testing.T) (context.Context, *pgxpool.Pool, flows.Dest, func()) {
+	t.Helper()
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	for _, s := range []string{poRuntimeSchema, shortLockFixture} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+	}
+	d := flows.Dest{Name: "golden", Pool: pool, EvSchema: "golden", RefSchema: "golden",
+		SilverSchema: "golden", GoldSchema: "golden", GrainSchema: "golden"}
+	return ctx, pool, d, func() { pool.Close(); cancel() }
+}
+
+// TestGoldenPOComputeHoldsNoRowLocksWhileComputing pins the 2026-10-14 fix. A Change
+// PO (edge-api setup) closes the line's OPEN runtime row while a compute pass is in
+// flight. The pass used to hold that row's lock from its first UPDATE to COMMIT (the
+// slow phases ran in between), so the operator's write waited 16–44 s on staging.
+// Here the "edge-api" write runs mid-pass with lock_timeout = 500 ms: it must not
+// wait. And the pass must not overwrite or un-flag the row it changed: the closed
+// row keeps recalc_needed and the next pass computes it.
+func TestGoldenPOComputeHoldsNoRowLocksWhileComputing(t *testing.T) {
+	ctx, pool, d, done := shortLockSetup(t)
+	defer done()
+	scope := LineLeadScope{Enterprises: []int{3}}
+
+	computeBetweenPhasesHook = func(ctx context.Context) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Errorf("begin: %v", err)
+			return
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '500ms'`); err != nil {
+			t.Errorf("lock_timeout: %v", err)
+			return
+		}
+		// edge-api's setup: close the open window at the change time and re-flag it.
+		if _, err := tx.Exec(ctx, `UPDATE golden.production_orders_runtime
+		      SET runtime_timerange = tstzrange(lower(runtime_timerange), date_trunc('hour', now()) - interval '1 hour'),
+		          recalc_needed = true
+		    WHERE id_production_order = 40 AND upper(runtime_timerange) IS NULL`); err != nil {
+			t.Errorf("Change PO waited on the compute pass's row lock: %v", err)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Errorf("commit: %v", err)
+		}
+	}
+	_, err := RunCompute(ctx, d, "1 month", false, false, scope)
+	computeBetweenPhasesHook = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flagged bool
+	var gross *float64
+	if err := pool.QueryRow(ctx, `SELECT recalc_needed, gross_production FROM golden.production_orders_runtime WHERE id_production_order = 40`).Scan(&flagged, &gross); err != nil {
+		t.Fatal(err)
+	}
+	if !flagged || gross != nil {
+		t.Fatalf("PO 40 (changed mid-pass): flag %v gross %v; want still flagged and not written from the stale snapshot", flagged, gross)
+	}
+	// The untouched closed row was applied in the same pass.
+	if err := pool.QueryRow(ctx, `SELECT gross_production FROM golden.production_orders_runtime WHERE id_production_order = 41`).Scan(&gross); err != nil {
+		t.Fatal(err)
+	}
+	if gross == nil || math.Abs(*gross-600) > 1e-9 {
+		t.Fatalf("PO 41 gross %v, want 600", gross)
+	}
+	// Next pass: PO 40 computed over its closed hour (60 min × 10).
+	if _, err := RunCompute(ctx, d, "1 month", false, false, scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT gross_production FROM golden.production_orders_runtime WHERE id_production_order = 40`).Scan(&gross); err != nil {
+		t.Fatal(err)
+	}
+	if gross == nil || math.Abs(*gross-600) > 1e-9 {
+		t.Fatalf("PO 40 gross after the next pass %v, want 600", gross)
+	}
+}
+
+// TestGoldenPOComputeSkipsARowAWriterHolds: a writer holds the open row (an
+// edge-api transaction in progress) for the whole pass. The pass must neither wait
+// for it nor fail: it applies every other row and leaves the held one flagged.
+func TestGoldenPOComputeSkipsARowAWriterHolds(t *testing.T) {
+	ctx, pool, d, done := shortLockSetup(t)
+	defer done()
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM golden.production_orders_runtime WHERE id_production_order = 40 FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := RunCompute(pctx, d, "1 month", false, false, LineLeadScope{Enterprises: []int{3}}); err != nil {
+		t.Fatalf("compute pass blocked on / failed over a row another writer holds: %v", err)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var f40, f41 bool
+	if err := pool.QueryRow(ctx, `SELECT
+	      (SELECT recalc_needed FROM golden.production_orders_runtime WHERE id_production_order = 40),
+	      (SELECT recalc_needed FROM golden.production_orders_runtime WHERE id_production_order = 41)`).Scan(&f40, &f41); err != nil {
+		t.Fatal(err)
+	}
+	if !f40 {
+		t.Error("held PO 40 lost its flag without being computed")
+	}
+	if !f41 { // closed < 48 h ago → the recent re-flag sets it again after Phase A cleared it
+		t.Error("PO 41 must be re-flagged by the 48 h tail")
+	}
+	var gross *float64
+	if err := pool.QueryRow(ctx, `SELECT gross_production FROM golden.production_orders_runtime WHERE id_production_order = 41`).Scan(&gross); err != nil {
+		t.Fatal(err)
+	}
+	if gross == nil || math.Abs(*gross-600) > 1e-9 {
+		t.Fatalf("PO 41 gross %v, want 600", gross)
+	}
+}
