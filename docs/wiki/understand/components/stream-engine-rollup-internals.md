@@ -75,7 +75,13 @@ Tables live in the analytics DB; the column definitions are in
   shift → area shift, day → week and month, equipment day → area day).
 - Late data therefore only reaches a grain if its row is still in a re-flag band, or if someone
   re-flags it (see [recomputing history](#recomputing-history-safely)).
-- A flag no pass can reach is cleared hourly by the `stranded-flag-sweep` job, with a WARN.
+- A flag no pass can reach is cleared hourly by the `stranded-flag-sweep` job, with a WARN
+  (`stranded recalc flags cleared`, table + sample keys). It covers every grain: PO runtimes and
+  headers past the PO window; shift past 30 days or `tp_equipment = 1` outside the machine-level
+  enterprises; hour past the backfill horizon or `tp = 1`; day past 1 month or `tp = 1`; week/month
+  past 1 year or `tp = 1`. Data invariant `O3_stranded_flags` counts the same rows (2-hour grace) and
+  must read 0. Until 2026-10-14 the sweep had no day/week/month statement, so 525 machine day rows
+  flagged by ops repair scripts stayed flagged for days with O3 green.
 - `RunHour`, `RunDay`, `RunShift` and the backfill each run in one transaction. If a statement fails
   or the 5-minute tick deadline hits, that pass rolls back and commits nothing; the other passes of
   the tick still run.
@@ -325,6 +331,9 @@ Use this after a code fix or a Silver repair. The full procedure is the runbook
    (one day per statement) and watch the shift ticks.
 4. **Only lines and sectors** (`tp_equipment > 1`) are recomputed at hour/day, plus machines of
    machine-level enterprises at shift. Flags on other rows are cleared by the stranded sweep.
+   A repair script that flags "every grain of an equipment" must restrict the day grain to
+   `tp_equipment > 1` (see `scripts/ops/repair-s2-stale-open-stops.sh`); a machine day row has no
+   rollup, so flagging it changes nothing.
 5. **Older than the windows**: re-flagging would run only the passes whose window still covers the
    row and leave a mixed state. Render the engine's own hour, shift and day passes widened to the
    repair horizon with `cmd/recompute-render`, and run them one day per transaction with

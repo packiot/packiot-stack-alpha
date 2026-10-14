@@ -121,8 +121,9 @@ for sp in "${SPANS[@]}"; do
               s AS (UPDATE gold.equipment_oee_shift SET recalc_needed = true
                      WHERE id_equipment = $eq AND ts_value < '$t' AND ts_end > '$f' AND ts_value >= '$fd'
                        AND recalc_needed IS NOT TRUE RETURNING 1),
-              d AS (UPDATE gold.equipment_oee_daily SET recalc_needed = true
+              d AS (UPDATE gold.equipment_oee_daily SET recalc_needed = true  -- day grain is tp>1 only (2026-10-14)
                      WHERE id_equipment = $eq AND ts_value >= '$fd' AND ts_value < '$t'
+                       AND id_equipment IN (SELECT id_equipment FROM core.equipments WHERE tp_equipment > 1)
                        AND recalc_needed IS NOT TRUE RETURNING 1),
               p AS (UPDATE gold.production_orders_runtime SET recalc_needed = true
                      WHERE id_equipment = $eq AND runtime_timerange && tstzrange('$f', '$t') AND recalc_needed IS NOT TRUE RETURNING 1)
