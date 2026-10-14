@@ -29,8 +29,10 @@ Wiki guides (keep them in step with this runbook): testers
 3. **When the grace period ends** (checked every 5 min), it resets itself: config, POs,
    events, justifications and manual events become CPACK staging again, **barcode box scans
    and box counters are deleted** (label numbering restarts at 1 per PO), the hold is
-   released, and CPACK's actions are copied in live again. Sample labels
-   (`bronze.sample_boxes`) and out-of-service windows are not reset.
+   released, and CPACK's actions are copied in live again. From 2026-10-14, after migration
+   `t-sandbox-heal-reset-samples-oos` is applied, sample labels (`bronze.sample_boxes`) and
+   out-of-service windows (`config.equipment_out_of_service`) are reset too: the sandbox's are
+   deleted and CPACK's are copied in with the twin ids (none on CPACK ⇒ none in the sandbox).
 
 Only changes count, including barcode scans and sample labels (they go through edge-api).
 Looking at pages (lists, reads, reports) does not hold or extend anything.
