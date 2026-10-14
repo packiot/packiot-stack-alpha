@@ -1817,7 +1817,10 @@ services:
     build: ./services/stream-engine
     container_name: stream-engine
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env holds the admin POSTGRES_USER/POSTGRES_PASSWORD, the broker admin RABBITMQ_* and every
+    # other service's secrets. The engine's own tuning keys that live in .env (CPAC_EVENT_*, …) are passed
+    # through explicitly at the end of `environment:` (${KEY:-} = unchanged when .env does not set it: the
+    # code treats "" as unset). Enforced by scripts/ci/check-db-least-priv.py.
     environment:
       LOG_LEVEL: info
       # F2 comparator retired: the shadow_go_port schema was DROPPED when F3
@@ -1909,14 +1912,17 @@ services:
       # least-privilege perms (own topology only, no admin reach, no
       # access to oeecloud-q). EC2 IAM role grants packiot/staging/*.
       AWS_REGION: us-east-1
-      PG_SECRET_ID: packiot/staging/db
-      CREDS_SOURCE: env
-      # CREDS_SOURCE=env above is for the DB only. Without this override the
-      # AMQP side would also read RABBITMQ_USER/RABBITMQ_PASSWORD from .env —
-      # the broker ADMIN (same value as RABBITMQ_DEFAULT_USER). Pin AMQP to the
-      # least-privilege `stream-engine` user in RABBITMQ_SECRET_ID (permissions:
-      # monitoring/rabbitmq/definitions.template.json). Guarded in CI by
-      # scripts/ci/check-amqp-least-priv.py.
+      # DB login = the least-privilege `stream_engine` role (db/migrations/t-stream-engine-role:
+      # table-level DML on its own tables, TEMP, sequence USAGE, EXECUTE on the INVOKER engine
+      # functions; no DDL/TRUNCATE; NOBYPASSRLS with role default app.tenant_id=-1 because the engine
+      # is cross-tenant), NOT the admin ${POSTGRES_USER}. Creds {host,port,user,password,name} from
+      # Secrets Manager (CREDS_SOURCE unset). PROVISION FIRST (services/stream-engine/README.md
+      # § Provisioning the DB role) — a deploy before that exits at boot. EMERGENCY ROLLBACK without
+      # a redeploy: STREAM_ENGINE_PG_SECRET_ID=packiot/staging/db in /opt/packiot/.env + recreate.
+      PG_SECRET_ID: ${STREAM_ENGINE_PG_SECRET_ID:-packiot/staging/stream-engine-db-creds}
+      # Pin AMQP to the least-privilege `stream-engine` broker user in RABBITMQ_SECRET_ID (permissions:
+      # monitoring/rabbitmq/definitions.template.json), never RABBITMQ_USER/PASSWORD (the broker
+      # ADMIN). Guarded in CI by scripts/ci/check-amqp-least-priv.py.
       AMQP_CREDS_SOURCE: aws
       # DIRECT to the DB EC2 (NOT via the `pgbouncer` service) — deliberate.
       # The analytics/rollup pool (db.NewForDatabase → `oeecloud-worker-analytics`,
@@ -1935,12 +1941,8 @@ services:
       # from the worker's OWN caps below (main 5 + analytics 15 = ≤20 direct
       # conns ≈ pgbouncer default_pool_size), so it is self-bounded without the
       # proxy. Reversible: to move a future session-safe pool behind the proxy,
-      # set DB_HOST: pgbouncer.
-      DB_HOST: "10.10.10.89"
-      DB_PORT: "5432"
-      DB_USER: "${POSTGRES_USER}"
-      DB_PASSWORD: "${POSTGRES_PASSWORD}"
-      DB_NAME: packiot_analytics
+      # put a pgbouncer host in the secret. The secret's host is the DB EC2 (10.10.10.89),
+      # db packiot_analytics (the same login serves both pools).
       # Explicit worker-side connection caps (were relying on code defaults 5/15).
       # Making them a visible contract so a future default change can't silently
       # uncap the heaviest DB consumer. Values == current live defaults, so this
@@ -2215,6 +2217,55 @@ services:
     # there is no host-port collision. Prefer running the pool on separate app
     # hosts in real deployments; multiple replicas on ONE host share its CPU
     # budget and give failover + tenant spread but not more total CPU.
+      # ── .env pass-through (env_file removed) ─────────────────────────────────────────────────
+      # Every key the engine reads (internal/config/config.go, tracing) that is NOT set above, so a value
+      # an operator put in /opt/packiot/.env (e.g. CPAC_EVENT_ENTERPRISES, ROLLUP_MACHINE_LEVEL_ENTERPRISES)
+      # still reaches it. ${KEY:-} → "" when absent, which the code treats as unset (code default).
+      # Deliberately NOT passed: DB_*/POSTGRES_* and RABBITMQ_USER/PASSWORD (admin logins).
+      AVAILABILITY_EXCLUSIONS_ENABLED: ${AVAILABILITY_EXCLUSIONS_ENABLED:-}
+      BAKE_ENTERPRISE_IDS: ${BAKE_ENTERPRISE_IDS:-}
+      BIRTHBIND_VERIFY: ${BIRTHBIND_VERIFY:-}
+      BIRTHBOUND_SWITCHED_ENTERPRISES: ${BIRTHBOUND_SWITCHED_ENTERPRISES:-}
+      BOXES13_INTERVAL_MINUTES: ${BOXES13_INTERVAL_MINUTES:-}
+      CHANGEOVER_AVAILABILITY_ENABLED: ${CHANGEOVER_AVAILABILITY_ENABLED:-}
+      COUNTER_TOTALS_PUBLIC: ${COUNTER_TOTALS_PUBLIC:-}
+      CPAC_EVENT_DERIVATION_ENABLED: ${CPAC_EVENT_DERIVATION_ENABLED:-}
+      CPAC_EVENT_DERIVATION_INTERVAL_MINUTES: ${CPAC_EVENT_DERIVATION_INTERVAL_MINUTES:-}
+      CPAC_EVENT_ENTERPRISES: ${CPAC_EVENT_ENTERPRISES:-}
+      CPAC_EVENT_TARGET_TABLE: ${CPAC_EVENT_TARGET_TABLE:-}
+      CPAC_STOP_THRESHOLD_DEFAULT_SEC: ${CPAC_STOP_THRESHOLD_DEFAULT_SEC:-}
+      DQ_ALARMS_ENABLED: ${DQ_ALARMS_ENABLED:-}
+      EVENTS_CLOSE_STALE_HORIZON_HOURS: ${EVENTS_CLOSE_STALE_HORIZON_HOURS:-}
+      EVENTS_CLOSE_STALE_INTERVAL_SEC: ${EVENTS_CLOSE_STALE_INTERVAL_SEC:-}
+      EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS: ${EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS:-}
+      EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC: ${EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC:-}
+      EVENTS_DERIVER_INTERVAL_MINUTES: ${EVENTS_DERIVER_INTERVAL_MINUTES:-}
+      EVENTS_EXCLUDED_AREAS: ${EVENTS_EXCLUDED_AREAS:-}
+      EVENTS_EXCLUDED_ENTERPRISES: ${EVENTS_EXCLUDED_ENTERPRISES:-}
+      INCREMENT_SANITY_CLAMP_K: ${INCREMENT_SANITY_CLAMP_K:-}
+      INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS: ${INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS:-}
+      INCREMENT_SANITY_CLAMP_SPIKE_FLOOR: ${INCREMENT_SANITY_CLAMP_SPIKE_FLOOR:-}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-}
+      PO_RECALC_EXCLUDED_ENTERPRISES: ${PO_RECALC_EXCLUDED_ENTERPRISES:-}
+      PO_RECALC_INTERVAL_MINUTES: ${PO_RECALC_INTERVAL_MINUTES:-}
+      PO_RECALC_WINDOW: ${PO_RECALC_WINDOW:-}
+      PO_RECOMPUTE_SWEEP_HOURS: ${PO_RECOMPUTE_SWEEP_HOURS:-}
+      PROVISIONAL_SPEED_EQUIPMENTS: ${PROVISIONAL_SPEED_EQUIPMENTS:-}
+      PROVISIONAL_SPEED_FLOOR: ${PROVISIONAL_SPEED_FLOOR:-}
+      PROVISIONAL_SPEED_INFERENCE_ENABLED: ${PROVISIONAL_SPEED_INFERENCE_ENABLED:-}
+      PROVISIONAL_SPEED_MIN_MINUTES: ${PROVISIONAL_SPEED_MIN_MINUTES:-}
+      PROVISIONAL_SPEED_PERCENTILE: ${PROVISIONAL_SPEED_PERCENTILE:-}
+      PROVISIONAL_SPEED_WINDOW_HOURS: ${PROVISIONAL_SPEED_WINDOW_HOURS:-}
+      ROLLUP_MACHINE_LEVEL_ENTERPRISES: ${ROLLUP_MACHINE_LEVEL_ENTERPRISES:-}
+      RUNTIME_PROVISION_INTERVAL_HOURS: ${RUNTIME_PROVISION_INTERVAL_HOURS:-}
+      SAP13_CUSTOMER_ID: ${SAP13_CUSTOMER_ID:-}
+      SHIFT06_CUSTOMER_ID: ${SHIFT06_CUSTOMER_ID:-}
+      SILVER_CLAMP_ENABLED: ${SILVER_CLAMP_ENABLED:-}
+      STRANDED_FLAG_SWEEP_ENABLED: ${STRANDED_FLAG_SWEEP_ENABLED:-}
+      SYNC06_ENTERPRISE_ID: ${SYNC06_ENTERPRISE_ID:-}
+      SYNC06_INTERVAL_MINUTES: ${SYNC06_INTERVAL_MINUTES:-}
+      UNS_CURRENT_METRICS_INTERVAL_MINUTES: ${UNS_CURRENT_METRICS_INTERVAL_MINUTES:-}
+      UNS_INTERVAL_MINUTES: ${UNS_INTERVAL_MINUTES:-}
     deploy:
       replicas: ${OEECLOUD_WORKER_REPLICAS:-1}
     networks:

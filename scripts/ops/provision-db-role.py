@@ -23,6 +23,7 @@ postgres:15-alpine on the stack network.
   provision-db-role.py --service barcode-service --check         # verify only (steps 1 + 4)
   provision-db-role.py --service barcode-service --rotate        # new password; then recreate the service
   provision-db-role.py --service barcode-service --env production --db-host <h> --admin-host <h>
+  (services: operator-gateway, barcode-service, stream-engine)
 """
 import argparse
 import base64
@@ -50,6 +51,11 @@ ROLES = {
         "role": "barcode_service",
         "staging_host": "pgbouncer",   # unchanged path; pgbouncer auth_query + SCRAM pass-through (as readapi_ro)
         "settings": {"statement_timeout": "30s"},
+    },
+    "stream-engine": {
+        "role": "stream_engine",
+        "staging_host": STAGING_DB_HOST,   # direct: session advisory locks + SET (see compose.staging.yml)
+        "settings": {"app.tenant_id": "-1"},   # cross-tenant engine: the all-tenant RLS sentinel
     },
 }
 

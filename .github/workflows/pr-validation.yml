@@ -49,7 +49,7 @@ jobs:
 
       - name: AMQP least privilege (no broker admin creds; stream-engine perms cover its topology)
         run: scripts/ci/check-amqp-least-priv.py
-      - name: DB least privilege (operator-gateway, barcode-service log in as their own roles; analytics-sync has no DB login)
+      - name: DB least privilege (operator-gateway, barcode-service, stream-engine log in as their own roles; analytics-sync has no DB login)
         run: scripts/ci/check-db-least-priv.py
       - name: No literal read-api keys (QUERY_API_KEYS / REFDATA_API_KEY from env only)
         # refdata is public: a committed key == tenant data. In this required job on
