@@ -1190,12 +1190,18 @@ services:
     container_name: operator-gateway
     profiles: ["client-ingest"]  # GATED: needs OPERATOR_API_KEY + a bespoke-operator client — starts only when a client is onboarded (--profile client-ingest)
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env holds the admin POSTGRES_USER/POSTGRES_PASSWORD (and every other service's
+    # secrets); `environment:` below names the few values this service reads (${...} still interpolates
+    # from the project .env). Enforced by scripts/ci/check-db-least-priv.py.
     environment:
       PORT: "8443"
       EDGE_API_URL: http://edge-api:8080
       AWS_REGION: us-east-1
-      PG_SECRET_ID: packiot/production/db
+      # Least-privilege `operator_gateway` login (db/migrations/t-operator-gateway-role),
+      # NOT the admin packiot/production/db. Provision the role + this secret before
+      # starting the profile (services/operator-gateway/README.md § Provisioning the DB role).
+      # CI: scripts/ci/check-db-least-priv.py rejects admin creds here.
+      PG_SECRET_ID: ${OPERATOR_GATEWAY_PG_SECRET_ID:-packiot/production/operator-gateway-db-creds}
       # The prod client's enterprise id + topic prefix (code env keys are the
       # legacy INCOPLAST_* names; values are the prod client's). # FILL AT DEPLOY
       INCOPLAST_ENTERPRISE_ID: ${OPERATOR_ADAPTER_ENTERPRISE_ID:-}

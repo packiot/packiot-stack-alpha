@@ -33,7 +33,7 @@ the client's parameter encoding.
 | Container (staging) | `operator-gateway`, alias `operator-adapter`, IP `172.18.0.30` |
 | Port | `8443` TLS only (refuses plaintext); host publish `127.0.0.1:8445` (loopback only, no security-group ingress) |
 | TLS | cert and key mounted from `/opt/packiot/operator-adapter/certs` on the host |
-| DB | small pool (max 3 conns) to `packiot_analytics`, direct to the DB host on staging, used only for topic resolution (SELECT) |
+| DB | small pool (max 3 conns) to `packiot_analytics` as the least-privilege `operator_gateway` role, direct to the DB host on staging, used only for topic resolution (SELECT, tenant-stamped for RLS) |
 | Downstream | `http://edge-api:8080`, 10 s client timeout |
 | Tenant | one enterprise per instance: `INCOPLAST_ENTERPRISE_ID=4`, `INCOPLAST_TOPIC_PREFIX=INCOPLAST` |
 | Depends on | edge-api, pgbouncer/DB, Secrets Manager (unless `CREDS_SOURCE=env`) |
@@ -73,7 +73,8 @@ telemetry path.
      2. scope: body.enterprise == INCOPLAST_ENTERPRISE_ID
                OR topic starts with INCOPLAST_TOPIC_PREFIX                     → 403
      3. resolve packml_topic → (id_equipment, cd_equipment, id_area, id_site)
-        SELECT … FROM packml_register p JOIN equipments JOIN areas JOIN sites
+        as role operator_gateway, in a READ ONLY tx after set_config('app.tenant_id', $ent, true) (RLS):
+        SELECT … FROM core.topic_routing p JOIN equipments JOIN areas JOIN sites
          WHERE p.packml_topic = $1 AND p.active AND s.id_enterprise = $ent LIMIT 2
         unknown / inactive / cross-tenant / ambiguous (2 rows)                → 422
         DB error                                                              → 503
@@ -110,10 +111,9 @@ adds metadata). edge-api writes the analytics DB directly; the gateway never tou
 | `INCOPLAST_ENTERPRISE_ID` | — (required) | `4` | Tenant scope |
 | `INCOPLAST_TOPIC_PREFIX` | empty | `INCOPLAST` | Second scope gate |
 | `EDGE_API_URL` | `http://edge-api:8080` | same | Downstream |
-| `PG_SECRET_ID`, `AWS_REGION` | `packiot/staging/db`, `us-east-1` | same | Resolver creds from Secrets Manager |
-| `CREDS_SOURCE` | Secrets Manager | `env` | `env` → `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` |
-| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` | from secret | DB host direct, 5432, `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` | Resolver connection |
-| `DB_NAME` | from secret | `packiot_analytics` | Resolver DB |
+| `PG_SECRET_ID`, `AWS_REGION` | `packiot/staging/db`, `us-east-1` | `packiot/staging/operator-gateway-db-creds` (override: `OPERATOR_GATEWAY_PG_SECRET_ID`), `us-east-1` | Resolver creds (`operator_gateway` role) from Secrets Manager |
+| `CREDS_SOURCE` | Secrets Manager | unset (dev: `env`) | `env` → `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | from secret | from secret: `10.10.10.89`, 5432, `operator_gateway`, —, `packiot_analytics` | Resolver connection; never the admin `POSTGRES_*` (CI `check-db-least-priv.py`) |
 | `PORT` | `8443` | `8443` | TLS port |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | — (required) | mounted certs | Refuses to start without them |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | `http://tempo:4317` | Tracing (exemplar service for the rollout) |

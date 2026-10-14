@@ -33,6 +33,7 @@ copied once into a file on the host (`/opt/packiot/.env`, `/root/.gitconfig`) by
 | `packiot/staging/app` → `edge_session_broker_token` | edge-api ↔ edge-session-broker shared token (≥ 32 chars) | materialized into `.env` every deploy; the broker refuses to start without it |
 | `packiot/staging/db` | Database logins | `.env` |
 | `packiot/staging/rabbitmq-*-creds` | Decoder, stream-engine, clients | Generated RabbitMQ definitions at deploy |
+| `packiot/staging/operator-gateway-db-creds` | operator-gateway (`operator_gateway` DB role) | Read by the service at boot (`PG_SECRET_ID`); the role's password is set from it by `scripts/ops/provision-operator-gateway-db-role.py` (`--rotate`, then recreate the container; [README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/operator-gateway/README.md#provisioning-the-db-role)) |
 | `packiot/staging/historian-svc`, `historian-gateway-s3` | historian-gateway | `.env` / deploy step |
 | `packiot/staging/agent-ingest` | sparkplug-agent ingest key | `.env` |
 | `packiot/staging/github-pat` | The deploy runner's git (submodule fetch) | `/root/.gitconfig` `insteadOf` rule, written once by `app_init.sh` |

@@ -300,7 +300,7 @@ Detail: [read-api](../understand/components/read-api.md).
 | `operator-gateway` | `PORT`, `TLS_CERT_FILE`, `TLS_KEY_FILE` | `8443`, host certs | TLS listener |
 | | `EDGE_API_URL`, `EDGE_API_KEY`, `OPERATOR_API_KEY` | `http://edge-api:8080`, `OPERATOR_EDGE_API_KEY` and `OPERATOR_API_KEY` from `.env` | forwards Incoplast operator writes |
 | | `INCOPLAST_ENTERPRISE_ID`, `INCOPLAST_TOPIC_PREFIX` | `4`, `INCOPLAST` | tenant scope |
-| | `PG_SECRET_ID`, `CREDS_SOURCE`, `DB_*` | `packiot/staging/db`, `env`, `10.10.10.89`/`packiot_analytics` | DB |
+| | `PG_SECRET_ID` | `${OPERATOR_GATEWAY_PG_SECRET_ID:-packiot/staging/operator-gateway-db-creds}` (Secrets Manager; `CREDS_SOURCE` unset, no `env_file`) | DB login as the least-privilege `operator_gateway` role (`10.10.10.89`/`packiot_analytics`); never the admin `POSTGRES_*` (CI `check-db-least-priv.py`). Provisioning: [operator-gateway README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/operator-gateway/README.md#provisioning-the-db-role) |
 | | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://tempo:4317` | traces |
 | `barcode-service` | `DB_HOST`/`PORT`/`USER`/`PASSWORD`/`NAME` | `pgbouncer`, `packiot_analytics` | DB |
 | | `HTTP_PORT`, `LOG_LEVEL` | `8446`, `info` | `/v1/scans` |

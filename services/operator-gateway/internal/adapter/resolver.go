@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -133,30 +135,57 @@ func (r *PGResolver) ResolveTopic(ctx context.Context, packmlTopic string) (Reso
 	return res, nil
 }
 
-// queryEquipment runs the parameterised join. The cross-tenant guard is inline
-// in the WHERE clause (s.id_enterprise = $2): a topic that belongs to another
-// tenant simply returns no rows, so it can never resolve to the wrong
-// enterprise's equipment. `p.active` gates on the CS-Admin activation flag
-// oeecloud also honours. LIMIT 2 lets us detect ambiguity (a topic mapped to >1
-// active row) and fail closed rather than silently pick one.
+// resolverSQL is the resolver's only statement. Every name is schema-qualified
+// so the role's search_path does not matter.
+//
+// The cross-tenant guard is inline in the WHERE clause (s.id_enterprise = $2):
+// a topic that belongs to another tenant simply returns no rows, so it can never
+// resolve to the wrong enterprise's equipment. `p.active` gates on the CS-Admin
+// activation flag oeecloud also honours. LIMIT 2 lets us detect ambiguity (a
+// topic mapped to >1 active row) and fail closed rather than silently pick one.
+//
+// It reads core.topic_routing (the table behind the compat view of the old name)
+// so the operator_gateway role needs only the columns listed here: a
+// security_invoker view would need SELECT on every base-table column.
+// db/migrations/t-operator-gateway-role/01-up.sql grants exactly these columns;
+// a new column here needs a grant there first (the golden test fails otherwise).
 //
 // Column provenance (verified against edge-api/schema.sql):
 //   - equipments has cd_equipment (NOT cd_machine) — that is the equipment code
 //     edge-api stores as equipment_events.cd_machine, so it is the CDMachine.
-//   - packml_register.id_equipment → equipments.id_equipment → id_area → id_site.
-func queryEquipment(ctx context.Context, pool *pgxpool.Pool, topic string, enterpriseID int) (Resolved, bool, error) {
-	const q = `
+//   - topic_routing.id_equipment → equipments.id_equipment → id_area → id_site.
+const resolverSQL = `
 		SELECT e.id_equipment, e.cd_equipment, e.id_area, a.id_site
-		  FROM packml_register p
-		  JOIN equipments e ON e.id_equipment = p.id_equipment
-		  JOIN areas a      ON a.id_area      = e.id_area
-		  JOIN sites s      ON s.id_site      = a.id_site
+		  FROM core.topic_routing p
+		  JOIN core.equipments e ON e.id_equipment = p.id_equipment
+		  JOIN core.areas a      ON a.id_area      = e.id_area
+		  JOIN core.sites s      ON s.id_site      = a.id_site
 		 WHERE p.packml_topic = $1
 		   AND p.active
 		   AND s.id_enterprise = $2
 		 LIMIT 2
 	`
-	rows, err := pool.Query(ctx, q, topic, enterpriseID)
+
+// queryEquipment runs resolverSQL in a READ ONLY transaction that first stamps
+// app.tenant_id (transaction-local) with the instance's enterprise.
+// core.topic_routing and core.equipments are FORCE ROW LEVEL SECURITY keyed on
+// that GUC, and the operator_gateway role is NOBYPASSRLS: without the stamp RLS
+// returns 0 rows and every topic 422s. set_config(..., true) ends with the
+// transaction, so it is safe under pgbouncer transaction pooling (same
+// primitive as read-api's runQueryJSON). The WHERE fence stays primary; RLS is
+// the backstop. Under a superuser login the stamp is a harmless no-op.
+func queryEquipment(ctx context.Context, pool *pgxpool.Pool, topic string, enterpriseID int) (Resolved, bool, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Resolved{}, false, err
+	}
+	// Rollback after Commit is a no-op; on every early return it ends the tx.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.tenant_id', $1, true)", strconv.Itoa(enterpriseID)); err != nil {
+		return Resolved{}, false, fmt.Errorf("stamp tenant: %w", err)
+	}
+	rows, err := tx.Query(ctx, resolverSQL, topic, enterpriseID)
 	if err != nil {
 		return Resolved{}, false, err
 	}
@@ -170,7 +199,7 @@ func queryEquipment(ctx context.Context, pool *pgxpool.Pool, topic string, enter
 	for rows.Next() {
 		count++
 		if count > 1 {
-			// Ambiguous: >1 active packml_register row for this topic under the
+			// Ambiguous: >1 active route row for this topic under the
 			// tenant. Fail closed — we cannot know which equipment was meant.
 			return Resolved{}, false, nil
 		}
@@ -179,6 +208,10 @@ func queryEquipment(ctx context.Context, pool *pgxpool.Pool, topic string, enter
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return Resolved{}, false, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
 		return Resolved{}, false, err
 	}
 	if count == 0 {
