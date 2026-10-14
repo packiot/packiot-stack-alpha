@@ -86,6 +86,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
@@ -340,7 +342,12 @@ WITH scope AS (
 // %[3]s = target table (aliased `ev` = %[4]s below). IDEMPOTENT on
 // (id_equipment, ts_event). The DO UPDATE WHERE and the NOT EXISTS both enforce
 // the never-clobber-a-human-edit invariant.
-const cpacUpsertSQL = cpacTransitionsCTE + `
+const cpacUpsertSQL = cpacTransitionsCTE + cpacUpsertApply
+
+// cpacUpsertApply is the DML half of cpacUpsertSQL: everything after the CTE.
+// RunOnceCPAC runs it behind cpacSnapshotFinal (the same `final` rows, read by
+// cpacReadSQL in the same transaction) so the INSERT never plans the cagg read.
+const cpacUpsertApply = `
 INSERT INTO %[1]s.%[3]s AS ev
        (ts_event, ts_end, id_equipment, status, id_enterprise, duration, forced_creation_system)
 SELECT f.ts_event, f.ts_end, f.id_equipment, f.status, f.id_enterprise, f.duration, false
@@ -373,7 +380,10 @@ const humanCoverPred = `(h.forced_creation_system IS TRUE
 // cpacCorrectSQL removes stale DERIVED rows (last 1 day) that the recomputed
 // stream no longer supports — but NEVER a human-touched row (the guard is a
 // STRICT widening of deriver.go's forced_creation_system-only guard).
-const cpacCorrectSQL = cpacTransitionsCTE + `
+const cpacCorrectSQL = cpacTransitionsCTE + cpacCorrectApply
+
+// cpacCorrectApply is the DML half of cpacCorrectSQL (see cpacUpsertApply).
+const cpacCorrectApply = `
 DELETE FROM %[1]s.%[3]s ev
  WHERE ev.ts_event > now() - interval '1 day'
    AND ev.id_enterprise = ANY($1)
@@ -430,10 +440,59 @@ func fmtCPACFull(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string
 	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leads, act, link, guard, arms)
 }
 
+// cpacReadSQL is the derivation as a plain SELECT: the transition stream
+// (`final`) serialized as one jsonb array. It is the ONLY statement that reads
+// the real-time categorical cagg.
+//
+// WHY A SEPARATE SELECT (2026-10-14, staging): TimescaleDB constifies a real-time
+// cagg's watermark only when planning a SELECT. Inside INSERT/DELETE the
+// watermark stays a runtime cagg_watermark() call, so the planner prices the
+// raw-tail branch at every equipment_values chunk (239–457 M rows instead of
+// ~1 k). Under such absurd estimates, a small change in the scope estimate (RLS on
+// core.equipments when the job moved to the stream_engine role, #1743) flipped
+// the upsert from a Merge Join to a Nested Loop over a materialized 157 k-row
+// cagg read: 62 × 157 k join-filter evaluations per tick. That is pure CPU, with
+// no wait event and FEWER buffers: the upsert went from 1.3 s to 14 s, and the
+// correct pass, which had planned that way all along, took 12–21 s. Read once as a
+// SELECT, the same rows cost 1–3 s and may run in parallel.
+const cpacReadSQL = cpacTransitionsCTE + `
+SELECT COALESCE(jsonb_agg(jsonb_build_object(
+           'ts_event', f.ts_event, 'ts_end', f.ts_end, 'id_equipment', f.id_equipment,
+           'status', f.status, 'id_enterprise', f.id_enterprise, 'duration', f.duration)),
+       '[]'::jsonb)::text
+  FROM final f`
+
+// cpacSnapshotFinal rebuilds `final` from cpacReadSQL's jsonb (%[11]s = the
+// placeholder that carries it). jsonb keeps numeric and µs timestamptz exact, so
+// the apply statements see the very rows the read computed. Column types match
+// final's: the ids come from equipments (int), status is an int literal, and
+// duration is extract(epoch …), which is numeric.
+const cpacSnapshotFinal = `
+WITH final AS (
+    SELECT f.ts_event, f.ts_end, f.id_equipment, f.status, f.id_enterprise, f.duration
+      FROM jsonb_to_recordset(%[11]s::jsonb)
+           AS f(ts_event timestamptz, ts_end timestamptz, id_equipment int,
+                status int, id_enterprise int, duration numeric)
+)`
+
+// cpacApplySQL formats an apply half (cpacUpsertApply / cpacCorrectApply) behind
+// cpacSnapshotFinal; jsonParam is the placeholder that carries the snapshot.
+func cpacApplySQL(apply, evSchema, refSchema, table, rowAlias, silverSchema, jsonParam string) string {
+	return fmt.Sprintf(cpacSnapshotFinal+apply, evSchema, refSchema, table, rowAlias, silverSchema,
+		"", "", "", "", "", jsonParam)
+}
+
 // RunOnceCPAC derives CPAC stops for one destination: correct (delete stale),
 // then upsert. Both passes share the SAME scope + human-edit guards so a minted
 // row always has a co-scoped cleaner (never an orphan open row — the
 // int-overflow class from the EventMint↔deriver scope-mismatch bug).
+//
+// One transaction, three statements: the derivation is read ONCE as a SELECT
+// (cpacReadSQL), then the unchanged correct and upsert DML apply that snapshot.
+// now() is the transaction's start time, so both passes see one `final` at one
+// instant. The old code computed it twice, ~20 s apart. The DML reads only the
+// target table, so its row locks are held for milliseconds, not for the
+// derivation.
 func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted int64, err error) {
 	table := cfg.TargetTable
 	if table == "" {
@@ -443,13 +502,36 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 	if thr <= 0 {
 		thr = 300
 	}
-	del, err := d.Pool.Exec(ctx, fmtCPACFull(cpacCorrectSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth), cfg.Enterprises, thr)
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("cpac begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	if deleted, upserted, err = runCPACTx(ctx, tx, d, cfg, table, thr); err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("cpac commit: %w", err)
+	}
+	return deleted, upserted, nil
+}
+
+// runCPACTx is RunOnceCPAC's body inside a caller-owned transaction (the golden
+// test runs it and the old two-statement path in ONE transaction, so both see
+// the same now()).
+func runCPACTx(ctx context.Context, tx pgx.Tx, d Dest, cfg CPACConfig, table string, thr int) (deleted, upserted int64, err error) {
+	var snapshot string
+	if err := tx.QueryRow(ctx, fmtCPACFull(cpacReadSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth),
+		cfg.Enterprises, thr).Scan(&snapshot); err != nil {
+		return 0, 0, fmt.Errorf("cpac derive: %w", err)
+	}
+	del, err := tx.Exec(ctx, cpacApplySQL(cpacCorrectApply, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, "$2"), cfg.Enterprises, snapshot)
 	if err != nil {
 		return 0, 0, fmt.Errorf("cpac correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmtCPACFull(cpacUpsertSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth), cfg.Enterprises, thr)
+	ups, err := tx.Exec(ctx, cpacApplySQL(cpacUpsertApply, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, "$1"), snapshot)
 	if err != nil {
-		return del.RowsAffected(), 0, fmt.Errorf("cpac upsert pass: %w", err)
+		return 0, 0, fmt.Errorf("cpac upsert pass: %w", err)
 	}
 	return del.RowsAffected(), ups.RowsAffected(), nil
 }
