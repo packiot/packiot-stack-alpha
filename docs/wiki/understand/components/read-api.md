@@ -110,8 +110,11 @@ exempt classes (infra, external shims, internal):
    active. Any failure silently keeps the home tenant.
 
 The resolved enterprise (`customer_id`) goes into the request context. The verified user's
-`id_user_role` is kept too; the two role datasets (`entities-per-user-role`,
-`menu-per-user-role`) return 403 on the api-key path because they need a user.
+`id_user_role` is kept too; the three role datasets (`entities-per-user-role`,
+`menu-per-user-role`, `user-roles`) return only the caller's role and return 403 on
+the api-key path (or for a user without a role) because they need a user. The
+tenant-wide role list for the Settings admin screen comes from edge-api
+`GET /api/user-roles`, not from read-api.
 
 ### Tenant fence, twice
 

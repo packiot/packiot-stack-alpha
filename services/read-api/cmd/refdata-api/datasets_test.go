@@ -388,3 +388,35 @@ func TestSoftDeletedEntitiesAreFiltered(t *testing.T) {
 		}
 	}
 }
+
+// TestUserRolesIsCallerRoleOnly is the regression for the 2026-10-13 bug:
+// `user-roles` returned EVERY role of the tenant (no ORDER BY, no caller
+// filter) and front4's bootstrap took `[0]` as the session's permissions, so on
+// a tenant with ≥2 roles a user could get an arbitrary role's screen/line/
+// Settings/write grants. It must bind the caller's server-derived role at $2,
+// refuse a client-supplied role, fail closed without a user axis, and be
+// advertised as requires_user_context in the catalog.
+func TestUserRolesIsCallerRoleOnly(t *testing.T) {
+	sql, args, err := compileDataset(datasetReq{Dataset: "user-roles"}, 42, callerRole{id: 55, present: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "id_enterprise = $1 AND id_user_role = $2") {
+		t.Errorf("user-roles must be fenced to tenant $1 AND the caller's role $2:\n%s", sql)
+	}
+	if len(args) != 2 || args[0] != 42 || args[1] != 55 {
+		t.Errorf("args = %v, want [tenant 42, caller role 55]", args)
+	}
+	// The role is never a client filter.
+	if _, _, err := compileDataset(datasetReq{Dataset: "user-roles",
+		Filters: map[string]json.RawMessage{"id_user_role": json.RawMessage(`1`)}}, 42, callerRole{id: 55, present: true}); err == nil {
+		t.Error("user-roles accepted a client-supplied role filter")
+	}
+	// No user axis (X-Api-Key, role-less user) ⇒ 403, never the tenant-wide list.
+	if _, _, err := compileDataset(datasetReq{Dataset: "user-roles"}, 42, callerRole{}); err != errRoleDatasetNeedsUser {
+		t.Errorf("user-roles without a caller role: err=%v, want errRoleDatasetNeedsUser", err)
+	}
+	if e, _ := datasetCatalog()["user-roles"].(map[string]any); e == nil || e["requires_user_context"] != true {
+		t.Errorf("catalog must flag user-roles requires_user_context: %v", e)
+	}
+}
