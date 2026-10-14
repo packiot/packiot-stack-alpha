@@ -22,8 +22,11 @@ services:
       CREDS_SOURCE: env
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # least-privilege role (db/migrations/t-stream-engine-role), as staging; the dev seed gives every login
+      # role the password "dev". Seeds built before the role exists get it from base.yml's 70-service-roles
+      # init hook (fresh volume: make dev-reset).
+      DB_USER: stream_engine
+      DB_PASSWORD: ${DEV_STREAM_ENGINE_DB_PASSWORD:-dev}
       DB_NAME: packiot_analytics
       POSTGRES_ANALYTICS_DB_NAME: packiot_analytics
       POSTGRES_MAX_CONNS: "5"

@@ -40,10 +40,13 @@ COMPOSE_FILES = {
     "dev/compose.yml": ["--env-file", str(ROOT / "dev/.env.dev")],
 }
 
-# service → (its DB role, the compose files it must appear in)
+# service → (its DB role, the compose files it must appear in and is checked in)
 SERVICES = {
     "operator-gateway": ("operator_gateway", list(COMPOSE_FILES)),
     "barcode-service": ("barcode_service", ["compose.staging.yml", "dev/compose.yml"]),  # not in production yet
+    # production still runs the pre-split `public` layout as packiot/production/db; its role comes with the
+    # production promotion (services/stream-engine/README.md § Database role)
+    "stream-engine": ("stream_engine", ["compose.staging.yml", "dev/compose.yml"]),
 }
 
 # service → (the env flag that would make it connect, the compose files it must appear in)
@@ -84,9 +87,10 @@ def default_of(value):
 for path, extra in COMPOSE_FILES.items():
     services = compose(path, extra)
     for name, (role, required_in) in SERVICES.items():
+        if path not in required_in:
+            continue
         if name not in services:
-            if path in required_in:
-                errors.append(f"{path}: service {name} not found (renamed? update SERVICES in {__file__})")
+            errors.append(f"{path}: service {name} not found (renamed? update SERVICES in {__file__})")
             continue
         svc = services[name]
         env = env_of(svc)

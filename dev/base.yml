@@ -37,6 +37,7 @@ services:
       - ./seed/70-service-roles.sh:/docker-entrypoint-initdb.d/70-service-roles.sh:ro
       - ../db/migrations/t-operator-gateway-role:/devseed-migrations/t-operator-gateway-role:ro
       - ../db/migrations/t-barcode-service-role:/devseed-migrations/t-barcode-service-role:ro
+      - ../db/migrations/t-stream-engine-role:/devseed-migrations/t-stream-engine-role:ro
     shm_size: 256m
     healthcheck:
       # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary
