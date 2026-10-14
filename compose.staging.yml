@@ -3104,7 +3104,9 @@ services:
     build: ./services/operator-gateway
     container_name: operator-gateway
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env holds the admin POSTGRES_USER/POSTGRES_PASSWORD (and every other service's
+    # secrets); `environment:` below names the few values this service reads (${...} still interpolates
+    # from the project .env). Enforced by scripts/ci/check-db-least-priv.py.
     environment:
       PORT: "8443"
       EDGE_API_URL: http://edge-api:8080
@@ -3116,19 +3118,18 @@ services:
       # Tenant scope — no hardcoded enterprise ids in code; set here.
       INCOPLAST_ENTERPRISE_ID: "4"
       INCOPLAST_TOPIC_PREFIX: INCOPLAST
-      # Read-only Postgres resolver: packml_topic → staging ids. Creds come
-      # from AWS Secrets Manager (CO-5: no plaintext password in compose env).
-      # Connects to F1 `packiot` (packiot/staging/db) so the ids the adapter
-      # resolves are the same ones edge-api accepts. Reaches the DB over
-      # packiot-net (via pgbouncer, per the secret's host).
+      # Read-only topic resolver (topic → staging ids) logs in as the
+      # least-privilege `operator_gateway` role (db/migrations/t-operator-gateway-role:
+      # SELECT on 10 columns, NOBYPASSRLS, read-only sessions), NOT the admin
+      # ${POSTGRES_USER}. Creds {host,port,user,password,name} come from Secrets
+      # Manager (CO-5: no password in compose env / docker inspect), so CREDS_SOURCE
+      # stays unset. The secret holds host 10.10.10.89, db packiot_analytics (direct,
+      # not pgbouncer). PROVISION FIRST (services/operator-gateway/README.md §
+      # Provisioning the DB role): migration, secret, role password — a deploy before
+      # that exits at boot. OPERATOR_GATEWAY_PG_SECRET_ID in .env overrides the id.
+      # CI: scripts/ci/check-db-least-priv.py rejects admin creds here.
       AWS_REGION: us-east-1
-      PG_SECRET_ID: packiot/staging/db
-      CREDS_SOURCE: env
-      DB_HOST: "10.10.10.89"
-      DB_PORT: "5432"
-      DB_USER: "${POSTGRES_USER}"
-      DB_PASSWORD: "${POSTGRES_PASSWORD}"
-      DB_NAME: packiot_analytics
+      PG_SECRET_ID: ${OPERATOR_GATEWAY_PG_SECRET_ID:-packiot/staging/operator-gateway-db-creds}
       # FILL AT DEPLOY (secrets — keep out of git):
       #   OPERATOR_API_KEY : shared secret the Incoplast tee node presents
       #                      as X-Ingest-Key.
@@ -3156,7 +3157,7 @@ services:
     depends_on:
       edge-api:
         condition: service_started
-      # Resolver reads packml_register → equipments via pgbouncer at boot.
+      # Resolver connects at boot (direct to the DB host; pgbouncer kept as an ordering hint).
       pgbouncer:
         condition: service_started
     healthcheck:

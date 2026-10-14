@@ -1,7 +1,7 @@
 # ── operator-gateway (Tier 3) — ADR-0060 P4 ──────────────────────────────────
 # contract (docs/dev/contracts.md §2, contracts/go-services.md §operator-gateway):
 #   inputs:   HTTPS POST /operator/{downtime,po,po/*,split} (X-Ingest-Key; a factory tee node's operator actions);
-#             postgres packiot_analytics read-only resolver: packml_register → equipments → areas → sites
+#             postgres packiot_analytics read-only resolver as operator_gateway: topic_routing → equipments → areas → sites
 #   outputs:  edge-api /api/downtimes/*, /api/production-orders/* with the tenant's x-api-key (edge-api writes the
 #             rows + user_logs); /healthz (DB pool) + /metrics on the same TLS port
 #   external: none in dev — DB creds from env (CREDS_SOURCE=env), self-signed TLS from dev-tls (staging: host cert),
@@ -28,8 +28,11 @@ services:
       CREDS_SOURCE: env
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER:?set in dev/.env.dev}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      # least-privilege role (db/migrations/t-operator-gateway-role), as staging; the dev seed gives every
+      # login role the password "dev". Seeds built before the role exists get it from base.yml's
+      # 70-operator-gateway-role init hook (fresh volume: make dev-reset).
+      DB_USER: operator_gateway
+      DB_PASSWORD: ${DEV_OPERATOR_GATEWAY_DB_PASSWORD:-dev}
       DB_NAME: packiot_analytics
       OPERATOR_API_KEY: ${DEV_OPERATOR_GATEWAY_KEY:?set in dev/.env.dev}
       EDGE_API_KEY: dev-api-key-3   # the seed's fake core.enterprises.api_key for tenant 3
