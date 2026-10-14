@@ -30,7 +30,7 @@ services:
       DB_PORT: "5432"
       # least-privilege role (db/migrations/t-operator-gateway-role), as staging; the dev seed gives every
       # login role the password "dev". Seeds built before the role exists get it from base.yml's
-      # 70-operator-gateway-role init hook (fresh volume: make dev-reset).
+      # 70-service-roles init hook (fresh volume: make dev-reset).
       DB_USER: operator_gateway
       DB_PASSWORD: ${DEV_OPERATOR_GATEWAY_DB_PASSWORD:-dev}
       DB_NAME: packiot_analytics

@@ -180,7 +180,7 @@ make dev SVC="barcode-service"                       # :8446
 |---|---|---|---|
 | `edge-api-migrate` (one-shot) | — | `edge-api` submodule, target `migrate` | = staging's `db-migrate`: knex `migrate:latest` on `packiot_analytics`. The seed carries the knex ledger, so only migrations newer than the snapshot run |
 | `edge-api` | 8080 | `edge-api` submodule, target `production` | direct to postgres (staging: pgbouncer); dev Cognito pool; no AWS at all (`AWS_EC2_METADATA_DISABLED`, no keys) → box ops / SSM / Cognito user admin answer errors; no Superset, Power BI, RabbitMQ commands |
-| `barcode-service` | 8446 | `services/barcode-service` | direct to postgres; dev Cognito pool; Firebase off |
+| `barcode-service` | 8446 | `services/barcode-service` | direct to postgres as the `barcode_service` role (password `dev`); dev Cognito pool; Firebase off |
 | `csadmin` | 8084 | `csadmin` submodule, `Dockerfile.staging` | dev pool ids baked at build (rebuild with `--build` after changing them) |
 | `customize` | 8086 | `customize/` (in-tree), `Dockerfile.staging` | same |
 | `operator` | 8083 | `operator` submodule, `Dockerfile.staging` | nginx injects the fake keys `dev-api-key-3` (edge-api) and `dev-read-key-3` (read-api) |

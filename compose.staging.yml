@@ -3049,15 +3049,23 @@ services:
     build: ./services/barcode-service
     container_name: barcode-service
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env holds the admin POSTGRES_USER/POSTGRES_PASSWORD (and every other service's
+    # secrets); `environment:` below names the few values this service reads (${...} still interpolates
+    # from the project .env). Enforced by scripts/ci/check-db-least-priv.py.
     environment:
-      DB_HOST: pgbouncer
-      DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      # Writes the go-forward plane (F3) via pgbouncer's packiot_analytics pool —
-      # the same pool refdata-api reads through under REFDATA_FLOW=f3.
-      DB_NAME: packiot_analytics
+      # Logs in as the least-privilege `barcode_service` role
+      # (db/migrations/t-barcode-service-role: column grants on bronze.box_scans,
+      # gold.po_box_counter, core.production_orders/equipments; NOBYPASSRLS, tenant
+      # stamped per tx), NOT the admin ${POSTGRES_USER}. Creds {host,port,user,
+      # password,name} come from Secrets Manager (CO-5: no password in compose env /
+      # docker inspect); CREDS_SOURCE stays unset. The secret holds host pgbouncer,
+      # db packiot_analytics — the same pool as before (pgbouncer authenticates the
+      # role via auth_query + SCRAM pass-through, like readapi_ro). PROVISION FIRST
+      # (services/barcode-service/README.md § Provisioning the DB role): migration,
+      # secret, role password — a deploy before that exits at boot.
+      # BARCODE_SERVICE_PG_SECRET_ID in .env overrides the id.
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: ${BARCODE_SERVICE_PG_SECRET_ID:-packiot/staging/barcode-service-db-creds}
       HTTP_PORT: "8446"
       # ── Issuer-agnostic dual JWT verifier (tenant from JWT only) ──────────────
       # id_enterprise is derived SERVER-SIDE from a verified token and fails
