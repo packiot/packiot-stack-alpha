@@ -211,6 +211,13 @@ No lock. Area: day-flag cascade from `equipment_oee_daily` of the area's lines (
 shift grain (`site_oee_shift` from `area_oee_shift`); `site_oee_daily` was dropped (#263). Area and
 site hour/week/month grains were retired (#186).
 
+The area day-flag cascade is **change-driven by `computed_at`**: an area day is re-flagged when one
+of its lines' day rows was computed after it — whatever that line row's `recalc_needed` says.
+`RunDay` re-flags every line's *current* production day right after computing it, so the old extra
+condition "line row not flagged" never held for the running day: the area's current day stayed at
+its provisioning zeros until the day closed, and `area_live_day` / front4 Home read 0 all day (fixed
+2026-10-13). The running area day is now recomputed on every rollup tick.
+
 ### After the grains
 
 1. `RunDQScan` — detects and records `data_quality_event` rows; changes nothing.
