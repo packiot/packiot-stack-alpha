@@ -27,6 +27,7 @@ the wiki host pulls it.
 | [`api/openapi/`](api/openapi/) | OpenAPI specs of the Go services' HTTP APIs, exported by `make openapi` (the "OpenAPI export is current" workflow fails a PR on drift); browsable in the API portal at https://api.staging.packiot.app/docs/ (SSO). edge-api's spec lives in the edge-api repo |
 | [`dev/`](dev/) | Local dev environment contracts ([dev/contracts.md](dev/contracts.md)); the how-to is [`../dev/README.md`](../dev/README.md) |
 | [`plans/`](plans/) | Design plans and work breakdowns |
+| [`specs/`](specs/) | Functional specifications owned by product (business rules `RN-`, acceptance criteria `AC-`) that Jira cards cite by ID, e.g. [specs/PRODT-157-operator-app.md](specs/PRODT-157-operator-app.md) and its [backlog](specs/PRODT-157-operator-backlog.md) |
 | [`runbooks/`](runbooks/), [`ops/`](ops/) | Operational procedures (indexed in [wiki/operations/runbooks.md](wiki/operations/runbooks.md)) |
 | [`clients/`](clients/) | Per-client configuration, descriptors and analyses |
 | [`ingestion/`](ingestion/), [`reference/`](reference/) | Ingestion designs and client tee functions; schema maps, topic contracts and fixtures |

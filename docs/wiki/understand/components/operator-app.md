@@ -2,7 +2,7 @@
 title: Operator app (operator4)
 layer: 3
 owner_area: frontends
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 ---
 # Operator app (operator4)
 
@@ -12,6 +12,15 @@ last_verified: 2026-10-13
 > Up: [Frontends](../subsystems/frontends.md) ·
 > [README](https://github.com/packiot/operator4/blob/staging/README.md) ·
 > [Service catalog](../../reference/service-catalog.md)
+
+!!! info "Functional spec (PRODT-157)"
+    The operator's business rules (`RN-xx`) and acceptance criteria (`AC-xx`) live in the
+    product spec
+    [docs/specs/PRODT-157-operator-app.md](https://github.com/packiot/packiot-stack-alpha/blob/staging/docs/specs/PRODT-157-operator-app.md)
+    (status `in-review`); Jira cards under Epic PRODT-157 cite those IDs. The card list and the
+    team summary are in
+    [docs/specs/PRODT-157-operator-backlog.md](https://github.com/packiot/packiot-stack-alpha/blob/staging/docs/specs/PRODT-157-operator-backlog.md).
+    An approved spec outranks this page where they disagree.
 
 ## Responsibility
 
