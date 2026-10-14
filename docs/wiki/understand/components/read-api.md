@@ -249,7 +249,10 @@ See [Historian gateway](historian-gateway.md).
   super-admin escalation and `/internal/resolve-device` (service-to-service).
 - **Every route has a class** in `routeManifest()`; the exemption set is derived from it, so
   a new route cannot silently skip auth.
-- **Read-only** except `identity.user_screen_config` (created by `ensureSchema` at boot).
+- **Read-only** except `identity.user_screen_config` (`readapi_ro`: SELECT, INSERT, UPDATE, no DELETE).
+- **No DDL at runtime.** The table belongs to migration `t-readapi-screen-config`; at boot read-api only
+  checks it exists and is writable, and logs an ERROR naming the migration if not (`TestNoRuntimeDDL`
+  fails CI on any DDL string in the module).
 - **Byte-stable shapes** for the operator's `/v1/*` routes; the operator caches by URL and
   parses fixed shapes.
 - **Raw JSON arrays** of row objects; pgx types are encoded as-is.

@@ -310,7 +310,7 @@ func main() {
 		logger.Info("cache-aside disabled (REDIS_CACHE_ENABLED=false or unconfigured)")
 	}
 
-	ensureSchema(pool) // startup migrations (P2 screen-config table)
+	checkScreenConfigTable(context.Background(), pool, logger) // no DDL: the table is a migration's job
 
 	// T2 honest windows: dataset coverage floors from ops.retention_policy (fail-open).
 	go covIdx.run(context.Background(), pool, logger)

@@ -1,0 +1,12 @@
+-- rollback for t-readapi-screen-config: deliberately a NO-OP.
+--
+-- 01-up.sql only creates what is missing. On staging and on any database that ran read-api before this
+-- migration the table, its index and readapi_ro's grant already existed (created by read-api's old boot DDL and
+-- t276), so there is nothing of this migration's own to undo. Dropping identity.user_screen_config would delete
+-- users' saved layouts. Reverting the code change (re-adding boot DDL) is NOT a rollback path either: readapi_ro
+-- cannot run it.
+--
+-- To remove the table on purpose (fresh database only, after checking it is empty):
+--   SELECT count(*) FROM identity.user_screen_config;   -- must be 0
+--   DROP TABLE identity.user_screen_config;
+SELECT 'rollback t-readapi-screen-config: no-op (see header)';

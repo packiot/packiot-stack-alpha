@@ -77,7 +77,7 @@
 #     report-downtimes           v_report_downtimes                               F3_MISSING (dba-owned view, prod-gated)
 #   query.go metric catalog:  agg_equipment_values_{1min,1hour}             SERVABLE_BOTH
 #   query.go bespoke:  dashboard_config / user_screen_config                      F3_MISSING (refdata-owned tables,
-#                        created by ensureSchema/28-refdata-tables.sql at F1 startup — must be created in F3 too)
+#                        created by db/migrations/t-readapi-screen-config + 28-refdata-tables.sql — must be created in F3 too)
 #
 # HARD RULES honored
 # ──────────────────
