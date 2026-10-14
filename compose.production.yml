@@ -1168,6 +1168,11 @@ services:
       # Per-client routing key → per-tenant worker queue. FILL AT DEPLOY with the
       # client's key (e.g. sparkplug.data.bispharma); defaults to the generic key.
       ROUTING_KEY: ${INGEST_ROUTING_KEY:-sparkplug.data}
+      # Publish the `refactored` copy ONLY (same as staging). The code default is
+      # "legacy,go,refactored" (one AMQP copy per entry): single-flow prod's
+      # oeecloud-worker runs the refactored lane only, so the default would triple-
+      # publish every envelope and feed the two copies no prod flow should see.
+      FANOUT_SOURCE_TYPES: refactored
       # Scope guard: only payloads whose topic/group first segment matches (case-
       # insensitive) are admitted; everything else → 403. FILL AT DEPLOY with the
       # client's topic prefix (e.g. BISPHARMA).
