@@ -1,313 +1,401 @@
 # ADR-0063 — Is TimescaleDB still needed in the analytics database?
 
-**Status:** Proposed · **Date:** 2026-10-14 · **Scope:** the new stack's analytics database
-(`packiot_analytics` on staging; the production target built by the transplant in
+**Status:** Proposed · **Date:** 2026-10-14 (rewritten the same day) · **Scope:** the new stack's
+analytics database (`packiot_analytics` on staging; the production target built by the transplant in
 [`production-promotion-transplant-runbook.md`](reference/production-promotion-transplant-runbook.md)).
 The legacy database, back4 and legacy oeecloud are out of scope (read-only, not touched).
 **Builds on:** [ADR-0060](0060-local-development-environment-and-cpack-dev-seed.md) (seed pins PG 15.17 + TS 2.27.0),
 the grain-tiered retention plan (`docs/plans/unified-hot-cold-serving-grain-tiered-retention.md`).
 
-This ADR is an investigation. It changes no runtime behaviour. Every number below comes from a
-read-only query against staging on 2026-10-14 (~20:05 UTC) or from a `file:line` in this repo at
-`origin/staging`. Anything not proven that way is marked **(unverified)**.
+Every number below comes from a read-only query against staging on 2026-10-14 (first pass ~20:05
+UTC, re-verified ~21:28 UTC) or from a `file:line` in this repo at `origin/staging`. Anything not
+proven that way is marked **(unverified)**.
+
+**Revision note.** The first version (#1771) concluded "partially: keep TimescaleDB". That verdict
+mixed two questions. **Technical necessity** asks whether the workload needs TimescaleDB. It does
+not. **Current coupling** asks whether the code depends on TimescaleDB today. It does, through
+continuous aggregates the OEE engine reads. This version answers the two questions separately.
 
 ---
 
 ## 1. Verdict
 
-**Partially: keep TimescaleDB through production promotion, and drop or fix the parts that cost
-more than they give.**
+**Not necessary. Coupled.**
 
-- **Keep (proven load-bearing):** hypertables, compression, retention policies, and the
-  continuous aggregates that the OEE engine and APIs read (`equipment_categorical_1min`,
-  `equipment_categorical_1hour`, `ca_discrete_changes_1s`, `agg_equipment_values_1min/_1hour`,
-  `equipment_metrics_1min`).
-- **Drop or fix now (proven waste or risk):** `silver.ca_equipment_boxes_1s` (0 rows, never
-  materialized, ~12 % of one vCPU), engine DML that reads real-time caggs (the #1770 class),
-  and the exporter's frequent chunk-size queries.
-- **Full removal is feasible but not justified today:** every Timescale feature in use has a plain
-  PostgreSQL replacement, but the estimate is **5–8 engineer-weeks** plus a new promotion
-  rehearsal, and nothing forces it. The production target is a **self-hosted TimescaleDB
-  container on EC2**, not RDS/Aurora (§6). If the platform moves to a managed PostgreSQL service,
-  that would decide the question, and §8 is the plan.
+- **Not necessary.** The workload is about 18 GB and 1.9 M rows/day (≈ 22 rows/s). That is small
+  for plain PostgreSQL with declarative partitioning and BRIN indexes (§3). The cold tier
+  already runs without TimescaleDB: it is PostgreSQL 16 + `pg_duckdb` + `postgres_fdw` over
+  Parquet on S3 (§4).
+- **Coupled.** The engine reads two continuous aggregates as **inputs**:
+  `equipment_categorical_1min` and `_1hour`, 29.6 % of all DB statement time (§5a). The
+  readers would need a replacement before the extension can go. Compression and retention
+  management are not real dependencies (§5b, §5c).
+- **Target architecture.**
+  - **Hot:** plain partitioned PostgreSQL with a short retention window. The engine maintains
+    the minute and hour rollups it reads, as it already maintains gold.
+  - **Cold:** Parquet + DuckDB, which is the historian that already exists.
+- **Production timing.** The production promotion (#1653) was rehearsed with TimescaleDB. When
+  to leave it, before or after promotion, is a **scheduling decision for the user**. The
+  technical facts do not force either order (§9).
 
 ### Decision drivers
 
-| Driver | Finding | Weight |
+| Driver | Finding | Section |
 |---|---|---|
-| Is the OEE engine coupled to Timescale? | Yes. The rollup reads `equipment_categorical_1min/_1hour` in 8 Go files (§3.2); 29.7 % of all DB statement time reads `equipment_categorical_1min` | High: removal = re-implementing incremental rollups |
-| Does compression pay? | Yes. ~21 GB saved on an 18 GB database (hypertables 10.0 GB → 0.89 GB; caggs ≈ 12.4 GB → 0.47 GB) | Medium: disk is cheap, but no core PG equivalent |
-| Is there a forcing function (managed DB)? | No. Prod DB = `timescale/timescaledb:2.25.2-pg16` on an r7g EC2 (`terraform/production/database.tf:132`); RDS rejected on cost (`docs/plans/new-stack-cost-ledger.md:92`) | High: it would be decisive if it changed |
-| What does Timescale cost us in CPU? | Background jobs ≈ 16 % of one vCPU (≈ 8 % of the 2-vCPU host); 75 % of that is one dead cagg | Medium: fixable inside Timescale |
-| What does it cost in incidents? | 8 incidents/traps since 09-07 come from Timescale behaviour (§5.1) | High: recurring class of surprise |
-| License | `timescaledb.license = timescale` (TSL). Caggs, compression, policies and `add_job` are TSL features; self-hosted internal use is allowed | Low today; blocks managed PG (§5.3) |
+| Scale | 1.9 M rows/day ≈ 490 MB/day uncompressed; 14–30 day hot window ≈ 7–15 GB raw | §3 |
+| Cold tier | historian = PG 16 + pg_duckdb + postgres_fdw, Parquet on S3; no TimescaleDB | §4 |
+| Hot tier engine | many concurrent writers, row updates, transactions, constraints, per-tenant RLS → PostgreSQL required, not DuckDB | §4 |
+| Real coupling | engine reads `equipment_categorical_1min/_1hour` (rollup, closer, CPAC deriver, line-lead); historian FDW reads `_1hour` | §5a |
+| Compression | 21 GB saved, but **> half is `ca_discrete_changes_1s`, whose only reader produced 0 rows in 7 days** | §5b |
+| Retention / partitions | 13 policies over 5 hypertables + caggs; trivially replaced by partition drops | §5c |
+| Cost of keeping it | ≈ 16 % of one vCPU in background jobs (12 % was one empty cagg, removed in A1), 9.4 % of DB time in the cagg refresh-window query, the #1770 trap (DML on real-time caggs), 9 incidents/traps | §6 |
+| Forcing function | none (prod is self-hosted `timescale/timescaledb:2.25.2-pg16` on EC2, `terraform/production/database.tf:132`) | §9 |
 
 ---
 
 ## 2. Inventory (live catalog, staging, 2026-10-14)
 
-Raw outputs: `q1_inventory.txt`, `q2_caggs_jobs.txt`, `q3_workload.txt` (see §9).
-
-**Engine:** PostgreSQL 15.17 (aarch64, Alpine) · `timescaledb` 2.27.0 · other extensions:
-`btree_gist` 1.7, `dblink` 1.2, `pg_stat_statements` 1.10, `plpgsql`. **No `timescaledb_toolkit`**
-(not even available). `pg_cron` 1.6 is preloaded and available but installed only in the `packiot`
-database (`cron.database_name = packiot`). `pg_partman` and `pg_ivm` are not available in the image.
-`shared_preload_libraries = timescaledb,pg_cron,pg_stat_statements,auto_explain`;
-`timescaledb.max_background_workers = 12`. Database size 18 GB, of which
-`_timescaledb_internal` (chunks) is 15 GB.
+**Engine:** PostgreSQL 15.17 (aarch64, Alpine) · `timescaledb` 2.27.0, license `timescale` (TSL) ·
+other extensions `btree_gist` 1.7, `dblink` 1.2, `pg_stat_statements` 1.10, `plpgsql`. No
+`timescaledb_toolkit`. `pg_cron` 1.6 is preloaded and installed in the `packiot` database
+(`cron.database_name = packiot`). `pg_partman` and `pg_ivm` are not in the image.
+`shared_preload_libraries = timescaledb,pg_cron,pg_stat_statements,auto_explain`. Database size
+**18 GB** (19,181,755,751 bytes at 21:28 UTC), of which chunks are 15 GB.
 
 ### 2.1 Hypertables (5)
 
-| Hypertable | Chunk interval | Chunks (compressed) | Size on disk | Rows last 24 h | Compression before → after | Retention |
-|---|---|---|---|---|---|---|
-| `silver.equipment_values` | 1 day | 92 (84) | 2,432 MB | 638,662 | 6,558 MB → 381 MB (**17.2×**) | 90 d (job 1032) |
-| `bronze.equipment_values_raw` | 7 days | 5 (3) | 2,073 MB | 1,211,973 | 2,934 MB → 274 MB (**10.7×**) | 90 d (job 1089) |
-| `silver.equipment_events` | 1 day (+ `compress_chunk_time_interval` 30 d) | 157 (141) | 1,063 MB | 4,704 | 536 MB → 236 MB (2.3×) | 5 y (job 1094) |
-| `silver.plc_link_minutes` | 7 days | 2 (0) | 66 MB | 33,120 | not compressed | 90 d (job 1102) |
-| `bronze.equipment_events_raw` | 7 days | 0 | 24 kB | 0 | policy, no data | 90 d (job 1088) |
-
-Segment-by is `id_equipment` everywhere; order-by is the time column DESC (+ `source_seq` on bronze).
-Every unique key already includes the time column (`equipment_values_pkey (id_equipment, ts_value)`,
-`equipment_values_raw_pkey (id_equipment, ts_value, source_seq)`, …), which native partitioning
-also requires. Bronze has `BEFORE UPDATE/DELETE` immutability triggers.
-
-### 2.2 Continuous aggregates (7, all real-time: `materialized_only = false`)
-
-| Cagg | Bucket | Source | Size | Compressed (before → after) | Refresh: every / window | Avg run | Watermark lag |
-|---|---|---|---|---|---|---|---|
-| `agg_equipment_values_1min` | 1 min | `equipment_values` | 566 MB | 1,325 MB → 75 MB | 1 min / 30 min | 0.15 s | 2 min |
-| `agg_equipment_values_1hour` | 1 h | `equipment_values` | 43 MB | 72 MB → 7.7 MB | 30 min / 3 d | 0.25 s | 2 h 08 m |
-| `ca_discrete_changes_1s` | 1 s | `equipment_values` | 2,722 MB | **11 GB → 384 MB** | 15 min / 30 min | **27 s** | 7 min |
-| `ca_equipment_boxes_1s` | 1 s | `equipment_values` | 56 kB | no | 15 min / 6 h | **108 s** (last 153 s) | **−infinity: 0 rows, never materialized** |
-| `equipment_metrics_1min` | 1 min | `equipment_values` | 2,016 MB | no | 1 min / 3 h | 0.085 s | 2 min |
-| `equipment_categorical_1min` | 1 min | `equipment_values` | 4,106 MB | no | 2 min / 3 h | 0.12 s | 4 min |
-| `equipment_categorical_1hour` | 1 h | cagg on `equipment_categorical_1min` | 103 MB | no | 30 min / 1 d | 0.10 s | 2 h 08 m |
-
-### 2.3 Jobs (31) and their cost
-
-Job-execution logging is off (`timescaledb.enable_job_execution_logging = off`), so
-`job_history` is empty; costs come from `_timescaledb_internal.bgw_job_stat` (cumulative since
-each job was created). Failures in the last 14 days: one (job 1003, a concurrent-refresh
-collision on 10-01).
-
-| Job | What | Runs | Failures | Avg run | Share of one vCPU (avg ÷ interval) |
+| Hypertable | Chunk | On disk | Rows last 24 h (21:28 UTC) | Compression before → after | Retention |
 |---|---|---|---|---|---|
-| 1014 | refresh `ca_equipment_boxes_1s` | 8,217 | 0 | 108.0 s | **12.0 %** (cumulative 246 h 34 m) |
-| 1013 | refresh `ca_discrete_changes_1s` | 9,093 | 4 | 27.1 s | 3.0 % (68 h 20 m) |
-| 1003 / 1057 / 1064 / 1005 / 1068 | refresh the 1-min / 1-hour caggs | 132,825 / 52,652 / 26,083 / 4,514 / 1,741 | 7 / 6 / 4 / 0 / 2 | 0.08–0.25 s | 0.5 % together |
-| 1031 / 1019 / 1027 / 1028 / 1034 / 1036 / 1038 | compression (every 12 h) | 82–168 each | 0 | 113 s / 57 s / < 5 s | 0.4 % together |
-| 1032, 1046, 1048, 1088–1095, 1102 | retention (daily) | 21–64 each | 0 | < 6 s | ≈ 0 |
-| 1033 / 1072 / 1100 | user-defined actions: plain-table purge, downtime-resolved refresh, data invariants | 43 / 16,473 / 623 | 0 | 0.08 s / 0.85 s / 65 s | 4.3 % (not Timescale features: they would move to pg_cron) |
+| `silver.equipment_values` | 1 d | 2,443 MB | **645,924** | 6,558 MB → 381 MB (17.2×) | 90 d |
+| `bronze.equipment_values_raw` | 7 d | 2,086 MB | **1,224,631** | 2,934 MB → 274 MB (10.7×) | 90 d |
+| `silver.equipment_events` | 1 d | 1,063 MB | 4,620 | 536 MB → 236 MB (2.3×) | 5 y |
+| `silver.plc_link_minutes` | 7 d | 67 MB | 33,097 | not compressed | 90 d |
+| `bronze.equipment_events_raw` | 7 d | 24 kB | 0 | policy, no data | 90 d |
 
-Timescale's own policies use **≈ 16 % of one vCPU ≈ 8 % of the 2-vCPU DB host** (upper bound:
-wall-clock, includes I/O waits). Three quarters of it is job 1014 refreshing a cagg that holds
-nothing.
+Every unique key already includes the time column, which native partitioning also requires.
+
+### 2.2 Continuous aggregates (7 before Phase A, all real-time)
+
+| Cagg | Bucket | Size | Compressed before → after | Refresh every / window | Avg run | Readers |
+|---|---|---|---|---|---|---|
+| `equipment_categorical_1min` | 1 min | 4,110 MB | no | 2 min / 3 h | 0.1 s | engine rollup, closer, CPAC deriver, line-lead (§5a) |
+| `equipment_categorical_1hour` | 1 h (on `_1min`) | 104 MB | no | 30 min / 1 d | 0.1 s | engine hour/shift/line-lead, 5 serving functions, invariants, **historian FDW** |
+| `equipment_metrics_1min` | 1 min | 2,018 MB | no | 1 min / 3 h | 0.1 s | `serving.mission_control`, `_timeline` |
+| `agg_equipment_values_1min` | 1 min | 568 MB | 1,325 MB → 75 MB | 1 min / 30 min | 0.2 s | read-api `/v1/query`, SAP reports |
+| `agg_equipment_values_1hour` | 1 h | 43 MB | 72 MB → 7.7 MB | 30 min / 3 d | 0.2 s | read-api, `uns.go` month refresh |
+| `ca_discrete_changes_1s` | 1 s | 2,738 MB | **11 GB → 384 MB** | 15 min / 30 min | **27.1 s** | `events/deriver.go` only, which produces nothing today (§5b) |
+| ~~`ca_equipment_boxes_1s`~~ | 1 s | 56 kB, 0 rows | no | 15 min / 6 h | **108.0 s** | none. **Dropped by A1 (#1774)** |
+
+### 2.3 Background jobs
+
+Job-execution logging was off, so the costs below come from `_timescaledb_internal.bgw_job_stat`
+(cumulative). Phase A5 turns logging on.
+
+| Job | What | Avg run | Share of one vCPU (avg ÷ interval) |
+|---|---|---|---|
+| 1014 | refresh `ca_equipment_boxes_1s` | 108.0 s | **12.0 %** (removed by A1) |
+| 1013 | refresh `ca_discrete_changes_1s` | 27.1 s | 3.0 % |
+| 1003 / 1057 / 1064 / 1005 / 1068 | refresh the 1-min / 1-hour caggs | 0.1–0.2 s | 0.5 % together |
+| compression (7 jobs, 12 h) | | 113 s / 57 s / < 5 s | 0.4 % together |
+| retention (13 jobs, daily) | | < 6 s | ≈ 0 |
+| 1033 / 1072 / 1100 | user actions (purge, downtime-resolved refresh, invariants) | 0.08 / 0.85 / 65 s | 4.3 %. Not Timescale features; they would move to pg_cron |
+
+**Why a refresh of 0 rows took 108 s (proved in A1).** The refresh policy splits its window into
+one-bucket batches: 6 h of 1 s buckets gives 21,540 candidates. It tests each candidate against
+every row of the cagg's invalidation log, and that log held **40,109** stale 1-second ranges from
+late writes outside the window, which the policy never consumes. Reproduced on 2.27.0: 42 s with
+39,703 ranges, 7 ms with none. This one query (`WITH dimension_slices AS …`) is **9.4 % of all DB
+statement time** since 09-24. Job 1013 has the same pattern (48,906 ranges).
 
 ---
 
-## 3. Usage in code (grep of `origin/staging`)
+## 3. Scale: plain PostgreSQL is enough
 
-Raw outputs: `grep_ts_api_files.txt`, `grep_ts_api_nonmigration.txt`, `grep_cagg_services.txt`.
+**Ingest** (bounded `count(*)` of the last 24 h, 21:28 UTC): 645,924 silver values + 1,224,631
+bronze values + 4,620 events + 33,097 PLC-link minutes = **1.91 M rows/day ≈ 22 rows/s on
+average**. Peaks are a small multiple of that. A single PostgreSQL backend inserts tens of
+thousands of rows per second, so ingest is three orders of magnitude below the limit.
 
-### 3.1 Not used anywhere
+**Bytes per row, uncompressed, table + indexes**, measured on the newest finished uncompressed chunks:
+silver values 340–397 B, bronze values ≈ 196 B (992 MB / 5.05 M rows), events ≈ 375 B, PLC-link
+minutes ≈ 157 B, `equipment_categorical_1min` 529 B, `equipment_metrics_1min` 248 B,
+`agg_equipment_values_1min` 238 B, `equipment_categorical_1hour` 539 B.
 
-`time_bucket_gapfill`, `locf`, `interpolate`, hyperfunctions/`timescaledb_toolkit` — **0 hits** in
-services, db, scripts, configs. `first()`/`last()` appear only inside the
-`agg_equipment_values_1min` cagg definition (`last(box_code, ts_value)`, `last(transaction_code, ts_value)`).
-`time_bucket` appears in the cagg definitions, one expression index
-(`equipment_values_time_bucket_idx`), and two report adapters
-(`services/stream-engine/internal/reports/boxes_adapter.go:75`, `boxes_bridge.go:38`).
+**Sizing:** rows/day × bytes/row × retention window, without compression.
 
-### 3.2 Who reads the caggs
+| Table | Rows/day | ≈ MB/day | 14 d | 30 d | 90 d (today's retention) |
+|---|---|---|---|---|---|
+| `silver.equipment_values` | 646 k | 239 | 3.3 GB | 7.2 GB | 21.5 GB |
+| `bronze.equipment_values_raw` | 1.22 M | 245 | 3.4 GB | 7.3 GB | 22.0 GB |
+| events + PLC-link minutes | 38 k | 7 | 0.1 GB | 0.2 GB | 0.6 GB |
+| minute rollups (categorical + metrics + values), engine-maintained | ≈ 265 k | 90 | 1.3 GB | 2.7 GB | 8.1 GB |
+| **total** | **≈ 2.2 M** | **≈ 580** | **≈ 8 GB** | **≈ 17 GB** | **≈ 52 GB** |
 
-| Cagg | Readers (file:line or DB function) | DB time (`pg_stat_statements`, since 09-24) |
+Gold, serving and the dimension tables add about 2.5 GB (`gold.equipment_oee_hourly` 577 MB,
+`_shift` 385 MB, `serving.downtime_events_resolved` 674 MB, …). The DB volume is 128 GB.
+
+- **With a 14–30 day hot window, the whole hot database is about 10–20 GB uncompressed**, about
+  what TimescaleDB occupies today compressed. Daily range partitions (14–30 per table) plus a BRIN
+  index on the time column keep scans pruned and indexes small.
+- Even without changing retention, 90 days uncompressed (≈ 55 GB) fits the volume. Compression
+  is a cost saving, not a capacity requirement.
+- Older history belongs in the cold tier (§4). The silver catalog already declares a daily cold
+  copy for `equipment_values`, `equipment_events`, `production_orders` and
+  `gold.equipment_oee_shift` (`ops.retention_policy.cold_copy`).
+
+**TimescaleDB is not needed for scale.**
+
+---
+
+## 4. Hot vs cold: who needs what
+
+**The historian does not run TimescaleDB.** `hist-gateway` is **PostgreSQL 16 + `pg_duckdb`
+(embedded DuckDB) + `postgres_fdw`** (image `pgduckdb/pgduckdb:16-main`, glibc; it cannot even load
+into the Alpine/musl TimescaleDB image). It stores no rows itself:
+
+- **cold** = Parquet on S3 (`s3://packiot-staging-historian-<account>/equipment_values/…`,
+  `equipment_events/…`, `production_orders/…`, daily rollups) read by DuckDB;
+- **hot** = foreign tables onto the analytics DB (`live.equipment_values` →
+  `silver.equipment_values`, `live.equipment_events`, `live.production_orders`, and
+  `live.equipment_values_1hour` → `silver.equipment_categorical_1hour`);
+- the union views `silver.*` on the gateway stitch both at a stamped boundary.
+
+Source: [Historian gateway](../wiki/understand/components/historian-gateway.md). The first version of
+this ADR said nothing wrong about the historian, but implied TimescaleDB was the history store;
+it is not. The only TimescaleDB touch-point is that one foreign table reads a cagg (§5a).
+
+**Why not DuckDB for the hot tier.** DuckDB is a single-writer, read-mostly engine: one process
+holds the database file open for writes, and it has no row-level concurrency control or roles. The
+hot DB is the opposite:
+
+| Hot-DB requirement | Who | DuckDB |
 |---|---|---|
-| `equipment_categorical_1min` | stream-engine rollup: `rollup/availability.go:172,234,298,344`, `rollup/compute.go:182-192`, `rollup/hour.go:152`, `rollup/line_lead.go:156,229,442`, `rollup/inferspeed.go:115`, `events/closer.go:115`, `events/cpac_deriver.go:174,192,293`; parent of `equipment_categorical_1hour` | 909,557 s (**29.7 %**) |
-| `equipment_categorical_1hour` | `rollup/hour.go:78,204`, `rollup/shift.go:104,179`, `rollup/line_lead.go:139-166,385-389`; `serving.machine_speed`, `oee_score_by_team`, `overview_production_chart`, `single_period_by_team`, `targets`; `ops.job_data_invariants`; historian-gateway FDW (`services/historian-gateway/docker-entrypoint-initdb.d/10-historian-gateway.sh:183`) | 28,028 s (0.9 %) |
-| `ca_discrete_changes_1s` | `events/deriver.go:72` (wide-row state, ADR-0031, `config.go:162`) | 147,299 s (4.8 %) |
-| `agg_equipment_values_1min` | read-api `refdata-api/query.go:61`, `external_integration.go:331`; `serving.report_shift`, `sap_report_data_sync`, `sap_site_report` (+ `_pre_p3b` twins); `reports/sap13_body.sql:108` | 1 s |
-| `agg_equipment_values_1hour` | read-api `query.go:62`; `uns/uns.go:98` | 9,046 s (0.3 %) |
-| `equipment_metrics_1min` | `serving.mission_control`, `serving.mission_control_timeline` | 148 s |
-| `ca_equipment_boxes_1s` | `serving.report_shift` (+ `_pre_p3b`), `reports/sap13_body.sql:122` | 1 s — and it returns nothing (0 rows) |
+| Many concurrent writers | sparkplug decoder (bronze/silver), stream-engine (gold, events, flags), edge-api (POs, downtimes, shifts), legacy replicators, barcode service | single writer |
+| Row updates in place | `recalc_needed` flags (thousands per minute), upserts, Change PO, event closes and rebinds | supported, but not as a multi-writer OLTP workload |
+| Transactions + constraints | FK/UNIQUE/EXCLUDE keys (e.g. PO ranges), two-phase compute/apply with `SKIP LOCKED` | no `SKIP LOCKED`, no EXCLUDE, no cross-process locking |
+| Per-tenant row security | RLS policies + least-privilege roles (`stream_engine`, `readapi_ro`, `histgw_ro`, …) | no roles, no RLS |
 
-**The engine does not replace the caggs; it consumes them.** `gold.*` is engine-written plain
-tables (32.0 % of DB time), but its minute and hour inputs come from the caggs above. No cagg is
-redundant with gold today, except possibly `agg_equipment_values_*` versus
-`equipment_categorical_*` (same source, overlapping columns; **unverified** whether one can serve
-both readers).
-
-### 3.3 Timescale API calls by feature
-
-| Feature | Call sites |
-|---|---|
-| Schema creation (`create_hypertable`, caggs, policies) | `scripts/promotion/transplant/build.py:95-111`, `10-policies.sql:13-31`; `db/init-f3/snapshot/05-f3-cagg-agg.sql`, `10-f3-timescale-supplement.sql`; 31 files under `db/migrations/` |
-| Manual cagg refresh after repairs | `db/backfill/merge-silver-hole.sql:28-34`, `replace-silver-equipment.sql:39-45`, `sandbox-mirror-silver-windows.sql:89-95`; `scripts/ops/backfill-silver-gap-from-legacy.sh:276`, `repair-line-scrap-and-unbacked.sh:141`; `dev/seed/extract.sh:176-184` |
-| Compressed-chunk handling | `ops.sbx_mirror_silver_day` (compress/decompress), `db/backfill/sandbox-mirror-silver-windows.sql:26-59`, `services/stream-engine/internal/rollup/history.go:206`, edge-api teardown `SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 0` (`src/data/DAO/teardown/teardown-dao.ts:136`, edge-api working copy) |
-| Scheduler | `services/stream-engine/cmd/oeecloud-worker/main.go:150-170` (`start_background_workers` / `public.ensure_timescaledb_workers()`); `dev/seed/load.sh:35-47` (`alter_job`) |
-| Retention | `ops.apply_retention` (calls `add_retention_policy`); `terraform/staging/user_data/db_init.sh:260-298` (`drop_chunks`) |
-| Monitoring | `monitoring/postgres-exporter/queries.yaml:152-273`; `grafana/dashboards/library/16-database-dbm.json:227-245`; `.github/workflows/deploy-staging.yml:703-708`; `scripts/scalability-probe.sh:103-106`; `terraform/staging/scripts/restore-db.sh:122-124` |
-| Superset RLS helper | `db/superset/02-tenant-rls.sql:160-221` (guarded by `to_regclass`, already works without Timescale) |
+**PostgreSQL is required for the hot tier. The TimescaleDB extension is not.**
 
 ---
 
-## 4. Workload facts
+## 5. What TimescaleDB actually provides today
 
-- **Ingest:** ~1.21 M bronze rows/day and ~0.64 M silver rows/day, ~4.7 k events/day, 33 k
-  PLC-link minutes/day (bounded `count(*)` over the last 24 h, uncompressed chunks only).
-- **DB statement time** (`pg_stat_statements`, 2026-09-24 11:23 → 10-14, 3,067,012 s total):
+### 5a. Continuous aggregates the engine reads (the real coupling)
 
-| Statements touching | Share |
-|---|---|
-| `silver.equipment_events` | 48.4 % |
-| `gold.*` (plain, engine-written) | 32.0 % |
-| `equipment_categorical_1min` (real-time cagg) | 29.7 % |
-| `_timescaledb_*` internals | 11.3 % — of which the cagg-refresh window query 287,106 s (9.4 %; 78,649 calls ≈ one per refresh run, mean 3.65 s, dominated by jobs 1013/1014) and the exporter's chunk-size functions ≈ 60,000 s (≈ 2 %) |
-| `silver.equipment_values` | 7.3 % |
-| `ca_discrete_changes_1s` | 4.8 % |
+`pg_stat_statements` covers 2026-09-24 11:23 → 10-14 21:28 UTC, 3,077,037 s in total. Shares
+overlap, because one statement can touch several objects.
 
-  (Rows overlap: one statement can touch several objects.)
-- **What compression saves:** hypertables 10,028 MB → 891 MB; caggs ≈ 12.4 GB → 467 MB.
-  **≈ 21 GB saved**, so without compression the database would be ≈ 39 GB instead of 18 GB on a
-  128 GB volume. 95 % of the cagg saving is the 1-second `ca_discrete_changes_1s`.
-- **Compression is not on the biggest caggs:** `equipment_categorical_1min` (4.1 GB) and
-  `equipment_metrics_1min` (2.0 GB) are uncompressed.
-
----
-
-## 5. What keeping Timescale costs
-
-### 5.1 Incidents and traps caused by Timescale behaviour
-
-| Date | What happened | Timescale mechanism |
+| Object | Readers | DB time |
 |---|---|---|
-| 09-07 (#196) | CPACK OEE stale for a week; rollup hit its 300 s budget every tick | real-time cagg with no refresh policy → frozen watermark → every query re-aggregated all raw rows |
-| 09-09 (bug-276) | a false "2.7× divergence" nearly blocked a repoint | stale materialization over since-corrected raw rows |
-| 09-24 (T1–T5) | memory blow-up; a repair locked all 312 chunks | per-chunk partial aggregation over 1,599 chunks; generic plans cannot exclude chunks |
-| 09-30 | CPACK operator 500s for ~20 min | `decompress_chunk` holds ACCESS EXCLUSIVE on the chunk |
-| 10-01 / 10-09 | repairs silently updated 0 rows | DML on compressed chunks with `UPDATE … FROM` or a STABLE bound (`date + 1`, `now()`) |
-| 10-14 (#1770) | shadow deriver upsert 1.3 s → 14 s, CPU-bound | the real-time watermark is constified only when planning a SELECT, not inside INSERT/DELETE (`events/cpac_deriver.go:447-458`) |
-| standing | the scheduler does not restart itself after a DB restart | `start_background_workers()` is superuser-only → SECURITY DEFINER wrapper (`oeecloud-worker/main.go:150-170`) |
-| 08-06 | staging DB swapped and OOM'd on a t4g.medium | cagg refresh memory (`terraform/staging/variables.tf:38`) |
-| today | `ca_equipment_boxes_1s` burns 12 % of a vCPU and returns 0 rows; its watermark is −infinity, so any real-time read re-aggregates the whole raw table | the #196 time bomb in another cagg (root cause of the 108 s refresh **unverified**) |
+| `equipment_categorical_1min` | `rollup/availability.go`, `compute.go`, `hour.go`, `line_lead.go`, `inferspeed.go`; `events/closer.go`, `events/cpac_deriver.go` | **910,749 s (29.6 %)** |
+| `equipment_categorical_1hour` | `rollup/hour.go`, `shift.go`, `line_lead.go`; 5 serving functions; `ops.job_data_invariants`; historian FDW | 27,545 s (0.9 %) |
+| `agg_equipment_values_1min/_1hour` | read-api `query.go:61-62`, `external_integration.go:331`; SAP report functions; `uns.go` | 9,434 s (0.3 %) |
+| `equipment_metrics_1min` | `serving.mission_control`, `_timeline` | 156 s |
+| TimescaleDB internals | refresh-window query (jobs 1013/1014), the exporter's size functions | 346,072 s (11.2 %) |
 
-Each of these produced runbook rules (never `decompress_chunk`, literal bounds, refresh oldest-first,
-read back every repair). That is a real tax on every engineer who touches the data.
+The engine does not just consume these caggs: it **already writes** every grain above them
+(`gold.*`, plain tables, 32 % of DB time). A minute rollup is the same kind of work, one level
+lower. What TimescaleDB adds is **invalidation**: a late or repaired raw row marks its bucket for
+re-materialization. The engine would need the same thing: an invalidation table fed by the
+writers (decoder replays, backfills, repairs) and consumed by the rollup tick.
 
-### 5.2 Upgrade friction
+Real-time caggs also caused the **#1770 class of bug**. TimescaleDB constifies the watermark only
+when it plans a `SELECT`. Inside `UPDATE`/`INSERT`/`DELETE` the raw tail is priced at every chunk
+(staging plans: 458 M rows, cost ≈ 2.4 × 10⁸). The worst statements were
+`events-close-stale` (461,216 s, 15 % of all DB time, 19.8 s mean) and the hour speed pass
+(10 % of DB time in a 7-minute window). Phase A2 split both into a read and an apply (#1775).
 
-- Staging builds its image from **unpinned** `timescale/timescaledb:latest-pg15` (`db/Dockerfile:3`);
-  a rebuild can silently change the Timescale version. The dev seed pins 2.27.0-pg15
-  (`dev/seed/Dockerfile:6`), production pins **2.25.2-pg16** (`terraform/production/database.tf:132`).
-  Three engines, two Timescale versions, two PostgreSQL majors. Whether the 2.27 behaviours above
-  (stable-bound DML, watermark constification) are the same on 2.25.2 is **unverified**.
-- Timescale stores catalog rows that `pg_dump` cannot restore across versions without
-  `timescaledb_pre_restore()`/`post_restore()`, so the transplant rebuilds hypertables and caggs
-  by script (`build.py`) instead of dumping them.
+### 5b. Compression: over half of the saving is a cagg nobody needs today
 
-### 5.3 License and managed-service path
+Compression saves about 21 GB: hypertables 10.0 GB → 0.9 GB, caggs 12.4 GB → 0.47 GB. **11 GB →
+384 MB of it is `ca_discrete_changes_1s`.** Who reads that cagg:
 
-`timescaledb.license = timescale` (TSL, "Community"). Features in use that are **TSL-only**:
-continuous aggregates, compression/columnstore, all policies (refresh, compression, retention) and
-`add_job` user-defined actions. Apache-2 features: hypertables, `time_bucket`, `drop_chunks`,
-`first`/`last`. The TSL allows self-hosted internal use; it forbids offering TimescaleDB itself as
-a hosted database service, which Packiot does not do. AWS RDS and Aurora PostgreSQL do not offer
-the `timescaledb` extension (**external fact, not checkable from this repo**). Timescale tiered
-storage is Cloud-only (`docs/plans/unified-hot-cold-serving-grain-tiered-retention.md:88`).
+- **Code:** only `services/stream-engine/internal/events/deriver.go:68-98` (`transitionsCTE`, the
+  status-type-4 deriver). No view depends on it (`pg_depend` → `pg_rewrite`: 0) and no function
+  names it (0).
+- **`pg_stat_statements`:** only that deriver's two statements (57,578 calls as `postgres` plus
+  1,013 as `stream_engine`, 147,960 s, **4.8 % of DB time**).
+- **What the deriver gets from it:** its scope is `status_type = 4` equipment (**0** on staging)
+  or machines of the wide-row enterprises (`EVENTS_WIDEROW_STATE_ENTERPRISES=4`, **4** machines,
+  **0** `equipment_values` rows in 30 days). Events written for that scope in the last 7 days:
+  **0**.
+- **What the cagg materializes anyway:** about 640 k rows/day for enterprises 5, 3 and 2000003,
+  none of which the deriver reads.
+
+So the 1-second cagg, its 27 s refresh every 15 min (job 1013) and 4.8 % of DB time produce
+nothing on staging today. Without it, compression saves about 10 GB. With a 14–30 day hot window
+and Parquet behind it, the remaining compression gain is a few GB on a 128 GB volume (§3).
+**Compression matters little.**
+
+### 5c. Retention and partition management
+
+13 retention policies plus `ops.apply_retention()` reconcile a catalog table to TimescaleDB jobs.
+With native partitions this becomes `DROP TABLE` (or `DETACH`) of partitions older than `keep`,
+plus creating tomorrow's partition, in one pg_cron job of a few dozen lines. `pg_cron` is already
+preloaded. **Trivial.**
+
+### 5d. Not used at all
+
+`time_bucket_gapfill`, `locf`, `interpolate` and the toolkit have 0 hits in services, db, scripts
+and configs. `first()`/`last()` appear only inside one cagg definition. `time_bucket` appears in
+cagg definitions, one expression index and two report adapters. `date_bin` and `date_trunc` replace
+it.
 
 ---
 
-## 6. Production promotion impact (#1653, transplant)
+## 6. What keeping TimescaleDB costs
 
-- **Target:** a self-hosted `timescale/timescaledb:2.25.2-pg16` container on a dedicated r7g EC2
-  (`terraform/production/database.tf:1-20, 82-132`; `compose.production.yml:98-112`).
-- **No RDS/Aurora plan.** `terraform/` has no `aws_db_instance` or `aws_rds_cluster`. The cost
-  ledger states "DB self-hosted on EC2, not RDS" (~$100/mo saved, `docs/plans/new-stack-cost-ledger.md:92`);
-  the roadmap only lists "consider RDS/Timescale Cloud" as LATER (`docs/adr/reference/production-buildout-roadmap.md:302`).
-- **The transplant depends on Timescale:** it creates 5 hypertables and 7 caggs `WITH NO DATA`,
-  then 11 policies, then refreshes every cagg (`docs/adr/reference/production-promotion-transplant-runbook.md:29-43`,
-  `scripts/promotion/transplant/10-policies.sql`). The rehearsal passed with 0 catalog diffs.
-- **Conclusion:** removing Timescale before promotion would invalidate a rehearsed cutover and
-  move the OEE engine's inputs at the same time. Nothing in the promotion requires it.
+| Date | What happened | Mechanism |
+|---|---|---|
+| 09-07 (#196) | CPACK OEE stale for a week | real-time cagg without a refresh policy → frozen watermark → every read re-aggregated raw |
+| 09-09 (bug-276) | false "2.7× divergence" nearly blocked a repoint | stale materialization over since-corrected raw rows |
+| 09-24 (T1–T5) | memory blow-up; a repair locked 312 chunks | chunk-wise partial aggregation over 1,599 chunks |
+| 09-30 | CPACK operator 500s for ~20 min | `decompress_chunk` holds ACCESS EXCLUSIVE |
+| 10-01 / 10-09 | repairs silently updated 0 rows | DML on compressed chunks with a STABLE bound |
+| 10-14 (#1770, A2) | DML on real-time caggs 1.3 s → 14 s; closer 19.8 s; hour speed 6–9 s | watermark constified only for SELECT |
+| 10-14 (A1) | an empty cagg's refresh burned 12 % of a vCPU | stale invalidation ranges × one-bucket batches |
+| standing | scheduler does not restart after a DB restart | `start_background_workers()` superuser-only → SECURITY DEFINER wrapper |
+| 08-06 | staging DB swapped and OOM'd | cagg refresh memory |
+
+Each of these produced a runbook rule (never `decompress_chunk`, literal bounds, read back every
+repair, refresh order, no cagg reads inside DML). That is a recurring tax on every engineer who
+touches the data.
+
+**License.** `timescaledb.license = timescale` (TSL). Caggs, compression, every policy and
+`add_job` are TSL-only. Self-hosted internal use is allowed. AWS RDS/Aurora do not offer the
+extension **(external fact, not checkable from this repo)**.
 
 ---
 
-## 7. Feature-by-feature: in use, replacement, cost
+## 7. Version alignment (Phase A4)
 
-| Feature | In use? | By what | Plain PostgreSQL replacement | Cost to replace |
+| Environment | Image | TimescaleDB | PostgreSQL |
+|---|---|---|---|
+| staging (live) | `packiot-postgres:local` built 2026-05-18 on `timescale/timescaledb:2.27.0-pg15@sha256:3f770468…` | **2.27.0** | **15.17** |
+| dev seed, CI golden fixtures | `2.27.0-pg15`, digest-pinned since A4 (#1777) | 2.27.0 | 15.17 |
+| production (empty target) | `timescale/timescaledb:2.25.2-pg16` (`terraform/production/database.tf:132`) | **2.25.2** | **16** |
+| `latest-pg15` today (was staging's unpinned base) | `sha256:6343bdc8…` | 2.28.3 | 15.18 |
+
+`db/Dockerfile` used the unpinned `latest-pg15`, which has since moved to 2.28.3, so any rebuild
+would have upgraded staging silently. A4 pins it to the digest staging runs.
+
+**Alignment plan.** Nothing is upgraded by this ADR.
+
+1. **Before promotion: production runs the same TimescaleDB as staging.** Change
+   `database.tf:132` to `2.27.0-pg16`. The production DB is still empty, so this costs nothing,
+   and every TimescaleDB behaviour proven on staging (watermark constification, compressed-DML
+   bounds, invalidation batching) then holds on prod. Whether 2.25.2 behaves the same is
+   **unverified**.
+2. **PostgreSQL major: staging 15 → 16** in its own maintenance window, either by `pg_upgrade`
+   (TimescaleDB supports it within one extension version) or by the rehearsed transplant. Then the
+   dev seed and CI move to `2.27.0-pg16` in the same PR.
+3. **If Phases B and C happen first**, step 1 becomes "production runs plain PostgreSQL 16" and
+   step 2 disappears into the Phase C rebuild.
+4. **Rule:** one version change at a time, always pinned by digest, and every TimescaleDB change
+   ships with its `ALTER EXTENSION timescaledb UPDATE` plan.
+
+---
+
+## 8. Plan
+
+### Phase A: clean up inside TimescaleDB (now; small; reversible)
+
+| Item | PR | State | Expected effect | Exit criterion |
 |---|---|---|---|---|
-| Hypertables (5) | yes | all ingest + reads | declarative `PARTITION BY RANGE` (daily/weekly), partitions created ahead by pg_cron (pg_partman is not in the image; would need a build stage like `pg_cron`) | 3–5 d + rehearsal; keys already include time; rewrite the `time_bucket` expression index |
-| Continuous aggregates (7) | yes, load-bearing | OEE rollup, deriver, read-api, serving, historian FDW | engine-maintained rollup tables, refreshed incrementally per tick with an **invalidation log** for late data and repairs (what Timescale does for us today); `pg_ivm` is not available and cannot do `GROUP BY time` windows well | **2–4 weeks** + parity soak; the riskiest part (live OEE) |
-| Real-time cagg union | yes (all 7) | every reader | not needed if readers accept the materialized lag (1–2 min), or the engine reads its own tail | part of the above |
-| Compression | yes, 21 GB saved | hypertables + 3 caggs | none in core. Accept ≈ +9 GB for 90-day raw and drop the 1-s cagg; cold data already goes to the Parquet historian | ≈ 0 effort, + disk (gp3 ≈ $0.08/GB-month → < $2/month) and slower wide scans (**unverified**) |
-| Retention policies | yes | 13 policies + `ops.apply_retention` | `DROP TABLE` / `DETACH PARTITION` of old partitions from the pg_cron job | 1–2 d |
-| `add_job` user actions (3) | yes | purge, downtime refresh, invariants | `pg_cron` `cron.schedule_in_database` (already preloaded) or a stream-engine ticker | 1 d |
-| `time_bucket` | yes (definitions, 1 index, 2 adapters) | — | `date_bin` (PG14+) / `date_trunc` | < 1 d |
-| `first`/`last` | yes (1 cagg) | `agg_equipment_values_1min` | `(array_agg(x ORDER BY ts DESC))[1]` or `DISTINCT ON` | < 1 d |
-| gapfill / locf / interpolate / toolkit | **no** | — | `generate_series` joins if ever needed | 0 |
-| Tooling | yes | transplant, dev seed, restore, exporter, Grafana, CI, edge-api teardown | rewrite against `pg_partitioned_table`/`pg_inherits` | 3–5 d |
+| A1 drop the dead `ca_equipment_boxes_1s` (0 rows; readers stubbed with identical output) | #1774 | merged; migration to apply | −12 % of one vCPU (job 1014) | job 1014 gone; `WITH dimension_slices` rate falls |
+| A2 closer + hour speed read the cagg as a SELECT | #1775 | open | closer ≈ 25 s → ≈ 1 s per minute; hour speed 6–9 s → < 1 s | means in `pg_stat_statements`; golden plan test green |
+| A3 exporter size queries cached 5 min | #1776 | open | ÷20 calls | calls/10 min |
+| A4 pin the image to 2.27.0-pg15 by digest | #1777 | open | no silent upgrade | `db/Dockerfile` has no `latest` |
+| A5 `enable_job_execution_logging = on` | #1778 | open; ALTER SYSTEM to apply | per-run job cost visible | `job_history` has successful rows |
 
-**Full removal ≈ 5–8 engineer-weeks**, plus a new transplant rehearsal and a parity soak of gold
-against the current numbers.
+Effort: about 1 engineer-day (done). Risk: low. Rollback: each migration has a `rollback.sql`,
+and each code change is a revert.
+
+### Phase B: the engine owns its rollup inputs (removes the coupling)
+
+1. The engine maintains `silver.equipment_minute` and `silver.equipment_hour`. These are plain
+   tables with the columns of `equipment_categorical_1min/_1hour`. The engine updates them
+   incrementally each tick for the trailing window. An **invalidation table**
+   (`silver.rollup_invalidation(id_equipment, ts_from, ts_to)`) is fed by a statement trigger on
+   `silver.equipment_values` for rows older than the tick window (late data, replays) and by the
+   repair scripts. Gold already works this way: flags plus a tick.
+2. **Shadow run** for 7 days against the caggs: zero-diff per equipment-minute and
+   equipment-hour (the bug-276 method).
+3. **Repoint readers one at a time behind a flag:** rollup, closer, CPAC deriver, line-lead,
+   read-api (`agg_equipment_values_*` → the same tables), serving functions, Mission Control
+   (`equipment_metrics_1min`), the historian FDW (`live.equipment_values_1hour`), invariants.
+4. **Drop `ca_discrete_changes_1s`** (jobs 1013/1034/1046) and retire the status-4 deriver's cagg
+   read. It has no input on staging (§5b). If a status-4 tenant appears, it reads state changes
+   from `silver.equipment_values` over its 25 h window.
+5. **Shorten the hot window behind the historian:** raw silver 90 d → 30 d, bronze 90 d → 14 d.
+   Do this only after the daily cold copy is verified complete for the dropped range (row counts
+   per day, hot vs Parquet).
+
+- **Effort:** 3–4 engineer-weeks. **Risk:** medium–high, because live OEE depends on it.
+- **Rollback:** each repoint is a flag flip, and the caggs stay until the exit criterion holds.
+- **Exit criteria:** 7 days of zero-diff; no `SELECT` in `pg_stat_statements` reads any cagg for
+  7 days; rollup tick time and DB CPU no worse than before; read-api p95 no worse.
+
+### Phase C: drop the extension
+
+1. Each hypertable becomes a native `PARTITION BY RANGE` table with daily partitions and a BRIN on
+   time. Copy day by day, then rename-swap (the transplant's swap pattern). pg_cron creates and
+   drops partitions from `ops.retention_policy`.
+2. Policies and `add_job` actions move to pg_cron. The bronze immutability triggers stay as they are.
+3. Tooling: transplant `build.py`/`10-policies.sql`, dev seed, restore script, exporter, Grafana,
+   the edge-api teardown `SET LOCAL`.
+4. `DROP EXTENSION timescaledb` after 30 days with no TimescaleDB call in `pg_stat_statements`.
+5. **Re-rehearse the transplant** (0 catalog diffs, swap time, OOM check).
+
+- **Effort:** 1–2 engineer-weeks plus the rehearsal. **Risk:** medium; it is mostly mechanical.
+- **Rollback:** the swap keeps the old table until verified.
+- **Exit criteria:** `pg_extension` has no `timescaledb`; the rehearsal is clean; disk and CPU are
+  within the §3 sizing.
+
+**Total B + C ≈ 4–6 engineer-weeks (estimate).**
 
 ---
 
-## 8. Decision and phased plan
+## 9. Production promotion and timing
 
-### Phase A — fix inside Timescale (now, small, reversible)
+The promotion (#1653) builds production with a **rehearsed TimescaleDB transplant**: 5 hypertables
+and 7 caggs `WITH NO DATA`, then policies, then cagg refreshes, with 0 catalog diffs. Two orders
+are possible:
 
-1. **`ca_equipment_boxes_1s`:** prove its readers (`serving.report_shift`, `reports/sap13_body.sql:122`)
-   get nothing today (0 rows), then remove its refresh policy (job 1014) and replace the read with
-   the barcode source or drop the cagg. **Expected:** −12 % of one vCPU and roughly −6.7 % of DB statement time (estimate: ≈ 1,920 runs since 09-24 × 108 s ≈ 207,000 s of the 3.07 M s total).
-   Rollback: `add_continuous_aggregate_policy` again.
-2. **No real-time cagg reads inside DML.** Check which other engine paths read
-   `equipment_categorical_1min` inside `INSERT … SELECT`/`UPDATE` (**unverified** how many) and apply the #1770 pattern (a separate SELECT), or set
-   `materialized_only = true` on the caggs whose readers tolerate the 1–2 min lag. Measure: the
-   `equipment_categorical_1min` share of `pg_stat_statements` (29.7 % today).
-3. **Exporter:** run the Timescale size queries less often (they ran 543,735 times since 09-24, ≈ 2 % of DB time).
-4. **Pin the staging image** to an explicit Timescale version and align it with production
-   (2.25.2-pg16 vs 2.27.0-pg15) before promotion.
-5. Turn on `timescaledb.enable_job_execution_logging` so job cost is visible per run.
+| Order | For | Against |
+|---|---|---|
+| Promote with TimescaleDB, then B/C on staging and prod | uses the rehearsed path; no new risk at cutover | Phases B/C run twice (staging and prod); prod should first move to 2.27 (§7 step 1) |
+| B/C first, re-rehearse, promote on plain PostgreSQL 16 | prod never runs TimescaleDB; one migration | promotion waits 4–6 weeks; new rehearsal |
 
-### Phase B — keep through promotion
-
-Promote with the rehearsed transplant. Do not change the engine's inputs in the same window.
-
-### Phase C — only if a trigger fires (managed PostgreSQL, a Timescale upgrade that breaks, or the engine taking over minute rollups)
-
-1. Engine writes `silver.equipment_minute` / `_hour` itself (incremental by tick + invalidation
-   table fed by repairs and late data); run it **in parallel** with the caggs (shadow), compare
-   per equipment-hour for 7 days (zero-diff gate, the method of bug-276).
-2. Repoint readers one at a time (rollup, deriver, read-api, serving, FDW) behind a config flag.
-3. Native partitioning for the 5 hypertables: new partitioned table, copy by day, rename-swap
-   (the transplant's swap pattern); partitions managed by pg_cron.
-4. Retention → partition drops; `add_job` actions → pg_cron.
-5. `DROP EXTENSION timescaledb` last, after 30 days with no Timescale calls in `pg_stat_statements`.
-
-**Rollback at every step:** the old path stays until its replacement has passed a zero-diff soak;
-each repoint is a flag flip; the swap keeps the old table (as the transplant keeps the old DB).
-**Measure:** gold zero-diff per equipment-hour, rollup tick time, DB CPU, disk growth, read-api p95.
+This is a **scheduling decision for the user**. Neither order is a technical necessity.
 
 ---
 
-## 9. Evidence files
+## 10. Evidence files
 
-Saved outside the repo (scratchpad `ts-evidence/`), produced by read-only sessions
-(`SET default_transaction_read_only = on`):
+Saved outside the repo (scratchpad `ts-evidence/` and `tsa-ev/`), produced by read-only sessions
+(`SET default_transaction_read_only = on`; plans are `EXPLAIN` without `ANALYZE` for DML):
 
 | File | Content |
 |---|---|
-| `q1_inventory.txt` | version, extensions, settings, hypertables, approximate rows |
-| `q2_caggs_jobs.txt` | caggs, cagg sources, compression settings and stats, jobs, job_stats |
-| `q3_workload.txt` | job errors, recent chunks, last-24 h counts, DB and relation sizes |
-| `q4_pgss_deps.txt` | `bgw_job_stat` cumulative durations, logging setting, statement totals |
-| `q5_pgss_deps.txt` | statement share by object, top statements, view/function dependencies, grants |
-| `q6_tsinternal.txt` | Timescale-internal statements, triggers, indexes, cagg definitions |
-| `q7_boxes.txt` | `ca_equipment_boxes_1s` contents, watermarks, extension availability |
-| `grep_*.txt` | repo greps behind §3 |
+| `q1`–`q7` (`ts-evidence/`) | first pass: inventory, caggs, jobs, workload, statement shares, internals, `ca_equipment_boxes_1s` |
+| `a1*.out`, `parity*.out` (`tsa-ev/`) | A1: invalidation log, readers, live definitions, `report_shift` parity |
+| `a2*.txt`, `hourspeed.txt`, `snap1/2.out` | A2: plans of the DML vs SELECT forms; 7-minute statement deltas |
+| `adrq*.out`, `cad.out` | the re-verification of §2–§5 and the `ca_discrete_changes_1s` readers/scope |
+| `hostq.out` | staging DB host image digests (A4) |
 
-## 10. Consequences
+## 11. Unverified
 
-- Timescale stays; the team keeps its runbook rules (§5.1) and should add "a cagg with a −infinity
-  watermark is a defect" to the data invariants.
-- Phase A removes most of Timescale's CPU cost without touching the promotion.
-- If a managed PostgreSQL service is ever chosen, this ADR's §7–§8 is the starting estimate.
+- Whether TimescaleDB 2.25.2 shows the same watermark, compressed-DML and invalidation behaviour as 2.27.0.
+- The DML scan cost of uncompressed 30-day partitions versus today's compressed chunks for the widest reads.
+- RDS/Aurora not offering the extension (external).
+- Peak ingest rate (only 24 h averages were measured).
+
+## 12. Consequences
+
+- Phase A removes most of TimescaleDB's CPU cost now, without touching the promotion.
+- New TimescaleDB features (new caggs, new compression, new `add_job` actions) should not be
+  added. Each one deepens the coupling Phase B removes.
+- "A cagg with a −infinity watermark or an unconsumed invalidation backlog is a defect" belongs
+  in the data invariants until Phase C.
