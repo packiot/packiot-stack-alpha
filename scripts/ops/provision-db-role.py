@@ -23,7 +23,7 @@ postgres:15-alpine on the stack network.
   provision-db-role.py --service barcode-service --check         # verify only (steps 1 + 4)
   provision-db-role.py --service barcode-service --rotate        # new password; then recreate the service
   provision-db-role.py --service barcode-service --env production --db-host <h> --admin-host <h>
-  (services: operator-gateway, barcode-service, stream-engine)
+  (services: operator-gateway, barcode-service, stream-engine, legacy-replicator)
 """
 import argparse
 import base64
@@ -56,6 +56,11 @@ ROLES = {
         "role": "stream_engine",
         "staging_host": STAGING_DB_HOST,   # direct: session advisory locks + SET (see compose.staging.yml)
         "settings": {"app.tenant_id": "-1"},   # cross-tenant engine: the all-tenant RLS sentinel
+    },
+    "legacy-replicator": {                 # DEST login of legacy-replicator AND legacy-replicator-sbx
+        "role": "legacy_replicator",
+        "staging_host": STAGING_DB_HOST,   # direct: pgbouncer's static db list excludes packiot_analytics
+        "settings": {},   # no tenant default: each instance stamps app.tenant_id=DST_ENTERPRISE at connect
     },
 }
 

@@ -38,6 +38,7 @@ services:
       - ../db/migrations/t-operator-gateway-role:/devseed-migrations/t-operator-gateway-role:ro
       - ../db/migrations/t-barcode-service-role:/devseed-migrations/t-barcode-service-role:ro
       - ../db/migrations/t-stream-engine-role:/devseed-migrations/t-stream-engine-role:ro
+      - ../db/migrations/t-legacy-replicator-role:/devseed-migrations/t-legacy-replicator-role:ro
     shm_size: 256m
     healthcheck:
       # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary
