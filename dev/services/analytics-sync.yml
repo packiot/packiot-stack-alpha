@@ -18,13 +18,7 @@ services:
         condition: service_healthy
     environment:
       LOG_LEVEL: info
-      SHADOW_MIRROR_ENABLED: "false"
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER:?set in dev/.env.dev}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
-      PG_DB_NAME: packiot
-      PG_ANALYTICS_DB_NAME: packiot_analytics
+      SHADOW_MIRROR_ENABLED: "false"   # idle: no DB connection, so no DB credentials (as staging)
       POLL_INTERVAL_MS: "2000"
       BATCH_SIZE: "100"
       MAX_RETRIES: "5"
