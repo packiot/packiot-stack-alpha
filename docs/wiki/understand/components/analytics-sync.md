@@ -224,8 +224,8 @@ legacy-replicator (`internal/replicate/config.go`). Staging values from `compose
 | `REPLICATE_ENABLED` | `false` | `true` / `${REPLICATE_SBX_ENABLED:-false}` | Master switch; off = idle HTTP only |
 | `LEGACY_DB_HOST` / `_PORT` / `_USER` / `_NAME` | legacy host / 5432 / SELECT-only user / `packiot40` | same | Source; never written |
 | `LEGACY_DB_PASSWORD` | — | `.env` | Required when enabled; boot refuses without it |
-| `DEST_DB_HOST` / `_PORT` / `_USER` / `_NAME` | DB host / 5432 / `postgres` / `packiot_analytics` | DB host, `${POSTGRES_USER}` | Destination |
-| `DEST_DB_PASSWORD` | — | `${POSTGRES_PASSWORD}` | Required when enabled |
+| `PG_SECRET_ID`, `AWS_REGION` | none (empty = boot error), `us-east-1` | `${LEGACY_REPLICATOR_PG_SECRET_ID:-packiot/staging/legacy-replicator-db-creds}`, `us-east-1` (both instances) | Destination login: the least-privilege `legacy_replicator` role (`{host: 10.10.10.89, port, user, password, name}`); no `env_file`. Each connection stamps `app.tenant_id = DST_ENTERPRISE` |
+| `CREDS_SOURCE=env` + `DEST_DB_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_NAME` | — / DB host / 5432 / `legacy_replicator` / — / `packiot_analytics` | not set | Dev and tests only: destination login from env instead of Secrets Manager |
 | `SRC_ENTERPRISE` / `DST_ENTERPRISE` | `1` / `3` | `1`→`3`; `1`→`2000003` | Tenant map |
 | `BACKFILL_SINCE_DAYS` | `60` | `60` | Cold-start history depth |
 | `BACKFILL_SINCE` | — | — | `YYYY-MM-DD` or RFC3339; overrides days on cold start |
