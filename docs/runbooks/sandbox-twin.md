@@ -47,6 +47,7 @@ workstation with AWS access):
 | enterprise config: sites, areas, equipments, packml topics, shifts, shift hours, targets, reasons | QA test users (`qa-*`) and the sandbox api key |
 | all POs + their runtime windows | the live telemetry stream (always mirrored) |
 | events of the last 14 days (justifications, splits), all manual events | older OEE history (it's the sandbox's own copy of CPACK's) |
+| | barcode box scans and box counters (`bronze.box_scans`, `gold.po_box_counter`) and sample labels; a scan is removed only when its PO, line, area or site no longer exists after the reset (`db/migrations/t-sandbox-heal-keep-box-scans`) |
 
 ## Under the hood (for engineers)
 
