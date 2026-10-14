@@ -236,18 +236,28 @@ The server flags (`shared_preload_libraries`, `max_connections=200`, `pg_stat_st
 
 ## Is TimescaleDB still needed?
 
-[ADR-0063](../../adr/0063-timescaledb-necessity.md) (Proposed, 2026-10-14) answers this with catalog
-numbers and call sites. Short version:
+[ADR-0063](../../adr/0063-timescaledb-necessity.md) (Proposed, rewritten 2026-10-14) answers with
+catalog numbers and call sites. Short version: **not necessary, but coupled.**
 
-- **Yes, for now.** The OEE engine reads the continuous aggregates (`equipment_categorical_1min`
-  and `_1hour` in 8 rollup/event files), compression saves about 21 GB on an 18 GB database, and
-  the production target is a self-hosted TimescaleDB container on EC2 (no RDS/Aurora plan).
+- **Not needed for scale.** 18 GB and 1.9 M rows/day (≈ 22 rows/s). With a 14–30 day hot window
+  the whole hot DB is about 10–20 GB uncompressed, which is plain partitioned PostgreSQL territory.
+  The cold tier already has no TimescaleDB: the [historian](historian-gateway.md) is PostgreSQL 16
+  + `pg_duckdb` + `postgres_fdw` over Parquet on S3.
+- **Coupled through the caggs.** The engine reads `equipment_categorical_1min` and `_1hour` as
+  inputs (29.6 % of DB statement time), and so do serving functions, read-api and the historian
+  FDW. Compression matters little: over half of its saving is `ca_discrete_changes_1s`, whose only
+  reader (the status-4 deriver) produced 0 events in 7 days.
+- **Plan.**
+  - **Phase A** (cleanup, 2026-10-14): drop the empty `ca_equipment_boxes_1s`, read-as-SELECT
+    for the closer and the hour speed pass, cache the exporter's size queries, pin the image,
+    log job runs.
+  - **Phase B:** the engine maintains its own minute/hour rollups with late-data invalidation,
+    readers move off the caggs, `ca_discrete_changes_1s` goes, the hot window shrinks behind the
+    historian.
+  - **Phase C:** native partitions + pg_cron, drop the extension, re-rehearse the transplant.
 - **Not used at all:** `time_bucket_gapfill`, `locf`, `interpolate`, the toolkit.
-- **Waste to remove first:** the empty `ca_equipment_boxes_1s` refresh, real-time cagg reads
-  inside DML, and frequent exporter chunk-size queries.
-- **Full removal** (native partitioning + engine-maintained rollups + pg_cron) is estimated at
-  5–8 engineer-weeks. It becomes the plan only if the platform moves to a managed PostgreSQL
-  service or a Timescale upgrade forces it.
+- **Promotion timing:** whether to leave TimescaleDB before or after the production promotion is a
+  scheduling decision, not a technical necessity.
 
 ## Operating it
 
