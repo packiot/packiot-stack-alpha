@@ -302,7 +302,7 @@ Detail: [read-api](../understand/components/read-api.md).
 | | `INCOPLAST_ENTERPRISE_ID`, `INCOPLAST_TOPIC_PREFIX` | `4`, `INCOPLAST` | tenant scope |
 | | `PG_SECRET_ID` | `${OPERATOR_GATEWAY_PG_SECRET_ID:-packiot/staging/operator-gateway-db-creds}` (Secrets Manager; `CREDS_SOURCE` unset, no `env_file`) | DB login as the least-privilege `operator_gateway` role (`10.10.10.89`/`packiot_analytics`); never the admin `POSTGRES_*` (CI `check-db-least-priv.py`). Provisioning: [operator-gateway README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/operator-gateway/README.md#provisioning-the-db-role) |
 | | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://tempo:4317` | traces |
-| `barcode-service` | `DB_HOST`/`PORT`/`USER`/`PASSWORD`/`NAME` | `pgbouncer`, `packiot_analytics` | DB |
+| `barcode-service` | `PG_SECRET_ID` | `${BARCODE_SERVICE_PG_SECRET_ID:-packiot/staging/barcode-service-db-creds}` (Secrets Manager; `CREDS_SOURCE` unset, no `env_file`) | DB login as the least-privilege `barcode_service` role (`pgbouncer`/`packiot_analytics`); never the admin `POSTGRES_*` (CI `check-db-least-priv.py`). Provisioning: [barcode-service README](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/barcode-service/README.md#provisioning-the-db-role) |
 | | `HTTP_PORT`, `LOG_LEVEL` | `8446`, `info` | `/v1/scans` |
 | | `COGNITO_ISSUER`, `COGNITO_CLIENT_ID`, `FIREBASE_PROJECT_ID` | staging pool, empty | JWT auth; an explicitly empty `FIREBASE_PROJECT_ID` turns Firebase off (unset would fall back to the code default) |
 
