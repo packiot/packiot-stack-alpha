@@ -151,7 +151,9 @@ that birth defines. The drain is the only reader of the outbox (single-drainer i
 | `LOG_LEVEL` | `info` | slog level |
 | `MQTT_STALE_THRESHOLD_SECONDS` | unset ⇒ 60 s | `≤0` disables "no raw tags received" degradation (set `-1` where tags come only via HTTP) |
 | `AGENT_HTTP_INGEST_ENABLED` | `false` | Mount `/v1/tags` |
-| `AGENT_INGEST_API_KEY` | — | Required when ingest is enabled; empty ⇒ exit 1 |
+| `AGENT_INGEST_API_KEY` | — | LEGACY shared key, any group (deprecated). With no per-tenant map it is required when ingest is enabled; no usable key ⇒ exit 1 |
+| `AGENT_INGEST_KEYS_SECRET_ID` / `AGENT_INGEST_KEYS_JSON` | — | Per-tenant key map `{"<sha256 hex of key>": ["GROUP", …]}` (hashes only) from Secrets Manager or inline; a key used for a group it is not bound to ⇒ 403 `rejected_key_scope`. Read at start; unreadable or malformed ⇒ exit 1. Runbook `docs/runbooks/per-tenant-ingest-keys.md` |
+| `AGENT_INGEST_LEGACY_KEY_ALLOWED` | `true` | `false` ⇒ the shared `AGENT_INGEST_API_KEY` is 401. While `true`, each request on it counts as outcome `legacy_key` |
 | `AGENT_INGEST_PORT` | `9104` | Ingest listener |
 | `AGENT_INGEST_MAX_BODY_BYTES` | `0` ⇒ 1 MiB | Body cap |
 | `AGENT_NUMERIC_INGEST_ENABLED` | `false` | Mount `/v1/counters` (single-file only); fails if `raw_tag_map` has no count leaves |
@@ -176,7 +178,9 @@ Staging values (`sparkplug-agent-shared`): `AGENT_TENANTS_DIR=/etc/packiot/tenan
 `AGENT_HTTP_INGEST_ENABLED=true`, `AGENT_INGEST_PORT=9104`, `MQTT_STALE_THRESHOLD_SECONDS=-1`,
 `AGENT_BIRTH_ALL_MAPPED=true`, `AGENT_CAPTURE_ENABLED=true` (compose default),
 `AGENT_TENANTS_PROFILE_DIR=/etc/packiot/tenant-profiles`, `mem_limit 192m`, `cpus 0.50`;
-`AGENT_INGEST_API_KEY` and `AGENT_REGISTER_DSN` come from `/opt/packiot/.env`. Everything else
+`AGENT_INGEST_LEGACY_KEY_ALLOWED=true` and `AGENT_INGEST_KEYS_SECRET_ID` empty (compose defaults,
+2026-10-14: per-tenant keys not provisioned yet); `AGENT_INGEST_API_KEY` and `AGENT_REGISTER_DSN`
+come from `/opt/packiot/.env`. Everything else
 is the binary default. The outbox volume is still named `edge_transformer_agent_outbox` and the
 paths say `edge-transformer`; that is a historical name, not a separate service.
 

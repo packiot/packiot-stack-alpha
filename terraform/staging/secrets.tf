@@ -141,6 +141,20 @@ resource "aws_secretsmanager_secret" "agent_ingest" {
   description             = "CPACK sparkplug-agent X-Ingest-Key (ADR-0042 P1) — populate manually, see comment above"
 }
 
+# ── per-tenant ingest key map (shared ingest door, 2026-10-14) ────────────────
+# sparkplug-agent-shared reads this when compose sets AGENT_INGEST_KEYS_SECRET_ID.
+# Value: {"<sha256-hex of an ingest key>": ["GROUP", ...], ...} — key HASHES
+# only; the keys themselves are generated on the app host and handed to each
+# client's Node-RED, never stored here. No secret_version on purpose (Terraform
+# must not hold the value); the app instance role already reads
+# packiot/staging/* (ec2.tf). Populate per the runbook in
+# services/sparkplug-decoder/README.md ("Per-tenant ingest keys").
+resource "aws_secretsmanager_secret" "agent_ingest_keys" {
+  name                    = "packiot/staging/agent-ingest-keys"
+  recovery_window_in_days = 0
+  description             = "sparkplug-agent-shared per-tenant X-Ingest-Key map: sha256(key) -> [groups]. Hashes only."
+}
+
 # ── Node-RED admin auth ────────────────────────────────────────────────────────
 # Both edge-nodered and oeecloud use this single credential pair.
 # settings.js reads NODE_RED_ADMIN_USERNAME + NODE_RED_ADMIN_PASSWORD_HASH from env.

@@ -117,6 +117,9 @@ After changing `internal/httpserver/openapi.json`, run `make openapi` and commit
 - **Dashboards:** "API — RED" (`grafana/dashboards/library/12-api.json`) and "Operator — actions &
   adapter" (`grafana/dashboards/library/07-operator.json`) chart `ingest_shim_requests_total` by outcome.
   No alert rule references it.
+- **Tenancy:** the shim admits exactly one group (`SCOPE_GROUP`), so its single key is already
+  bound to one tenant. The multi-tenant door that needed per-tenant keys is `sparkplug-agent-shared`
+  (see [`docs/runbooks/per-tenant-ingest-keys.md`](../../docs/runbooks/per-tenant-ingest-keys.md)).
 - **Failure modes:**
   - 503 `publish failed` and `/healthz` `amqp_down` → broker down or credentials wrong; the publisher
     reconnects with jittered exponential backoff (`internal/amqp/publisher.go`).

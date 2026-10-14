@@ -41,7 +41,7 @@ last_verified: 2026-10-13
 | Operator super-admin | api-key + a verified `x-operator-superadmin-token` (`OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED`, on in staging) | cross-tenant target, audited |
 | barcode-service | Cognito JWT | the token's `custom:id_enterprise` claim |
 | Superset guest | short-lived guest token minted by edge-api | Superset applies the RLS clause `id_enterprise = N` to every query |
-| Edge reader | `X-Ingest-Key` on the HTTPS front door | Sparkplug group from the body or `X-Ingest-Group` → topic → `packml_register` → equipment → enterprise |
+| Edge reader | per-tenant `X-Ingest-Key` on the HTTPS front door, bound to the tenant's Sparkplug group(s); the old shared key is still accepted during the rollout | Sparkplug group from the body or `X-Ingest-Group`, which the key must be bound to (else 403) → topic → `packml_register` → equipment → enterprise |
 
 ## Defence in depth
 
@@ -71,11 +71,29 @@ The last two are rule 2 in action.
 
 - **Sandbox twin (2000003) shares ids with CPACK (+2,000,000).** Any code that matches on a
   non-unique id can cross tenants; address rows by their true key and tenant.
-- **The shared ingest door trusts the request for the tenant.** `sparkplug-agent-shared` has
-  one `X-Ingest-Key` for all tenants and routes by the Sparkplug group in the body or the
-  `X-Ingest-Group` header; the extra fence is network-level (the security group admits only
-  each onboarded box's source address on `:8449`). A key holder inside that allowlist could
-  claim another group.
+- **The shared ingest door still accepts the shared key (rollout in progress).**
+  `sparkplug-agent-shared` routes by the Sparkplug group in the body or the `X-Ingest-Group`
+  header. Since 2026-10-14 it supports per-tenant keys: a key map of SHA-256 hashes
+  (`AGENT_INGEST_KEYS_SECRET_ID`, Secrets Manager `packiot/staging/agent-ingest-keys`) binds each
+  key to its group(s), and a key used for another group is 403 (`rejected_key_scope`). Until every
+  box has its own key, `AGENT_INGEST_LEGACY_KEY_ALLOWED=true` (the default) keeps the old shared
+  key working for any group (counted as `legacy_key`, WARN-logged per group), so a holder of the
+  shared key inside the security-group allowlist (`:8449` per box `/32`) can still claim another
+  group. Closed when the flag goes to `false`.
+
+  **Rollout runbook** (`docs/runbooks/per-tenant-ingest-keys.md`):
+  1. Terraform-create the secret `packiot/staging/agent-ingest-keys` (user-gated apply).
+  2. On the app host, generate one key per tenant (`openssl rand -hex 32`) and store only
+     `{"<sha256(key)>": ["GROUP"]}` in that secret.
+  3. Set `AGENT_INGEST_KEYS_SECRET_ID` in compose and deploy; ingest is unchanged, the start-up
+     log lists the tenants still on the shared key.
+  4. Per client, coordinated with them: put the tenant's key in its Node-RED tee's `X-Ingest-Key`
+     header (CPACK) or in the edge box's `INGEST_KEY` (Bispharma, a factory-box change). Watch the
+     WARN for that group stop.
+  5. When `legacy_key` stays at 0, set `AGENT_INGEST_LEGACY_KEY_ALLOWED=false` and deploy.
+
+  Open gap: edge-api's onboarding bundle still hands new boxes the shared key
+  (`SSM_EDGE_INGEST_KEY`).
 - **Production MQTT ACL not wired.** `compose.production.yml` mounts `mosquitto.prod.conf`
   (mTLS on `:8883`, no `acl_file`); the per-tenant ACL `prod-ingest.acl` is only loaded by
   `mosquitto-prod-ingest.conf`. See [brokers](../components/brokers.md).

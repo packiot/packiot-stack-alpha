@@ -157,3 +157,10 @@ func fetchAMQPCredsFromEnv(host string, port int) (*AMQPCreds, error) {
 		Port:     port,
 	}, nil
 }
+
+// FetchJSON reads a Secrets Manager secret whose SecretString is a JSON
+// object. Used for non-AMQP secrets such as the ingest key map
+// (AGENT_INGEST_KEYS_SECRET_ID). Goes through the same fetchSecretJSON seam.
+func FetchJSON(ctx context.Context, region, secretID string) (map[string]any, error) {
+	return fetchSecretJSON(ctx, region, secretID)
+}

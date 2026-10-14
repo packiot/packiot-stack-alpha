@@ -288,7 +288,7 @@ func main() {
 		// would be a single sink feeding ALL tenants with no group routing. All
 		// tenant routing happens at the HTTP front-door on the envelope group.
 		// (Per-tenant rawmqtt subscribers are a v2 concern.)
-		ingestSrv = buildMultiIngestServer(cancel, routes, startLinkHealth(ctx, reg, logger), reg, logger)
+		ingestSrv = buildMultiIngestServer(ctx, cancel, routes, startLinkHealth(ctx, reg, logger), reg, logger)
 		logger.Info("sparkplug-agent starting (multi-tenant)", "tenants", len(ps), "tenants_dir", tenantsDir)
 	} else {
 		// ── SINGLE-FILE (AGENT_CONFIG / --config) — byte-identical behavior ────
@@ -578,14 +578,15 @@ func main() {
 		// is present: an enabled-but-keyless config fails closed (auth is never
 		// optional), the same discipline as ingest-shim's INGEST_API_KEY.
 		if getenvBool("AGENT_HTTP_INGEST_ENABLED", false) {
-			key := os.Getenv("AGENT_INGEST_API_KEY")
-			if key == "" {
-				logger.Error("AGENT_HTTP_INGEST_ENABLED=true but AGENT_INGEST_API_KEY is empty — refusing to serve ingest with auth disabled")
+			auth, err := loadIngestAuth(ctx)
+			if err != nil {
+				logger.Error("ingest auth", "err", err)
 				os.Exit(1)
 			}
+			auth.logSummary(logger, []string{cfg.Sparkplug.GroupID})
 			ingestOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: "sparkplug_agent_http_ingest_total",
-				Help: "HTTP raw-tag ingest requests by outcome (received|accepted|rejected_auth|rejected_scope|rejected_bad).",
+				Help: ingestOutcomesHelp,
 			}, []string{"outcome"})
 			reg.MustRegister(ingestOutcomes)
 
@@ -622,14 +623,13 @@ func main() {
 					"count_indices", translator.Len())
 			}
 
-			hi := httpingest.New(httpingest.Config{
-				APIKey:          key,
+			hi := httpingest.New(auth.apply(httpingest.Config{
 				ScopeGroup:      cfg.Sparkplug.GroupID, // agent serves exactly one tenant
 				MaxBodyBytes:    int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
 				Numeric:         translator,
 				NumericUnmapped: numericUnmapped,
 				Link:            startLinkHealth(ctx, reg, logger),
-			}, p.ingest, ingestOutcomes, logger)
+			}), p.ingest, ingestOutcomes, logger)
 			ingestAddr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 			ingestSrv = &http.Server{Addr: ingestAddr, Handler: hi.Handler()}
 			go func() {
@@ -1263,26 +1263,30 @@ func sanitizeGroup(g string) string {
 // deploy with AGENT_HTTP_INGEST_ENABLED unset or no key is a fatal misconfig
 // (the agent would have no way to receive data). Auth discipline mirrors the
 // single-file front-door (enabled-but-keyless fails closed).
-func buildMultiIngestServer(cancel context.CancelFunc, routes map[string]httpingest.Sink, link func(string, rawtag.Link), reg *prometheus.Registry, logger *slog.Logger) *http.Server {
+func buildMultiIngestServer(ctx context.Context, cancel context.CancelFunc, routes map[string]httpingest.Sink, link func(string, rawtag.Link), reg *prometheus.Registry, logger *slog.Logger) *http.Server {
 	if !getenvBool("AGENT_HTTP_INGEST_ENABLED", false) {
 		logger.Error("AGENT_TENANTS_DIR is set (multi-tenant) but AGENT_HTTP_INGEST_ENABLED is not true — multi-tenant mode has no other ingest front-door (rawmqtt is single-tenant/no-op)")
 		os.Exit(1)
 	}
-	key := os.Getenv("AGENT_INGEST_API_KEY")
-	if key == "" {
-		logger.Error("AGENT_HTTP_INGEST_ENABLED=true but AGENT_INGEST_API_KEY is empty — refusing to serve ingest with auth disabled")
+	auth, err := loadIngestAuth(ctx)
+	if err != nil {
+		logger.Error("ingest auth", "err", err)
 		os.Exit(1)
 	}
+	served := make([]string, 0, len(routes))
+	for g := range routes {
+		served = append(served, g)
+	}
+	auth.logSummary(logger, served)
 	ingestOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "sparkplug_agent_http_ingest_total",
-		Help: "HTTP raw-tag ingest requests by outcome (received|accepted|rejected_auth|rejected_scope|rejected_bad).",
+		Help: ingestOutcomesHelp,
 	}, []string{"outcome"})
 	reg.MustRegister(ingestOutcomes)
-	hi := httpingest.NewRouter(httpingest.Config{
-		APIKey:       key,
+	hi := httpingest.NewRouter(auth.apply(httpingest.Config{
 		MaxBodyBytes: int64(getenvInt("AGENT_INGEST_MAX_BODY_BYTES", 0)),
 		Link:         link,
-	}, routes, ingestOutcomes, logger)
+	}), routes, ingestOutcomes, logger)
 	addr := fmt.Sprintf(":%d", getenvInt("AGENT_INGEST_PORT", 9104))
 	srv := &http.Server{Addr: addr, Handler: hi.Handler()}
 	groups := make([]string, 0, len(routes))

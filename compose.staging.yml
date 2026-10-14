@@ -338,9 +338,23 @@ services:
       # ── HTTP raw-tag front-door (Mode-A direct-to-ingest) ─────────────────
       AGENT_HTTP_INGEST_ENABLED: "true"
       AGENT_INGEST_PORT: "9104"
-      # Shared ingest key (all tenants); per-tenant isolation is enforced by the
-      # agent group routing + the SG /32 per box. # FILL AT DEPLOY
+      # LEGACY shared ingest key (admits every tenant). Deprecated 2026-10-14 in
+      # favour of per-tenant keys below; still accepted while
+      # AGENT_INGEST_LEGACY_KEY_ALLOWED is true. # FILL AT DEPLOY
       AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:-}
+      # ── per-tenant ingest keys (shared-door fence, 2026-10-14) ─────────────
+      # Secrets Manager JSON {"<sha256-hex of key>": ["GROUP", ...]} — HASHES
+      # only, never keys. A key may publish only for its bound group(s); another
+      # group is 403 (metric outcome rejected_key_scope). Empty ⇒ no map (today's
+      # behaviour). Set it only AFTER the secret exists: a configured-but-missing
+      # secret makes the agent exit at start (fail loud, not open). Runbook:
+      # services/sparkplug-decoder/README.md "Per-tenant ingest keys".
+      AGENT_INGEST_KEYS_SECRET_ID: ${AGENT_INGEST_KEYS_SECRET_ID:-}
+      # true (default) keeps accepting the legacy shared key for any group, logged
+      # as deprecated and counted as outcome legacy_key. Flip to false once
+      # legacy_key stays at 0 (every box posts with its own key).
+      AGENT_INGEST_LEGACY_KEY_ALLOWED: "${AGENT_INGEST_LEGACY_KEY_ALLOWED:-true}"
+      AWS_REGION: us-east-1
       # Birth-completeness ON per tenant (matches cpack) — NBIRTH covers each
       # tenant's full raw_tag_map so a line idle at connect is aliased on first report.
       AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-true}"
