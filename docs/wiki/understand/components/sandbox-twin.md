@@ -37,8 +37,8 @@ Policy (2026-10-14): the heal resets **everything** it reflects, barcode box sca
 | Direction | What |
 |---|---|
 | Reads | CPACK (ent 3) rows in `core.*`, `silver.equipment_events`, `silver.equipment_events_man`, `core.production_orders`, `gold.production_orders_runtime`, gold history; `identity.user_logs` of ent 2000003 (hold detection) |
-| Writes (heal) | the ent 2000003 copies of those rows; deletes `gold.po_box_counter` and `bronze.box_scans` of ent 2000003 (once #1759's rollback is applied, see [History](#history)) |
-| Not touched by the heal | `bronze.sample_boxes` (sample labels), `config.equipment_out_of_service`, QA users `qa-*@packiot.com`, the sandbox api-key, live telemetry and older history |
+| Writes (heal) | the ent 2000003 copies of those rows; deletes `gold.po_box_counter` and `bronze.box_scans` of ent 2000003 (once #1759's rollback is applied, see [History](#history)); replaces `bronze.sample_boxes` (sample labels) and `config.equipment_out_of_service` of ent 2000003 with CPACK's, ids mapped (from 2026-10-14, after migration `t-sandbox-heal-reset-samples-oos`) |
+| Not touched by the heal | QA users `qa-*@packiot.com`, the sandbox api-key, live telemetry and older history |
 
 ## Internal design
 
@@ -160,6 +160,7 @@ leaves `healing_since` set, so the twin is not due again for an hour.
 | 2026-09-30 | grace hold and timer (`t-sandbox-grace-hold`, `t-sandbox-hold-mode`) |
 | 2026-10-14 | PRODT-164: `t-sandbox-running-po-runtime`, `SANDBOX_HOLD_BASE_EVENTS` |
 | 2026-10-14 | #1759 made box scans survive heals; **reverted** the same day by user decision (the sandbox resets completely). The DB rollback is the migration's `rollback.sql`, applied on staging by hand; the revert PR is merged only after that |
+| 2026-10-14 | `t-sandbox-heal-reset-samples-oos`: the heal also resets sample labels (`bronze.sample_boxes`) and out-of-service windows (`config.equipment_out_of_service`) to CPACK's, mapped (equipment/area/site + 2,000,000, PO + 500,000,000) |
 
 ## Source map
 
@@ -172,6 +173,7 @@ leaves `healing_since` set, so the twin is not due again for an hour.
 | `db/migrations/t-sandbox-reflection` | `ops.sandbox_reflect` |
 | `db/migrations/t-sandbox-grace-hold`, `t-sandbox-hold-mode` | hold state, `sandbox_is_change`, `sandbox_hold_status`, heal begin/end, hold modes |
 | `db/migrations/t-sandbox-reflect-catalog-extras`, `t-sandbox-attribution-sync`, `t-sandbox-reflect-line-roles`, `t-adr0062-sandbox-twin-po-uuid` | heal fixes and parity steps |
+| `db/migrations/t-sandbox-heal-reset-samples-oos` | heal resets sample labels + out-of-service windows |
 | `db/migrations/t-sandbox-running-po-runtime` | `ops.sandbox_fix_running_without_runtime` (PRODT-164) |
 | `services/analytics-sync/internal/replicate/hold.go` | the replicator's hold gate |
 | `e2e/global-setup.ts`, `e2e/.env.example` | E2E heal-first and sandbox credentials |

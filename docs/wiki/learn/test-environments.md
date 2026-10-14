@@ -47,8 +47,9 @@ current (Pack4) platform unless a page says otherwise.
   justified, a box scanned) restarts the 4-hour clock. When nobody has touched it for 4 hours,
   the sandbox resets to CPACK-Staging, usually within 5 minutes.
 - **Nothing you did in the sandbox survives a reset**: test orders, justifications, manual
-  stops, barcode scans and configuration changes all go. (Sample labels and out-of-service
-  windows are the current exceptions.)
+  stops, barcode scans, sample labels, out-of-service windows and configuration changes all go
+  (sample labels and out-of-service windows from 2026-10-14, after migration
+  `t-sandbox-heal-reset-samples-oos`).
 - **A nightly tidy-up** at 06:00 UTC (03:00 São Paulo) resets the sandbox when nobody is
   holding it.
 - **The sandbox is shared.** One person's changes keep it for everybody; one person's "reset

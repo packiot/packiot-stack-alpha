@@ -95,13 +95,16 @@ test and tell the team if you hold it overnight.
 | Stops | your justifications and splits of the last 14 days are undone; manual stops you added are gone |
 | Configuration | areas, machines, shifts, targets and stop reasons are CPACK-Staging's again; anything you created is gone |
 | Barcode | all box scans and box counts are gone, so **label numbering starts again at 1** for every PO |
+| Sample labels | your sample labels and sample totals are gone; the sandbox has CPACK-Staging's (usually none) |
+| Out-of-service windows | windows you added are gone; the sandbox has CPACK-Staging's (usually none) |
 | Logins | the QA logins keep working (they are not reset) |
 | Live counts and history | untouched: they are a copy of CPACK-Staging's anyway |
 
-!!! note "Not reset today"
+!!! note "Sample labels and out-of-service windows: reset from 2026-10-14"
     **Sample labels** (the sample total and printed sample labels) and **out-of-service
-    windows** are not part of the reset yet; they stay until someone deletes them. Do not rely
-    on them being empty after a reset.
+    windows** are part of the reset from 2026-10-14, after migration
+    `t-sandbox-heal-reset-samples-oos` is applied on staging. Before that they stayed until
+    someone deleted them.
 
 ## Keep your work longer, check the status, or reset now
 
