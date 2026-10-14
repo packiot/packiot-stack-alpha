@@ -166,6 +166,11 @@ SELECT CASE WHEN to_regprocedure('ops.sandbox_resync_gold_history(integer,intege
 -- (t-sandbox-attribution-sync; the reflect touches neither). No-op on a DB without it.
 DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_sync_attribution(integer,integer,integer,text,text)') IS NOT NULL THEN
   RAISE NOTICE '%', ops.sandbox_sync_attribution($SRC_ENT, $SENT, $OFF); END IF; END \$\$;
+-- PRODT-164 AC-03: never hand testers a Running PO without an open runtime window (the
+-- reflect copies the source's invariant violations as-is) — open one where the line is
+-- free, else pause it (t-sandbox-running-po-runtime). No-op on a DB without it.
+DO \$\$ BEGIN IF to_regprocedure('ops.sandbox_fix_running_without_runtime(integer)') IS NOT NULL THEN
+  RAISE NOTICE 'running POs without a window: %', ops.sandbox_fix_running_without_runtime($SENT); END IF; END \$\$;
 SELECT 'SANDBOX analytics reflected: ent '||$SENT AS status,
   serving.refresh_downtime_events_resolved(now() - interval '15 days', now()) AS resolved_rows,
   (SELECT count(*) FROM core.production_orders WHERE id_enterprise=$SENT) AS pos,

@@ -150,6 +150,8 @@ type BaseReconciler struct {
 	cfg    *Config
 	m      BaseReconcileMetrics
 	logger *slog.Logger
+
+	passOverride func(context.Context, time.Time) error // tests only
 }
 
 func NewBaseReconciler(legacy, dest *pgxpool.Pool, r *Resolver, cfg *Config, m BaseReconcileMetrics, logger *slog.Logger) *BaseReconciler {
@@ -185,14 +187,40 @@ func (br *BaseReconciler) RunForever(ctx context.Context) error {
 	}
 }
 
+// baseRunsUnderHold reports whether a pass may run in the given sandbox hold mode.
+// A heal always pauses it (the reflect copies the source at one instant). A
+// hands-on session pauses it unless SandboxHoldBaseEvents: then new PLC stops keep
+// arriving (insert-only, ±1 s guard — a tester's justification, split or manual
+// event is never touched), so the Events tab stays live during the session
+// (PRODT-164 AC-02). Without the flag a session froze the sandbox's stops until the
+// heal 4 h after the last change.
+func baseRunsUnderHold(mode string, sessionAllowed bool) bool {
+	switch mode {
+	case HoldNone:
+		return true
+	case HoldSession:
+		return sessionAllowed
+	default: // HoldHealing (and anything new): stand down
+		return false
+	}
+}
+
 func (br *BaseReconciler) runOnce(ctx context.Context) {
-	if br.cfg.Hold.Held(ctx) {
-		return // sandbox session/heal — the heal reflects the source's current events
+	if !baseRunsUnderHold(br.cfg.Hold.Mode(ctx), br.cfg.SandboxHoldBaseEvents) {
+		return // sandbox heal (or session without the flag) — the heal reflects the source's current events
 	}
 	since := time.Now().Add(-time.Duration(br.cfg.ReconcileBaseEventsLookbackHours) * time.Hour)
-	if err := br.pass(ctx, since); err != nil {
+	if err := br.passFn()(ctx, since); err != nil {
 		br.logger.Warn("base-event reconcile pass failed", slog.String("err", err.Error()))
 	}
+}
+
+// passFn is the pass to run (a seam for tests; nil = the real pass).
+func (br *BaseReconciler) passFn() func(context.Context, time.Time) error {
+	if br.passOverride != nil {
+		return br.passOverride
+	}
+	return br.pass
 }
 
 func (br *BaseReconciler) pass(ctx context.Context, since time.Time) error {

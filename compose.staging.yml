@@ -3499,6 +3499,10 @@ services:
       # sandbox, stop replaying CPACK's actions into it (cursor still advances); the
       # grace-period heal restores CPACK's current state, then mirroring resumes.
       SANDBOX_HOLD_ENABLED: "true"
+      # PRODT-164 AC-02: keep inserting new PLC stops (base-event reconciler,
+      # insert-only) during a hands-on session so the Events tab stays live; a heal
+      # still pauses it. Off unless /opt/packiot/.env sets SANDBOX_HOLD_BASE_EVENTS=true.
+      SANDBOX_HOLD_BASE_EVENTS: ${SANDBOX_HOLD_BASE_EVENTS:-false}
       # PO reconciler — backfills/finishes POs the user_logs replay structurally
       # misses, keeping the sandbox PO set current (matches the ent-3 replicator).
       RECONCILE_PO_ENABLED: "true"
