@@ -47,6 +47,10 @@ SERVICES = {
     # production still runs the pre-split `public` layout as packiot/production/db; its role comes with the
     # production promotion (services/stream-engine/README.md § Database role)
     "stream-engine": ("stream_engine", ["compose.staging.yml", "dev/compose.yml"]),
+    # one role, two instances (CPACK ent 3 + the sandbox twin); the DEST login only — the LEGACY source login
+    # (LEGACY_DB_*) is a different database and out of scope. Not in dev (no legacy stand-in) or production yet.
+    "legacy-replicator": ("legacy_replicator", ["compose.staging.yml"]),
+    "legacy-replicator-sbx": ("legacy_replicator", ["compose.staging.yml"]),
 }
 
 # service → (the env flag that would make it connect, the compose files it must appear in)
@@ -104,13 +108,15 @@ for path, extra in COMPOSE_FILES.items():
             errors.append(f"{where}: env_file {files} puts .env (admin POSTGRES_* and all secrets) into "
                           f"the container; list the needed values under environment: instead")
 
-        user = env.get("DB_USER")
+        # legacy-replicator names its analytics login DEST_DB_* (its LEGACY_DB_* login is another database)
+        user_key = "DEST_DB_USER" if "DEST_DB_USER" in env else "DB_USER"
+        user = env.get(user_key)
         if user is not None and user != role:
-            errors.append(f"{where}: DB_USER={user!r}; must be the literal role {role!r}")
+            errors.append(f"{where}: {user_key}={user!r}; must be the literal role {role!r}")
 
         if default_of(env.get("CREDS_SOURCE", "")) == "env":
             if user != role:
-                errors.append(f"{where}: CREDS_SOURCE=env needs DB_USER={role!r}")
+                errors.append(f"{where}: CREDS_SOURCE=env needs {user_key}={role!r}")
         else:
             secret = default_of(env.get("PG_SECRET_ID", ""))
             if not secret:

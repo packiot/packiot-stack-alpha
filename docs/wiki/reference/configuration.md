@@ -222,7 +222,7 @@ Detail: [Legacy bridge](../understand/subsystems/legacy-bridge.md), [analytics-s
 |---|---|---|---|
 | `legacy-replicator` / `-sbx` | `REPLICATE_ENABLED` | `true` / from `REPLICATE_SBX_ENABLED` (compose default `false`); code default `false` | master switch |
 | | `LEGACY_DB_HOST`/`PORT`/`USER`/`NAME`, `LEGACY_DB_PASSWORD` | legacy `packiot40`, SELECT-only login; password from `.env` (`databaseCredentials`) | source |
-| | `DEST_DB_*` | `10.10.10.89`, `packiot_analytics` | destination |
+| | `PG_SECRET_ID`, `AWS_REGION` | `${LEGACY_REPLICATOR_PG_SECRET_ID:-packiot/staging/legacy-replicator-db-creds}`, `us-east-1` (no `env_file`; `DEST_DB_*` and `CREDS_SOURCE` not set) | destination login as the least-privilege `legacy_replicator` role (`10.10.10.89`, `packiot_analytics`); each connection stamps `app.tenant_id = DST_ENTERPRISE` |
 | | `SRC_ENTERPRISE`, `DST_ENTERPRISE` | `1` → `3` / `1` → `2000003` | tenant mapping |
 | | `CURSOR_SOURCE` | `legacy-cpack` / `legacy-sbxcpack` | cursor + DLQ key in `ops.mirror_replay_dlq` |
 | | `BACKFILL_SINCE_DAYS`, `REPLICATE_BASE_EVENTS` | `60`, `true` | initial window, replicate base events |
