@@ -117,7 +117,12 @@ docker run -d \
   -c "auto_explain.log_nested_statements=on" \
   -c "log_min_duration_statement=3000" -c "track_io_timing=on" -c "log_checkpoints=on" \
   -c "log_lock_waits=on" -c "log_autovacuum_min_duration=0" \
+  -c "timescaledb.enable_job_execution_logging=on" \
   -c "log_line_prefix=%m [%p] %u@%d %a "
+# timescaledb.enable_job_execution_logging (ADR-0063 A5, 2026-10-14): every background-job
+# run gets a job_history row, not only failures. It is a sighup GUC, applied live by
+# db/migrations/t-timescale-job-execution-logging (ALTER SYSTEM + reload); this flag keeps it
+# on a recreated box.
 # The observability flags above (auto_explain, pg_stat_statements.track=all, lock-wait /
 # checkpoint / autovacuum logging) were LIVE-only until the 2026-09-24 recreate — codified
 # here so a rebuilt box keeps the slow-query + nested-statement visibility the DB dashboards

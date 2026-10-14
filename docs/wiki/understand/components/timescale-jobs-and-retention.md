@@ -276,6 +276,19 @@ Refresh the categorical 1-minute cagg before the 1-hour one: the hourly cagg is 
 Pause and resume a job: `SELECT alter_job(<id>, scheduled => false)` … `=> true`. Run one now:
 `CALL run_job(<id>)`.
 
+Cost per job run. `timescaledb.enable_job_execution_logging = on` is set by migration
+`t-timescale-job-execution-logging` and the `db_init.sh` flag. With it, every run has a row in
+`timescaledb_information.job_history`; before that, only failures did. Job 3 keeps one month, at most
+1,000 successes per job.
+
+```sql
+SELECT job_id, proc_name, count(*) runs, round(avg(extract(epoch FROM finish_time - start_time))::numeric, 2) avg_s,
+       round(sum(extract(epoch FROM finish_time - start_time))::numeric) total_s
+  FROM timescaledb_information.job_history
+ WHERE start_time > now() - interval '1 hour' AND succeeded
+ GROUP BY 1, 2 ORDER BY total_s DESC;
+```
+
 Recent purge results:
 
 ```sql
