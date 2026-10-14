@@ -190,7 +190,7 @@ and each tick increments `oeecloud_worker_job_ticks_total{job,outcome}` with `ok
 | `po-runtime-refresh` | `PO_RECALC_INTERVAL_MINUTES` (1) | `PO_RECALC_ENABLED` (on) | propagate header flags → `RunCompute` (PO runtime rows) → `RunRecalc` (PO headline OEE) → closed-row sweep → `uns.RefreshCurrentJobs` |
 | `stranded-flag-sweep` | 1 h (fixed) | `STRANDED_FLAG_SWEEP_ENABLED` (default on) and PO recalc or rollup on | clear `recalc_needed` on rows no pass can reach and WARN with counts (#1541) |
 | `provisional-speed-inference` | 1 h (fixed) | `PROVISIONAL_SPEED_INFERENCE_ENABLED` (off) | set `production_speed` of opted-in lines to the p95 of productive per-minute counts; deadline 10 min |
-| `uns-refresh` | `UNS_INTERVAL_MINUTES` (5) | `UNS_REFRESH_ENABLED` (on) | provision UNS rows, refresh area/site live day/shift, equipment month/shift/day |
+| `uns-refresh` | `UNS_INTERVAL_MINUTES` (5) | `UNS_REFRESH_ENABLED` (on) | provision UNS rows, refresh area live day/shift and equipment month/shift/day (live day = current production day from the shift calendar, not the UTC date) |
 | `uns-current-metrics` | `UNS_CURRENT_METRICS_INTERVAL_MINUTES` (1) | `UNS_CURRENT_METRICS_ENABLED` (on) | rebuild `equipment_live_metrics` (live state/speed; lines borrow their lead machine's signal) |
 | `events-deriver` | `EVENTS_DERIVER_INTERVAL_MINUTES` (1) | `EVENTS_DERIVER_ENABLED` (on) | state transitions → interval events for `status_type = 4` equipment and `EVENTS_WIDEROW_STATE_ENTERPRISES` machines |
 | `cpac-events-deriver` (shadow) | `CPAC_EVENT_DERIVATION_INTERVAL_MINUTES` (1) | `CPAC_EVENT_DERIVATION_ENABLED` and `CPAC_EVENT_ENTERPRISES` (host `.env`) | count-silence stops into `CPAC_EVENT_TARGET_TABLE` (shadow table) |

@@ -224,20 +224,29 @@ func Loop(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []
 // visibly advances every tick (the area refreshers omit it; the seed
 // leaves it NOT NULL at Provision time, which read as "frozen").
 
-// Equipment current-day: the single current-day runtime row → the UNS
-// day tile. Mirrors refreshHourEquipmentSQL at day grain (source
-// equipment_oee_daily, keyed on ts_value = today's date).
+// Equipment current-day: the single current-PRODUCTION-day runtime row → the UNS
+// day tile. KEY = the production-day label from piot_get_day_begin_by_equipment
+// (2026-10-13 fix): equipment_oee_daily.ts_value is the production-day DATE
+// label, and the day begins per the shift calendar (CPACK 02:10 UTC), so the old
+// `ts_value = date_trunc('day', now())::date` served the NEXT production day's
+// empty row between UTC midnight and the day begin (and the wrong day all
+// window long for later-starting tenants). elapsed_time likewise counts from
+// the production-day begin, not UTC midnight.
 const refreshDayEquipmentSQL = `
-	WITH prod AS (
-	    SELECT id_equipment, ts_value, net, gross, scrap, speed,
-	           oee, oee_p, oee_a, oee_q, available_time, running_time,
-	           stopped_time, planned_downtime, ideal_production,
-	           idle_time, idle_starved, idle_blocked, target, proportional_target
+	WITH cur AS (
+	    SELECT e.id_equipment, db.ts_value AS ts_begin, db.ts_value_production::date AS ts_day
+	      FROM %[2]s.equipments e
+	      CROSS JOIN LATERAL (SELECT ts_value, ts_value_production
+	                            FROM piot_get_day_begin_by_equipment(e.id_equipment, now()) LIMIT 1) db
+	     WHERE e.tp_equipment > 1
+	       AND NOT (e.id_area = ANY($1)) AND NOT (e.id_enterprise = ANY($2))
+	), prod AS (
+	    SELECT v.id_equipment, v.ts_value, cur.ts_begin, v.net, v.gross, v.scrap, v.speed,
+	           v.oee, v.oee_p, v.oee_a, v.oee_q, v.available_time, v.running_time,
+	           v.stopped_time, v.planned_downtime, v.ideal_production,
+	           v.idle_time, v.idle_starved, v.idle_blocked, v.target, v.proportional_target
 	      FROM %[1]s.equipment_oee_daily v
-	     WHERE ts_value = date_trunc('day', now())::date
-	       AND id_equipment IN (SELECT id_equipment FROM %[2]s.equipments
-	            WHERE tp_equipment > 1
-	              AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
+	      JOIN cur ON v.id_equipment = cur.id_equipment AND v.ts_value = cur.ts_day
 	)
 	UPDATE %[3]s.equipment_live_day u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
@@ -249,7 +258,7 @@ const refreshDayEquipmentSQL = `
 	       ideal_production = p.ideal_production, idle_time = p.idle_time,
 	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
 	       target = p.target, proportional_target = p.proportional_target,
-	       elapsed_time = extract(epoch FROM (now() - date_trunc('day', now())))::int,
+	       elapsed_time = extract(epoch FROM (now() - p.ts_begin))::int,
 	       last_updated = now()
 	  FROM prod p WHERE u.id_equipment = p.id_equipment`
 

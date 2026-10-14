@@ -43,11 +43,13 @@ func TestRefreshShape(t *testing.T) {
 // sourced from the runtime tables, and each ADVANCES last_updated so
 // the frozen freshness timestamp moves.
 func TestEquipmentShiftDayShape(t *testing.T) {
-	// day: sourced from equipment_oee_daily at today's bucket.
+	// day: sourced from equipment_oee_daily at the current PRODUCTION day
+	// (shift-calendar label), never the UTC calendar date.
 	for _, m := range []string{
 		"equipment_oee_daily",
 		"equipment_live_day",
-		"date_trunc('day', now())::date",
+		"piot_get_day_begin_by_equipment(e.id_equipment, now())",
+		"v.ts_value = cur.ts_day",
 		"tp_equipment > 1",
 		"id_area = ANY($1)", "id_enterprise = ANY($2)",
 		"last_updated = now()",
@@ -114,6 +116,24 @@ func TestEquipmentShiftDaySQLBuilds(t *testing.T) {
 			if strings.Contains(out, "%!") || strings.Contains(out, "%[") {
 				t.Errorf("Sprintf verb residue for %v", schemas)
 			}
+		}
+	}
+}
+
+// TestLiveDayKeyIsProductionDay — both live-DAY refreshers must key the gold day
+// row by the shift-calendar production-day label, never the UTC calendar date
+// (2026-10-13: the UTC key served the next, empty production day between UTC
+// midnight and the day begin → front4 Home 0 / 0 %).
+func TestLiveDayKeyIsProductionDay(t *testing.T) {
+	for name, sql := range map[string]string{
+		"area":      refreshDayAreaSQL,
+		"equipment": refreshDayEquipmentSQL,
+	} {
+		if !strings.Contains(sql, "piot_get_day_begin_by_") || !strings.Contains(sql, "v.ts_value = cur.ts_day") {
+			t.Errorf("%s live-day refresh is not keyed by the production-day label", name)
+		}
+		if strings.Contains(sql, "date_trunc('day', now())") {
+			t.Errorf("%s live-day refresh still keys by the UTC calendar date", name)
 		}
 	}
 }

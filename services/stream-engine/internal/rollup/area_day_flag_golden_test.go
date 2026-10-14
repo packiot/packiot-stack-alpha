@@ -72,3 +72,53 @@ func TestGoldenAreaDayFlagChangeDriven(t *testing.T) {
 		t.Fatalf("changed line day did not propagate: area computed_at %v (was %v), net %v want 450", after, before, net)
 	}
 }
+
+// TestGoldenAreaDayFlagCurrentDayLive — the area's CURRENT production day must follow
+// its lines DURING the day. RunDay re-flags every line's current day right after
+// computing it, so between ticks that line row is always recalc_needed = true; the
+// cascade used to require ed.recalc_needed = false and therefore never flagged the
+// running area day → area_oee_daily (and area_live_day → front4 Home) read 0 until
+// the day closed (staging 2026-10-13: area 10 day computed once at 00:00:58, gross 0,
+// while its lines carried 121,759 … ).
+func TestGoldenAreaDayFlagCurrentDayLive(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = "golden, public"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, s := range []string{goldenSchema, cascadeSchema, `
+		-- line 33 (area 2), current day: just computed by this tick's RunDay (fresh
+		-- computed_at) and immediately re-flagged by RunDay's current-day tail.
+		INSERT INTO golden.equipment_oee_daily (id_equipment, ts_value, recalc_needed, gross, net, available_time, running_time, planned_downtime, ideal_production, computed_at)
+		VALUES (33, current_date, true, 500, 450, 3600, 1800, 0, 1000, now());
+		-- the area's current day: provisioned/computed at day start with zeros.
+		INSERT INTO golden.area_oee_daily (id_area, ts_value, gross, net, available_time, running_time, planned_downtime, ideal_production, computed_at)
+		VALUES (2, current_date, 0, 0, 0, 0, 0, 0, now() - interval '1 hour');`} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+	}
+	d := flows.Dest{Name: "golden", Pool: pool, EvSchema: "golden", RefSchema: "golden", SilverSchema: "golden",
+		GoldSchema: "golden", GrainSchema: "golden", ConfigSchema: "golden"}
+	if err := RunEntityGrains(ctx, d, []int{}); err != nil {
+		t.Fatalf("RunEntityGrains: %v", err)
+	}
+	var gross, net float64
+	if err := pool.QueryRow(ctx, `SELECT gross, net FROM golden.area_oee_daily WHERE id_area = 2 AND ts_value = current_date`).Scan(&gross, &net); err != nil {
+		t.Fatal(err)
+	}
+	if gross != 500 || net != 450 {
+		t.Fatalf("running area day did not follow its (re-flagged) line: gross %v net %v, want 500/450", gross, net)
+	}
+}

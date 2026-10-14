@@ -93,7 +93,12 @@ from `silver.equipment_values.*_total`.
 `stream-engine` `internal/uns`: `equipment_live_metrics` (latest values),
 `equipment_live_shift` (current shift + `prev1..prev3` trailing shifts), `equipment_live_day`,
 `equipment_live_month`, `equipment_live_job` (running PO), `area_live_shift`, `area_live_day`. Read
-by `serving.production_information`, `serving.mission_control*` and read-api live datasets.
+by `serving.production_information`, `serving.mission_control*`, `serving.home` (front4 Home area
+cards read `area_live_day`) and read-api live datasets. The `*_live_day` tables copy the gold day row
+of the **current production day** — the label `piot_get_day_begin_by_area` / `_by_equipment` returns
+for `now()` (CPACK's day begins 02:10 UTC), not the UTC calendar date; `elapsed_time` counts from that
+day begin. Refreshed every `uns-refresh` tick (5 min) from gold, which the rollup recomputes every
+minute for the running day.
 
 **Readable projections** — `silver.equipment_values_labeled`, `silver.equipment_events_labeled`
 join `silver.machine_state` to add `state_label` / `is_running` / `is_stopped`; the values view also
