@@ -881,12 +881,10 @@ None found (searched: `redis`).
 | Var | Default | Staging |
 |---|---|---|
 | SHADOW_MIRROR_ENABLED | `false` (`services/analytics-sync/internal/config/config.go:53`) | `false` (`:3154`) |
-| AWS_REGION | `us-east-1` (`services/analytics-sync/internal/config/config.go:46`) | `us-east-1` (`:3155`) — **read but unused** |
-| PG_SECRET_ID | `packiot/staging/db` (`services/analytics-sync/internal/config/config.go:47`) | `packiot/staging/db` (`:3156`) — **read but never used**: only refs are `config.go:23⚠ambiguous[services/analytics-sync/internal/config/config.go|services/analytics-sync/internal/replicate/config.go|services/ingest-shim/internal/config/config.go|services/mirror-worker-go/internal/config/config.go|services/oeecloud-fanout/internal/config/config.go|services/sparkplug-decoder/internal/config/config.go|services/stream-engine/internal/config/config.go],47` (grep `PGSecretID`); code has `TODO Phase 2: fetch creds from AWS Secrets Manager` (`services/analytics-sync/cmd/shadow-mirror/main.go:52`) |
-| DB_HOST / DB_PORT | `postgres` / 5432 (`services/analytics-sync/cmd/shadow-mirror/main.go:56-57`) | `10.10.10.89` / `5432` (`:3163-3164`) — **direct, no pgbouncer** |
-| DB_USER / DB_PASSWORD | `postgres` / `""` → exit if empty (`services/analytics-sync/cmd/shadow-mirror/main.go:58-63`) | `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` (`:3167-3168`) |
-| PG_DB_NAME | `packiot` (`services/analytics-sync/internal/config/config.go:48`) | `packiot` (`:3169`) |
-| PG_ANALYTICS_DB_NAME | `packiot_analytics` (`services/analytics-sync/internal/config/config.go:49`) | `packiot_analytics` (`:3170`) |
+| DB_HOST / DB_PORT | `postgres` / 5432 (`services/analytics-sync/cmd/shadow-mirror/main.go` `dbCredsFromEnv`) | not set (idle: no DB connection) |
+| DB_USER / DB_PASSWORD | none / none → exit if either is empty when enabled (`dbCredsFromEnv`) | not set; no `env_file` (CI `check-db-least-priv.py` NO_DB) |
+| PG_DB_NAME | `packiot` (`services/analytics-sync/internal/config/config.go:48`) | not set (code default) |
+| PG_ANALYTICS_DB_NAME | `packiot_analytics` (`services/analytics-sync/internal/config/config.go:49`) | not set (code default) |
 | POLL_INTERVAL_MS / BATCH_SIZE / MAX_RETRIES | 2000 / 100 / 5 (`services/analytics-sync/internal/config/config.go:50-52`) | `2000`/`100`/`5` (`:3171-3173`) |
 | HEALTH_PORT | 9103 (`services/analytics-sync/internal/config/config.go:54`, `services/analytics-sync/cmd/shadow-mirror/main.go:157`) | `9103` (`:3174`) |
 | LOG_LEVEL | `info` (`services/analytics-sync/internal/config/config.go:55`) | `info` (`:3147`) |

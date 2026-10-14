@@ -252,8 +252,10 @@ legacy-replicator (`internal/replicate/config.go`). Staging values from `compose
 shadow-mirror (`internal/config/config.go`): `SHADOW_MIRROR_ENABLED` (default `false`),
 `PG_DB_NAME` (`packiot`), `PG_ANALYTICS_DB_NAME` (`packiot_analytics`), `DB_HOST`/`DB_PORT`/
 `DB_USER`/`DB_PASSWORD`, `POLL_INTERVAL_MS` (2000), `BATCH_SIZE` (100), `MAX_RETRIES` (5),
-`HEALTH_PORT` (9103), `LOG_LEVEL`. `PG_SECRET_ID` and `AWS_REGION` are set in compose but the
-Secrets Manager fetch was never implemented (credentials come from env).
+`HEALTH_PORT` (9103), `LOG_LEVEL`. Idle (staging and dev) it opens no DB connection, so compose gives
+it **no DB credentials and no `env_file`** (it used to carry the admin `POSTGRES_*` and the whole `.env`);
+`scripts/ci/check-db-least-priv.py` keeps it that way. Enabled, it needs both `DB_USER` and
+`DB_PASSWORD` (no default user, so never the admin by accident) and a least-privilege role of its own.
 
 ## Data & invariants
 

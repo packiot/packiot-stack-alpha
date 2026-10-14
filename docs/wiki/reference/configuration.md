@@ -235,7 +235,7 @@ Detail: [Legacy bridge](../understand/subsystems/legacy-bridge.md), [analytics-s
 | | `SANDBOX_HOLD_ENABLED` (sbx only) | `true` (code default `false`) | sandbox grace hold: a hands-on session pauses replication, then the twin self-heals to CPACK |
 | | `DLQ_CAPTURE_ENABLED`, `DLQ_RETRY_ENABLED` | not set (code default `true`) | capture failed rows and retry them |
 | `analytics-sync` | `SHADOW_MIRROR_ENABLED` | `false` | shadow mirror off |
-| | `PG_SECRET_ID`, `DB_*`, `PG_DB_NAME`, `PG_ANALYTICS_DB_NAME` | `packiot/staging/db`, `10.10.10.89`, `packiot`, `packiot_analytics` | DBs |
+| | `DB_*`, `PG_DB_NAME`, `PG_ANALYTICS_DB_NAME` | not set: idle, no DB connection, no `env_file` (CI `check-db-least-priv.py` NO_DB) | enabled mode only: needs `DB_USER` + `DB_PASSWORD` of its own role |
 | | `POLL_INTERVAL_MS`, `BATCH_SIZE`, `MAX_RETRIES`, `HEALTH_PORT` | `2000`, `100`, `5`, `9103` | loop tuning |
 | `mirror-worker-go` (retired) | `PROD_DB_SECRET_ID`, `STAGING_DB_SECRET_ID`, `SOURCE_NAME`, `PROD_ENTERPRISE_ID`, `STAGING_ENTERPRISE_ID`, `POLL_INTERVAL_SEC`, `BATCH_SIZE`, `PER_POST_DELAY_MS`, `STAGING_API_URL`, `HEALTH_PORT`, `SHADOW_*`, `RECONCILE_*` | `databaseCredentials`, `packiot/staging/db`, `cpack-prod-go`, `1`, `3`, … | legacy→staging replay (profile `legacy-comparator`) |
 
