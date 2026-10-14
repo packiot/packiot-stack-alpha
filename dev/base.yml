@@ -17,7 +17,7 @@ services:
   # DEVDB_IMAGE. The timescale image runs CREATE EXTENSION timescaledb in
   # POSTGRES_DB on first boot.
   postgres:
-    image: ${DEVDB_IMAGE:-timescale/timescaledb:2.27.0-pg15}
+    image: ${DEVDB_IMAGE:-timescale/timescaledb:2.27.0-pg15@sha256:3f77046809de51aacf70719c3662f05e0bf9d29c0c7f9d8bda6bb57a0c6fe400}
     environment:
       DEVDB_EXPECT_SEED: ${DEVDB_EXPECT_SEED:-1}   # healthcheck: require seed data (0 = plain DB)
       POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}

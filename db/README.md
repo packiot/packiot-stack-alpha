@@ -90,7 +90,8 @@ image's auto-created `timescaledb`; `pg_cron` is not created in the dev path.)*
 
 ### 2. Staging / the DB image (`db/Dockerfile`)
 
-`db/Dockerfile` builds `timescale/timescaledb:latest-pg15` and **compiles
+`db/Dockerfile` builds on `timescale/timescaledb:2.27.0-pg15`, pinned by digest (the
+image staging runs; `latest-pg15` moved to 2.28.3, ADR-0063 Phase A4), and **compiles
 `pg_cron` v1.6.5 from source** (the Alpine base ships no `pg_cron` package;
 `clang-19-stub.sh` no-ops the JIT bitcode step so `pgxs` completes — only the
 `.so` matters for a background worker). It bakes in

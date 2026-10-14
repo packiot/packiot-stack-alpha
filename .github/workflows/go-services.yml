@@ -121,7 +121,7 @@ jobs:
     services:
       postgres:
         # Same engine as the dev seed and staging: PostgreSQL 15.17 + TimescaleDB 2.27.0.
-        image: timescale/timescaledb:2.27.0-pg15
+        image: timescale/timescaledb:2.27.0-pg15@sha256:3f77046809de51aacf70719c3662f05e0bf9d29c0c7f9d8bda6bb57a0c6fe400
         env:
           POSTGRES_PASSWORD: golden
           POSTGRES_DB: golden
