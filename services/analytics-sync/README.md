@@ -70,7 +70,7 @@ N/A: neither binary uses RabbitMQ or MQTT; both poll Postgres.
 | Binary | Reads | Writes |
 |---|---|---|
 | analytics-sync (when enabled; **idle on staging and dev: no connection, no DB credentials**) | `packiot.public.user_logs` | `shadow_go_port.*` (main pool) and `packiot_analytics.public.*`; cursor `mirror_replay_cursor` source `shadow-mirror` |
-| legacy-replicator | legacy `user_logs`, `production_orders`, `equipment_events`, `equipment_events_man`, `packml_register`, products/clients | analytics `core.production_orders`, `core.products`/`clients`/`product_families`, `gold.production_orders_runtime`, `silver.equipment_events`, `silver.equipment_events_man`, `ops.mirror_replay_cursor` (source = `CURSOR_SOURCE`), `ops.mirror_replay_dlq`, `ops.legacy_manual_event_link`; calls `serving.refresh_downtime_events_resolved`; reads `ops.sandbox_held()` |
+| legacy-replicator | legacy `user_logs`, `production_orders`, `equipment_events`, `equipment_events_man`, `packml_register`, products/clients | analytics `core.production_orders`, `core.products`/`clients`/`product_families`, `gold.production_orders_runtime`, `silver.equipment_events`, `silver.equipment_events_man`, `ops.mirror_replay_cursor` (source = `CURSOR_SOURCE`), `ops.mirror_replay_dlq`, `ops.legacy_manual_event_link`, `serving.downtime_events_resolved` (through `serving.refresh_downtime_events_resolved`); reads `ops.sandbox_hold_mode()` |
 
 
 **Least privilege (analytics-sync).** The idle binary returns before it reads any DB setting, so
@@ -81,8 +81,67 @@ receive the Postgres admin `POSTGRES_*` and the whole `.env` for a path that nev
 DB, is retired, so a role would only grant a dead path. If it is ever re-enabled, give it a
 `t-analytics-sync-role` migration first (as operator-gateway and barcode-service have: `SELECT` on
 `user_logs` and the cursor, writes on its sink tables, NOBYPASSRLS) and move it to `SERVICES` in the
-check. legacy-replicator, the live binary of this module, still logs in to `packiot_analytics` as the
-admin (`DEST_DB_USER=${POSTGRES_USER}`); its role is a separate change.
+check.
+
+#### legacy-replicator database role
+
+The DEST (analytics) side logs in as the least-privilege **`legacy_replicator`** role
+([`db/migrations/t-legacy-replicator-role/`](../../db/migrations/t-legacy-replicator-role/)), never the
+Postgres admin. One role serves both instances (`legacy-replicator`, ent 3, and `legacy-replicator-sbx`,
+ent 2000003). NOSUPERUSER, NOBYPASSRLS, NOINHERIT, owns nothing. **The LEGACY source side is unchanged**:
+`LEGACY_DB_*`, the SELECT-only `awslambda` login on `packiot40`, read exactly as before.
+
+| What the replicator does (DEST statements, incl. triggers its writes fire) | Privilege |
+|---|---|
+| resolver: `core.packml_register` (security_invoker view → `core.topic_routing`), `core.equipments` | SELECT |
+| PO-number trigger `production_orders_po_number` on every PO INSERT/UPDATE: `core.po_number_corrections` | SELECT |
+| serving refresh joins: `core.sites`, `core.shifts`, `gold.equipment_oee_shift`; sandbox gate: `ops.sandbox_hold_status` | SELECT |
+| PO lifecycle replay, PO reconciler (insert, finish, fill start, retime, revert), enrich: `core.production_orders` | SELECT, INSERT, UPDATE |
+| enrich find-or-create dimensions: `core.products`, `core.product_families`, `core.clients` | SELECT, INSERT |
+| runtime windows open/close/reassign; converge deletes + re-inserts a PO's windows: `gold.production_orders_runtime` | SELECT, INSERT, UPDATE, DELETE |
+| base events (replay + base reconciler insert; classify/split update): `silver.equipment_events` | SELECT, INSERT, UPDATE |
+| manual-event reconciler (deletes only rows it owns): `silver.equipment_events_man` | SELECT, INSERT, UPDATE, DELETE |
+| `serving.refresh_downtime_events_resolved` (INVOKER: delete range + re-insert): `serving.downtime_events_resolved` | SELECT, INSERT, UPDATE, DELETE |
+| cursor `ops.mirror_replay_cursor` | SELECT, INSERT, UPDATE |
+| DLQ `ops.mirror_replay_dlq`, provenance `ops.legacy_manual_event_link` | SELECT, INSERT, UPDATE, DELETE |
+| sequences: `core.production_orders_internal_id_order_seq` (trigger), `core.product_families_id_product_family_seq`, `silver.equipment_events_source_seq_seq`, `ops.mirror_replay_dlq_id_seq` | USAGE |
+| enrich `RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS`: `core.products_id_product_seq`, `core.clients_id_client_seq` (`last_value` + `setval`) | SELECT, UPDATE, USAGE |
+| INVOKER functions: `public.current_tenant()`, `public.is_all_tenant()` (RLS), `core.uuidv7(timestamptz)` (`po_uuid` default), `ops.sandbox_hold_mode(int)`, `serving.refresh_downtime_events_resolved(tstz, tstz)` | EXECUTE |
+| the database | CONNECT |
+
+Not granted: DDL (the binary used to `CREATE SCHEMA ops` / `CREATE TABLE IF NOT EXISTS` its cursor, DLQ and
+provenance tables at boot; that DDL is now section 1 of the migration and the code only checks the tables),
+TRUNCATE, REFERENCES, TRIGGER, TEMPORARY, DELETE on `core.*` and `silver.equipment_events`, any UPDATE on
+`core.equipments` / `core.topic_routing`, `identity.*`. `verify.sql` V4 pins exactly these 25
+table/sequence grants (missing|extra|wrong = 0|0|0), V9 the 5 functions.
+
+**RLS: tenant-scoped, not cross-tenant.** Each instance mirrors exactly one tenant, and every statement is
+keyed on it or on its equipment. So the role has **no `app.tenant_id` default**; each DEST connection stamps
+`app.tenant_id = DST_ENTERPRISE` in its startup packet (`db.DBCreds.Params`). On the FORCE-RLS tables
+(`core.equipments`, `core.topic_routing`, `core.production_orders`, `gold.production_orders_runtime`,
+`gold.equipment_oee_shift`, `serving.downtime_events_resolved`) a bug that addresses another tenant's row
+matches nothing; a connection without the stamp sees no tenant rows (the resolver maps nothing, so nothing is
+written). The refresh function is cross-tenant in shape (it deletes a whole time range), but both its DELETE
+and its re-INSERT go through `serving.downtime_events_resolved`'s FORCE RLS, so a stamped caller
+re-resolves only its own tenant (the golden test proves other tenants' rows survive). Not `-1` (the
+all-tenant sentinel `stream_engine` uses): nothing here needs a second tenant, and `-1` would let the CPACK
+instance write the sandbox tenant. Like every RLS GUC in the stack, `app.tenant_id` is user-settable: a fence
+against bugs, not against a compromised process.
+
+**Proof.**
+- `verify.sql` on the dev seed: V0–V10 match; V10 shows 0 rows without the stamp, exactly tenant 3's with
+  it, and TRUNCATE / DDL / DELETE on core / `identity.users` / UPDATE `core.equipments` denied.
+- Golden test `TestGoldenLegacyReplicatorRoleCoversDestPath` (`-tags golden`, CI "golden fixtures"): applies
+  the real migration and drives the resolver, cursor, DLQ, 13 replay categories, the PO reconciler
+  (insert, converge, enrich with kept ids → `setval`), the base and manual reconcilers, the serving refresh
+  and the sandbox gate as the role, plus the RLS cases and the denials.
+- The real binary ran as the role on the dev seed against a throwaway Postgres carrying a synthetic legacy
+  schema (only the columns the replicator selects): every replay category, DLQ capture → retry →
+  success/backoff/retire, PO reconciler insert/finish/fill-start/retime/revert/converge, enrich (kept legacy
+  ids + `setval`, family by sequence), base reconciler + refresh, manual reconciler insert/move/update/
+  delete/adopt-link/prune + refresh. Postgres logged **0 `permission denied`**. The only DEST error, a
+  `production_orders_ts_start_ts_end` CHECK on re-replaying history through a second cursor, is identical
+  as the admin login.
 ## Configuration
 
 ### analytics-sync (`internal/config/config.go`, `cmd/shadow-mirror/main.go`)
@@ -106,8 +165,10 @@ admin (`DEST_DB_USER=${POSTGRES_USER}`); its role is a separate change.
 | `REPLICATE_ENABLED` | `false` | no | Master toggle; off = idle. Staging: `true` (sbx: `REPLICATE_SBX_ENABLED`, default `false`) |
 | `LEGACY_DB_HOST` / `_PORT` / `_USER` / `_NAME` | legacy prod host / `5432` / `awslambda` / `packiot40` | no | Source (SELECT-only user) |
 | `LEGACY_DB_PASSWORD` | — | yes when enabled | `.env` `LEGACY_DB_PASSWORD` |
-| `DEST_DB_HOST` / `_PORT` / `_USER` / `_NAME` | staging DB EC2 / `5432` / `postgres` / `packiot_analytics` | no | Destination (all writes + cursor) |
-| `DEST_DB_PASSWORD` | — | yes when enabled | `.env` `POSTGRES_PASSWORD` |
+| `PG_SECRET_ID` | — | yes when enabled (unless `CREDS_SOURCE=env`) | Destination login from Secrets Manager `{host, port, user, password, name}`; empty = boot error (no admin fallback). Staging: `${LEGACY_REPLICATOR_PG_SECRET_ID:-packiot/staging/legacy-replicator-db-creds}` on both instances |
+| `AWS_REGION` | `us-east-1` | no | Secrets Manager region |
+| `CREDS_SOURCE` | — | no | `env` = destination login from `DEST_DB_*` instead (dev / tests only; never set on staging) |
+| `DEST_DB_HOST` / `_PORT` / `_USER` / `_NAME` / `_PASSWORD` | staging DB EC2 / `5432` / `legacy_replicator` / `packiot_analytics` / — | with `CREDS_SOURCE=env` | Destination (all writes + cursor) |
 | `SRC_ENTERPRISE` / `DST_ENTERPRISE` | `1` / `3` | no | Enterprise map (sbx: `DST_ENTERPRISE=2000003`) |
 | `BACKFILL_SINCE_DAYS` / `BACKFILL_SINCE` | `60` / — | no | Cold-start history depth; `BACKFILL_SINCE` (RFC 3339 or `YYYY-MM-DD`) wins. An existing cursor is always kept |
 | `CURSOR_SOURCE` | `legacy-cpack` | no | `ops.mirror_replay_cursor.source` key (sbx: `legacy-sbxcpack`) |
@@ -169,9 +230,53 @@ DATABASE_URL=postgres://... go test -tags golden ./internal/replicate/   # DB-ba
   - *Missing table* (42P01) is fail-open in the replay handlers of both binaries: a dropped table
     loses writes silently. This is how manual events after 2026-09-12 were lost (the `public.`
     shim was dropped) until the manual reconciler took over.
+  - *`permission denied` in the log* — a statement outside the role's grants (see § legacy-replicator database
+    role). Emergency lever, no redeploy: `LEGACY_REPLICATOR_PG_SECRET_ID=packiot/staging/db` in
+    `/opt/packiot/.env`, recreate both replicators; then add the grant and remove the override.
+  - *Missing ops table* — the replicator no longer creates its tables: a missing `ops.mirror_replay_cursor`
+    is a boot error (`read cursor … 42P01`), a missing DLQ or provenance table is logged at boot
+    (DLQ capture degrades to log-only; the manual-event pass is disabled). Apply
+    `t-legacy-replicator-role/01-up.sql`.
   - *Sandbox held* — `legacy-replicator-sbx` writes nothing while `ops.sandbox_held(2000003)`
     ([`docs/runbooks/sandbox-twin.md`](../../docs/runbooks/sandbox-twin.md)).
 - **One-off repair:** `scripts/backfill-event-fcs-from-legacy.sh` (applied 2026-09-25; `MODE=dry` default).
+
+## Provisioning the legacy-replicator DB role
+
+Once per environment, **before** the compose change that points the replicators at the role is deployed (a
+deploy without the secret exits at boot: `dest DB credentials: get secret …`). Staging commands; no password
+leaves a host. The legacy side needs nothing.
+
+1. **Apply the migration** on the DB host (`packiot-staging-db`), as in
+   [Add a migration, steps 8–9](../../docs/wiki/build/develop/add-a-migration.md#8-dry-run-on-staging):
+   - Dry-run `01-up.sql` with `COMMIT` changed to `ROLLBACK`, then apply it. Section 1 (the ops tables) is a
+     no-op on staging: they exist.
+   - Run `verify.sql`. Every `V` line matches its label, and `I1` is `f`.
+2. **Copy `scripts/ops/provision-db-role.py`** to the app host if it is not already there.
+3. **Create the secret and set the password:** `python3 /root/provision-db-role.py --service legacy-replicator`.
+   - It creates `packiot/staging/legacy-replicator-db-creds` =
+     `{host: 10.10.10.89, port: 5432, user: legacy_replicator, password, name: packiot_analytics}`.
+   - Expect `4. login OK as legacy_replicator via 10.10.10.89/packiot_analytics (; …)` (no session default).
+4. **Re-run `verify.sql`**: `I1` is now `t`.
+5. **Merge and deploy.** "Deploy to Staging" recreates both replicators with no `.env`; their tuning keys still
+   arrive through the explicit pass-through block, and `LEGACY_DB_PASSWORD` is still interpolated by compose.
+6. **Verify, in the first 15 minutes** (both containers):
+   - `docker logs legacy-replicator 2>&1 | grep 'pool ready'` shows `"user":"legacy_replicator"` for
+     `legacy-replicator-dst` and `"user":"awslambda"` for `legacy-replicator-src` (unchanged).
+   - `docker logs --since 15m legacy-replicator 2>&1 | grep -c 'permission denied'` returns `0` (same for `-sbx`).
+   - The pass logs keep appearing (`PO reconcile pass done`, `base-event reconcile pass done`,
+     `manual-event reconcile pass done`) and `shadow_mirror_cursor` keeps moving.
+   - On the DB host,
+     `SELECT usename, count(*) FROM pg_stat_activity WHERE application_name = 'legacy-replicator-dst' GROUP BY 1;`
+     lists only `legacy_replicator`.
+   - `docker inspect legacy-replicator --format '{{json .Config.Env}}' | grep -c -E 'POSTGRES_(USER|PASSWORD)|RABBITMQ_(USER|PASSWORD)'`
+     returns `0`.
+
+**Emergency rollback (no redeploy):** `LEGACY_REPLICATOR_PG_SECRET_ID=packiot/staging/db` in
+`/opt/packiot/.env`, then `docker compose -f compose.staging.yml -p stack up -d --force-recreate legacy-replicator legacy-replicator-sbx`
+(the admin login ignores the tenant stamp: superuser bypasses RLS). **Full rollback:** revert the compose change
+and redeploy, then run `rollback.sql`. **Rotate:** `provision-db-role.py --service legacy-replicator --rotate`,
+then recreate both containers. **Production** has no legacy-replicator.
 
 ## Code layout
 

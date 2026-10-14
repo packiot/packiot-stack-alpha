@@ -29,7 +29,10 @@ type Config struct {
 	LegacyDBName   string
 
 	// DEST — staging analytics plane packiot_analytics. All writes land here;
-	// the cursor lives here too (source is read-only).
+	// the cursor lives here too (source is read-only). These DEST_DB_* fields are
+	// read ONLY with CREDS_SOURCE=env (dev/tests); staging/production take the DEST
+	// login from Secrets Manager PG_SECRET_ID (destcreds.go). The login is the
+	// least-privilege role legacy_replicator (db/migrations/t-legacy-replicator-role).
 	DestHost     string
 	DestPort     int
 	DestUser     string
@@ -174,7 +177,7 @@ func Load() *Config {
 
 		DestHost:     getenv("DEST_DB_HOST", "10.10.10.89"),
 		DestPort:     getenvInt("DEST_DB_PORT", 5432),
-		DestUser:     getenv("DEST_DB_USER", "postgres"),
+		DestUser:     getenv("DEST_DB_USER", DestRole),
 		DestPassword: getenv("DEST_DB_PASSWORD", ""),
 		DestDBName:   getenv("DEST_DB_NAME", "packiot_analytics"),
 
