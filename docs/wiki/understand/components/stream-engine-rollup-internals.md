@@ -65,8 +65,10 @@ Tables live in the analytics DB; the column definitions are in
   `piot_create_equipment_oee_hourly` labelled that bucket by the minute the job happened to run
   (legacy prod always ran it at minute 59, the engine at any minute), so CPACK, the twin, Incoplast,
   119 and 120 had production days with 23 or 25 hour rows. Invariant `K8_day_hour_rows_ne_day_hours`
-  (`db/migrations/t-data-invariants-v11`) checks that every settled day of the last 7 has exactly
-  day length / 3600 hour rows.
+  (`db/migrations/t-data-invariants-v11`, settled-day cutoff fixed in `-v12`) checks that every
+  settled day of the last 7 has exactly day length / 3600 hour rows. "Settled" = the next production
+  day has started (`piot_get_day_begin_by_equipment`), not "before today in UTC": production days end
+  at ~02:10 UTC (day_begin −3000 s tenants) or ~08:00–09:00 UTC (Bispharma).
 - Rows are **flagged** by the jobs themselves: each pass re-flags a recent band every tick
   (hour: `[date_trunc('hour', now − 2 h), now]`; shift: `[now − 12 h, now + 18 h)`; day: the current
   production day; week/month: the current bucket). Lower grains also flag higher ones (hour → day,
@@ -373,4 +375,5 @@ tests include `backfill_test.go`, `history_test.go`, `line_lead_scope_test.go`, 
 | `db/migrations/t-oee-uncapped-data/`, `t-history-uncap/` | relaxed OEE CHECKs, uncapped history |
 | `db/migrations/t-data-invariants-v10/` | K7: day time above the production-day length (day times stored raw since 2026-10-13) |
 | `db/migrations/t-data-invariants-v11/` | K8: hour rows per production day must equal the day's length / 3600 |
+| `db/migrations/t-data-invariants-v12/` | K8 judged on settled days only (next day's start ≤ now), not the UTC date |
 | `services/stream-engine/cmd/port-parity/`, `services/stream-engine/scripts/parity-check.sql` | parity tooling |
