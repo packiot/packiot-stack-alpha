@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -278,7 +279,7 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 	})
 
 	// ── Screen config (P2) — layout JSON per (user, screen).
-	// Table ensured by ensureSchema at startup (main.go).
+	// Table owned by db/migrations/t-readapi-screen-config; checked (never created) at boot.
 
 	mux.HandleFunc("/v1/screen-config", func(w http.ResponseWriter, r *http.Request) {
 		// ADR-0027 Surface-1: a saved layout is tenant-private. Scope both the
@@ -341,7 +342,7 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 
 	// ── Dashboard config (F2) — baseline ⊕ override, tenant-fenced.
 	// dashboard_config baseline is ensured by 28-refdata-tables.sql (prod-gated);
-	// user_screen_config override is ensured by ensureSchema (startup).
+	// user_screen_config override: db/migrations/t-readapi-screen-config.
 	mux.HandleFunc("/v1/dashboard-config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
@@ -413,7 +414,7 @@ func readBodyCapped(w http.ResponseWriter, r *http.Request, limit int64) (body [
 // components/dashboard/useDashboardConfig.js). Two tables compose it:
 //
 //	BASELINE  dashboard_config       (id_enterprise, dashboard_id, version) → config   [28-refdata-tables.sql]
-//	OVERRIDE  user_screen_config     (id_enterprise, id_user, screen)       → config   [ensureSchema]
+//	OVERRIDE  user_screen_config     (id_enterprise, id_user, screen)       → config   [t-readapi-screen-config]
 //
 // with `screen` == dashboard_id for the override. The served document is the
 // jsonb top-level SHALLOW MERGE `baseline || override` — override keys win — so a
@@ -581,32 +582,48 @@ func keysOf[V any](m map[string]V) []string {
 	return out
 }
 
-// ensureSchema is the startup migration hook — called once from main
-// before routes register, not as a route-registration side effect.
+// screenConfigCheckSQL reports whether identity.user_screen_config exists and
+// whether the login can read and upsert it. read-api issues NO DDL: the table is
+// owned by db/migrations/t-readapi-screen-config (and t276 grants readapi_ro
+// SELECT, INSERT, UPDATE on it). to_regclass and has_table_privilege need no
+// privilege on the table, so this works for any login.
+const screenConfigCheckSQL = `
+SELECT t IS NOT NULL,
+       COALESCE(has_table_privilege(t::oid, 'SELECT')
+            AND has_table_privilege(t::oid, 'INSERT')
+            AND has_table_privilege(t::oid, 'UPDATE'), false)
+  FROM (SELECT to_regclass('identity.user_screen_config') AS t) x`
+
+// rowQuerier is the slice of *pgxpool.Pool the boot check uses (fakeable in tests).
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// checkScreenConfigTable is the boot-time readiness probe for /v1/screen-config
+// and the /v1/dashboard-config override. It replaced ensureSchema, which ran
+// CREATE SCHEMA / CREATE TABLE / ALTER TABLE at every boot: a read API running
+// as the least-privilege readapi_ro has no CREATE or ownership, so that DDL was
+// always "permission denied" (swallowed) on staging and the dev seed. Schema
+// changes belong in db/migrations, not in a service's startup path.
 //
-// ADR-0027 Surface-1: user_screen_config is tenant-private. A fresh table is
-// keyed on (id_enterprise, id_user, screen). The ALTER/DROP/CREATE lines are
-// the idempotent forward-migration for a table created before Surface-1 (the
-// old PK was (id_user, screen)): add the owning enterprise, drop the old PK,
-// and re-key on a unique index that includes id_enterprise — the ON CONFLICT
-// target the upsert now uses. Backfilled rows get id_enterprise = 0 (an
-// unreachable tenant), so they are invisible to any real key. Multi-statement
-// Exec is fine on the simple protocol this pool uses.
-func ensureSchema(pool *pgxpool.Pool) {
-	// SCHEMA-QUALIFIED to auth (task #241 app-split: the `app` junk-drawer was split by
-	// concern, and user_screen_config — per-user identity/UI state — lands in `auth`).
-	// CREATE TABLE IF NOT EXISTS checks ONLY the creation namespace (first schema on the
-	// search_path), NOT the whole path — so an UNQUALIFIED create here would re-spawn an
-	// empty shadow in `gold` (the medallion first-schema) even though the real table
-	// lives in `auth`. CREATE SCHEMA IF NOT EXISTS identity first so a fresh dest self-provisions it.
-	_, _ = pool.Exec(context.Background(), `
-		CREATE SCHEMA IF NOT EXISTS identity;
-		CREATE TABLE IF NOT EXISTS identity.user_screen_config (
-			id_enterprise int NOT NULL DEFAULT 0,
-			id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
-			updated_at timestamptz NOT NULL DEFAULT now());
-		ALTER TABLE identity.user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
-		ALTER TABLE identity.user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
-		CREATE UNIQUE INDEX IF NOT EXISTS user_screen_config_tenant_key
-			ON identity.user_screen_config (id_enterprise, id_user, screen);`)
+// Non-fatal by design (same as before): the rest of the read plane does not
+// depend on this table. It logs an ERROR naming the migration when the table is
+// missing or the login cannot read/upsert it, so the gap is visible at boot
+// instead of as a 500 on the first PUT.
+func checkScreenConfigTable(ctx context.Context, q rowQuerier, logger *slog.Logger) (exists, writable bool) {
+	if err := q.QueryRow(ctx, screenConfigCheckSQL).Scan(&exists, &writable); err != nil {
+		logger.Warn("screen-config readiness check failed", slog.String("err", err.Error()))
+		return false, false
+	}
+	switch {
+	case !exists:
+		logger.Error("identity.user_screen_config is missing: /v1/screen-config and the dashboard-config override will 500",
+			slog.String("fix", "apply db/migrations/t-readapi-screen-config/01-up.sql"))
+	case !writable:
+		logger.Error("login lacks SELECT/INSERT/UPDATE on identity.user_screen_config: /v1/screen-config will 500",
+			slog.String("fix", "apply db/migrations/t-readapi-screen-config/01-up.sql (grants readapi_ro)"))
+	default:
+		logger.Info("screen-config table ready")
+	}
+	return exists, writable
 }
