@@ -88,6 +88,7 @@ tables:
   ops._bkp_bis_l60_sim_silver_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_orphan_events_2000109_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_bis_twin_silver_20261001: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
+  ops._bkp_cpac_shadow_open_20261014: {mode: schema_only}  # plumbing/audit state: CPACK shadow stale open rows before their close (undo source, scripts/ops/repair-cpac-shadow-stale-open.sql), same rule as ops._bkp_* (2026-10-14; drop after 2026-11-14)
   ops._bkp_cpack_reason_catalog_dr: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_cpack_reason_catalog_edr: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)
   ops._bkp_cpack_reason_catalog_eq: {mode: schema_only}  # plumbing/audit state (user decision 2026-10-06)

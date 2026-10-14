@@ -1362,6 +1362,35 @@ ops	_bkp_bis_twin_silver_20261001	table	ideal_production_speed	integer
 ops	_bkp_bis_twin_silver_20261001	table	check_number	bigint
 ops	_bkp_bis_twin_silver_20261001	table	ingested_at	timestamp with time zone
 ops	_bkp_bis_twin_silver_20261001	table	source_seq	bigint
+ops	_bkp_cpac_shadow_open_20261014	table	id_equipment	integer
+ops	_bkp_cpac_shadow_open_20261014	table	ts_event	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	status	integer
+ops	_bkp_cpac_shadow_open_20261014	table	id_equipment_event	bigint
+ops	_bkp_cpac_shadow_open_20261014	table	txt_downtime_notes	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	idle	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	idle_processed	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	forced_creation_system	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	fault	integer
+ops	_bkp_cpac_shadow_open_20261014	table	fault_processed	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	cd_machine	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	cd_category	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	cd_subcategory	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	change_over	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	planned_downtime	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	ts_end	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	duration	integer
+ops	_bkp_cpac_shadow_open_20261014	table	id_enterprise	integer
+ops	_bkp_cpac_shadow_open_20261014	table	desc_category	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	desc_subcategory	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	cd_category_client	integer
+ops	_bkp_cpac_shadow_open_20261014	table	cd_subcategory_client	integer
+ops	_bkp_cpac_shadow_open_20261014	table	last_update	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	ignore_cost	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	ingested_at	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	source_seq	bigint
+ops	_bkp_cpac_shadow_open_20261014	table	new_ts_end	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	new_duration	integer
+ops	_bkp_cpac_shadow_open_20261014	table	backed_up_at	timestamp with time zone
 ops	_bkp_cpack_reason_catalog_dr	table	id	bigint
 ops	_bkp_cpack_reason_catalog_dr	table	id_enterprise	integer
 ops	_bkp_cpack_reason_catalog_dr	table	code	character varying
