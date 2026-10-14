@@ -40,7 +40,7 @@ recreate a single service from those labels rather than from memory (see
 | URL | What | Gate |
 |---|---|---|
 | `front.staging.packiot.app`, `staging.packiot.com` | front4 (AWS Amplify app, branch `staging`) | in-app Cognito login |
-| `operator.staging.packiot.app`, `operator-sbx.…`, `operator-bispharma.…` | operator app for CPACK / sandbox / Bispharma | oauth2-proxy (any pool user) |
+| `operator.staging.packiot.app`, `operator-sbx.…`, `operator-bispharma.…` | operator app for CPACK (read-only mirror) / sandbox / Bispharma | oauth2-proxy (any pool user) |
 | `csadmin.staging.packiot.app`, `customize.staging.packiot.app` | CS Admin, Customization Hub | origin-verify; in-app Cognito login |
 | `barcode.staging.packiot.app` | barcode app (sandbox tenant) | oauth2-proxy, `cs-admin` group |
 | `api.staging.packiot.app` | edge-api under `/api/`; **API docs portal** at `/docs/` | `/api/` by API key or JWT; `/docs/` cs-admin SSO |
@@ -62,8 +62,19 @@ Source: `terraform/staging/variables.tf` (`services`, `service_auth`), `terrafor
 |---|---|---|
 | CPACK (3) | CPACK factory Node-RED tee → `cpack-ingest` → shared agent | legacy replication only; edge-api refuses ent-3 PO, downtime and shift writes (403 `MIRROR_TENANT_WRITE_BLOCKED`) |
 | Bispharma (5) | live Bispharma box (thin reader) → `ingest` → shared agent | the apps (operator, csadmin) |
-| Sandbox (2000003) | copy of CPACK (`oeecloud-fanout` → `SBXCPACK`, when enabled) | replication of CPACK into the sandbox + test writes; nightly self-heal |
+| Sandbox (2000003) | copy of CPACK (`oeecloud-fanout` → `SBXCPACK`, when enabled) | replication of CPACK into the sandbox + test writes; held during a hands-on session, then reset to CPACK 4 h after the last change (and a nightly tidy heal); see [Sandbox twin](../components/sandbox-twin.md) |
 | Incoplast (4) | HTTPS tee path through `ingest-shim` (`sparkplug.data.incoplast`) | — |
+
+## Which environment to test in
+
+| Environment | Enterprise | Use |
+|---|---|---|
+| Pack4 production | C-PACK (legacy 1) | source of truth for expected behaviour; never test here |
+| CPACK-Staging | 3 | read-only mirror of production; operator writes refused with `MIRROR_TENANT_WRITE_BLOCKED` |
+| SANDBOX-CPACK | 2000003 | where write flows are tested; resets completely to CPACK-Staging (barcode scans included) |
+
+Testers: [Sandbox for testing](../../use/sandbox-for-testing.md). Product and management:
+[Test environments, explained](../../learn/test-environments.md).
 
 ## Gotchas
 

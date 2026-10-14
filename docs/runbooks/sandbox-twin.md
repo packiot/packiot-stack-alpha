@@ -4,6 +4,11 @@ The sandbox is a **live copy of CPACK staging**: same lines, machines, shifts, r
 targets, POs, events, justifications and live counters. You can change anything in it,
 and it puts itself back afterwards.
 
+Wiki guides (keep them in step with this runbook): testers
+[Sandbox for testing](https://wiki.packiot.app/use/sandbox-for-testing/), product
+[Test environments, explained](https://wiki.packiot.app/learn/test-environments/), engineers
+[Sandbox twin](https://wiki.packiot.app/understand/components/sandbox-twin/).
+
 | | URL |
 |---|---|
 | Operator (sandbox) | https://operator-sbx.staging.packiot.app (user `qa-sandbox-staging@packiot.com`) |
@@ -22,11 +27,13 @@ and it puts itself back afterwards.
 2. **Every change pushes the deadline.** The sandbox resets **4 hours after your last
    change** (the grace period).
 3. **When the grace period ends** (checked every 5 min), it resets itself: config, POs,
-   events, justifications and manual events become CPACK staging again, the hold is
-   released, and CPACK's actions are copied in live again.
+   events, justifications and manual events become CPACK staging again, **barcode box scans
+   and box counters are deleted** (label numbering restarts at 1 per PO), the hold is
+   released, and CPACK's actions are copied in live again. Sample labels
+   (`bronze.sample_boxes`) and out-of-service windows are not reset.
 
-Only changes count. Looking at pages (lists, reads, reports) does not hold or extend
-anything.
+Only changes count, including barcode scans and sample labels (they go through edge-api).
+Looking at pages (lists, reads, reports) does not hold or extend anything.
 
 ## Controls
 
@@ -47,7 +54,6 @@ workstation with AWS access):
 | enterprise config: sites, areas, equipments, packml topics, shifts, shift hours, targets, reasons | QA test users (`qa-*`) and the sandbox api key |
 | all POs + their runtime windows | the live telemetry stream (always mirrored) |
 | events of the last 14 days (justifications, splits), all manual events | older OEE history (it's the sandbox's own copy of CPACK's) |
-| | barcode box scans and box counters (`bronze.box_scans`, `gold.po_box_counter`) and sample labels; a scan is removed only when its PO, line, area or site no longer exists after the reset (`db/migrations/t-sandbox-heal-keep-box-scans`) |
 
 ## Under the hood (for engineers)
 

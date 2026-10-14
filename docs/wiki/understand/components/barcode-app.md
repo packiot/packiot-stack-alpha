@@ -33,7 +33,7 @@ the endpoints it calls are in the [edge-api reference](../../reference/api/edge-
 | Images | CI `build-edge.yml` publishes `ghcr.io/packiot/barcode-edge:staging` and `:staging-<sha>` (from `staging`), `:main` and `:main-<sha>` (from `main`); linux/amd64 + arm64 |
 | Cloud instance (staging) | compose service `barcode-app`, image tag `barcode-app:staging`, host port `127.0.0.1:8092`, static IP `172.18.0.50`, 128 MiB / 0.25 CPU. `deploy-staging.yml` pulls `ghcr.io/packiot/barcode-edge:staging` and retags it when the Secrets Manager secret `packiot/staging/ghcr-read` exists; otherwise the previously built image keeps running |
 | URL | `barcode.staging.packiot.app` (oauth2 tier `csadmin`: staff-only demo/test) |
-| Tenant on staging | the sandbox twin 2000003 (its nginx injects the sandbox api-key) |
+| Tenant on staging | the sandbox twin 2000003 (its nginx injects the sandbox api-key). Every sandbox heal deletes the tenant's box scans and counters, so numbering restarts at 1; see [Sandbox for testing](../../use/sandbox-for-testing.md#barcode-testing-tips) |
 | On-prem | `barcode-edge` service rendered into `compose.onprem-edge.yml` when the tenant's descriptor has `barcode_edge=true` |
 | Version | `staging` branch head `a5270e7` (PR #8) on 2026-10-13; the running image was last recorded as that build on 2026-09-28 (rollback tag `barcode-app:staging-20260928-3eb4f0e`) |
 
@@ -188,7 +188,8 @@ and logs out; `up -d` recreates the container. Without that secret, deploy by ha
 3. Recreate: `docker compose -p stack -f compose.staging.yml up -d --no-deps barcode-app`
    (use the compose files from the container's labels).
 4. Smoke: open the drawer, pick a sandbox line, scan, check the label number and the
-   sample total, reload and confirm the line persisted.
+   sample total, reload and confirm the line persisted. A scan holds the sandbox for 4 h
+   ([reset rule](../../use/sandbox-for-testing.md#the-reset-rule)); run `heal-now` afterwards if nobody else is testing.
 
 **Rollback:** retag the saved image as `barcode-app:staging` and recreate.
 

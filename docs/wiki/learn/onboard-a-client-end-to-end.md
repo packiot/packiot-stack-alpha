@@ -36,7 +36,8 @@ and seen OEE computed, without touching a real client.
 
 The mechanism is `scripts/sandbox-session.sh` (migration `db/migrations/t-sandbox-grace-hold`) and the
 `.github/workflows/sandbox-selfheal.yml` workflow; see
-[Simulators & twins](../understand/components/simulators-and-twins.md).
+[Sandbox twin](../understand/components/sandbox-twin.md). The full rules for testers (addresses,
+logins, what a reset removes) are in [Sandbox for testing](../use/sandbox-for-testing.md).
 
 ## Before you start
 

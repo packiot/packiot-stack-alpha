@@ -48,7 +48,8 @@ last_verified: 2026-09-28
 | `docs/archive/wiki-v1/wiki-deploy.md` (archived) | wiki bucket/role/cron wiring (see [wiki pipeline](../../understand/components/wiki-pipeline.md)) |
 | `services/historian-gateway/README.md` | historian gateway start, hardening and recreate |
 | `scripts/deploy-db-agent.sh` | (re)deploy the DB-box Alloy agent via SSM |
-| `scripts/provision-sandbox-tenant.sh` | provision or `--heal` the sandbox tenant 2000003 |
+| `scripts/provision-sandbox-tenant.sh` | provision or `--heal` the sandbox tenant 2000003 (see [Sandbox twin](../../understand/components/sandbox-twin.md)) |
+| `scripts/sandbox-session.sh` | sandbox hold: `status`, `extend`, `grace`, `heal-now` (testers: [Sandbox for testing](../../use/sandbox-for-testing.md)) |
 | `scripts/ops/refill-shift-history.sh`, `scripts/ops/repair-truncated-stops.sh` | targeted data repairs (read the script header first) |
 | `scripts/scalability-probe.sh` | capacity probe of broker, workers and DB |
 

@@ -168,6 +168,7 @@ nav:
       - learn/index.md
       - Your first week: learn/first-week.md
       - Onboard a client end to end: learn/onboard-a-client-end-to-end.md
+      - Test environments, explained: learn/test-environments.md
   - "2 · Use Packiot":
       - use/index.md
       - Setting up a new client: use/setting-up-a-client.md
@@ -178,6 +179,7 @@ nav:
           - Node-RED flows: use/customize/node-red-flows.md
           - Connecting to an ERP or other systems: use/customize/connecting-other-systems.md
       - Troubleshooting OEE: use/troubleshooting-oee.md
+      - Sandbox for testing: use/sandbox-for-testing.md
   - "3 · Build & operate":
       - build/index.md
       - Develop:
@@ -236,6 +238,7 @@ nav:
               - Superset: understand/components/superset.md
           - Legacy bridge & APIs:
               - analytics-sync: understand/components/analytics-sync.md
+              - Sandbox twin: understand/components/sandbox-twin.md
               - mirror-worker (retired): understand/components/mirror-worker.md
               - read-api: understand/components/read-api.md
               - edge-api: understand/components/edge-api.md
