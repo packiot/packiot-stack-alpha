@@ -71,7 +71,15 @@ report, so filling the gap would count them twice (Bispharma L90, 2026-10-01).
 - A shift that does not start on the hour takes the **overlapping part** of its boundary
   hours (since 2026-10-01); before that, the whole boundary hour went to one shift.
 - **Production day** is the day a shift or hour belongs to, from the per-equipment day
-  boundary (`piot_get_day_begin_by_equipment`).
+  boundary (`piot_get_day_begin_by_equipment`). It is **not the UTC date**: CPACK, its twin
+  and Incoplast start their day at 23:10 BRT (02:10 UTC), Bispharma at 05:00–06:00 BRT.
+  Three rules follow (each was a real bug on 2026-10-13):
+    - derive a row's day from the row's own time with that function, never from `now()` or
+      `date_trunc('day', now())`;
+    - an hour that straddles the boundary (02:00–03:00 UTC for a 02:10 start) belongs to the
+      day containing *bucket start + 59 min* (the new day), so every day has 24 hours;
+    - a day is **settled** only when the *next* day's start is `<= now()`, not at UTC midnight.
+  Tenants whose day starts on the hour (Bispharma) hide these bugs; CPACK exposes them.
 - Grains: **hour** → **shift** → **day** → **week** → **month**; hour/shift/day are computed from
   facts, week/month cascade from day. There is also a per-**production-order** grain.
 

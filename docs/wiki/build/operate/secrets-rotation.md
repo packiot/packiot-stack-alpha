@@ -12,6 +12,13 @@ last_verified: 2026-10-13
 
 ## The rule that matters
 
+**Rotate on the host, never through your workstation.** The staging app role can write
+`packiot/staging/*` in Secrets Manager, so seed and rotate there over SSM: values go from the
+container (or `openssl rand`) straight into Secrets Manager. Verify with hashes (`match` /
+`MISMATCH`), lengths and HTTP codes, never by printing a value. Browser-test artefacts can leak
+too: a Playwright error snapshot prints form field values.
+
+
 **Updating a secret is not the same as the process using it.** Most staging secrets are
 copied once into a file on the host (`/opt/packiot/.env`, `/root/.gitconfig`) by
 `terraform/staging/user_data/app_init.sh` or by a deploy step. Rotation always ends with
@@ -22,6 +29,8 @@ copied once into a file on the host (`/opt/packiot/.env`, `/root/.gitconfig`) by
 | Secret (AWS Secrets Manager) | Read by | Reaches the process via |
 |---|---|---|
 | `packiot/staging/app` | Most services (many keys: origin-verify header, Slack webhook, …) | `/opt/packiot/.env`, written by `app_init.sh` and deploy steps |
+| `packiot/staging/app` → `query_api_keys`, `operator_refdata_api_key`, `operator_sbx_refdata_api_key`, `operator_bispharma_refdata_api_key` | read-api tenant keys and the operators' read keys | rewritten into `.env` on **every** deploy by `scripts/ops/materialize-readapi-keys.py`; procedure: `docs/runbooks/rotate-readapi-keys.md` (rotated 2026-10-14) |
+| `packiot/staging/app` → `edge_session_broker_token` | edge-api ↔ edge-session-broker shared token (≥ 32 chars) | materialized into `.env` every deploy; the broker refuses to start without it |
 | `packiot/staging/db` | Database logins | `.env` |
 | `packiot/staging/rabbitmq-*-creds` | Decoder, stream-engine, clients | Generated RabbitMQ definitions at deploy |
 | `packiot/staging/historian-svc`, `historian-gateway-s3` | historian-gateway | `.env` / deploy step |
@@ -47,6 +56,13 @@ Production has the same shape under `packiot/production/*`.
     staging. Prefer a **GitHub App** (installation tokens are short-lived and rotate
     themselves). If you must use a personal token, record its expiry date and the places it
     is used, and alert before it lapses.
+
+!!! note "State on 2026-10-14"
+    A classic token was installed after the 10-13 expiry. It is **org-admin scoped** and expires
+    **2026-11-12**: replace it with a fine-grained token or a GitHub App before then. During the
+    refresh, the runner also had a second, broader `url.…github.com/.insteadOf` rule holding a dead
+    token, which breaks fetches from outside `packiot`; it was removed. After any refresh, list the
+    rules with the token part redacted and test one packiot and one public fetch.
 
 ### Rotate the GitHub token
 

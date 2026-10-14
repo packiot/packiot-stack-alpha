@@ -148,3 +148,12 @@ Rewriting history is not needed and not worth the disruption to forks.
 `${OPERATOR_REFDATA_API_KEY:-}`). They come from the `packiot/production/*` secrets
 (`docs/adr/reference/production-recut-runbook.md`). Use fresh `openssl rand -hex 32`
 keys there. Never reuse a staging key.
+
+## Log
+
+| Date | Step | Result |
+|---|---|---|
+| 2026-10-13 | 1. seed current values (on the host) | `--check` OK, 5 tenant keys |
+| 2026-10-13 | 2. merge #1697 + deploy | containers match ×4; 401 without key, 200 with key; operators 200 ×3 |
+| 2026-10-14 | 3. rotate all 5 keys (ent 2 and 4 kept with fresh keys) + redeploy | match ×4; **all 5 old keys → 401** |
+

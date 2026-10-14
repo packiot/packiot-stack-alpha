@@ -31,6 +31,7 @@ last_verified: 2026-09-28
 | `docs/guides/backup-restore-runbook.md` | DB backup decision memo and point-in-time-restore drill |
 | `terraform/staging/scripts/backup-db.sh`, `restore-db.sh` | DB-host dump to S3 and restore (driven by `packiot-db-backup.timer`) |
 | `docs/runbooks/emergency-db-restore.md` | EMERGENCY restore button (GitHub workflow): drill or restore analytics / historian / superset, rollback, manual fallback |
+| `docs/runbooks/rotate-readapi-keys.md` | move/rotate the read-api tenant keys (Secrets Manager → `.env` every deploy); last rotated 2026-10-14 |
 | `docs/runbooks/history-recompute.md` | rebuild gold OEE history older than the engine's live windows: render the engine's own passes, dry-run, commit one UTC day at a time |
 | `docs/ingestion/cpack-tee-golive-runbook.md` | swap staging's synthetic CPACK source for the real CPACK Mode-A tee (ADR-0042 P1) |
 | `docs/clients/cpack-controlled-edge-deploy-runbook.md` | deploy a parallel Node-RED + sparkplug-agent at the CPACK site (read-only co-tee) |
@@ -294,6 +295,16 @@ gh workflow run build-wiki.yml --ref staging                        # or force a
 ```
 
 The serving box pulls from S3 every 5 minutes. Details: [wiki pipeline](../../understand/components/wiki-pipeline.md).
+
+## Known symptoms (2026-10)
+
+| Symptom | Cause | Fix / where to look |
+|---|---|---|
+| Deploy fails at *Fetch submodules* with `Authentication failed`; bump bots fail with `could not read Username` | the GitHub token expired | [Rotate secrets → GitHub tokens](secrets-rotation.md#github-tokens) |
+| front4 **Reports**: "Couldn't load this report (401)"; edge-api logs `Superset csrf_token fetch failed: status=403` | Superset `GuestTokenMinter` role missing `can_read` on `SecurityRestApi` (fixed #1728; `configs/superset/bootstrap_guest_role.py` re-applies it every deploy) | test the mint flow as the service account: login → `csrf_token` → `guest_token` |
+| front4 **Home** shows 0 production / 0 % OEE on every area while other pages have data | `silver.area_live_day` not refreshed for the running production day (fixed #1729) | compare `gold.area_oee_daily` (current production day) with `silver.area_live_day`; the live refresher runs every 5 min |
+| Invariant **K7** (day time > day length) or **K8** (hours per day ≠ 24) failing | hourly rows labelled with the wrong production day, or a check judging a still-running day | [Domain model → production day](../../understand/architecture/domain-model.md); the read-only listing in PR #1727 |
+| A day's OEE split looks wrong after a code fix | stored rows predate the fix | `docs/runbooks/history-recompute.md` (≤ 7 days: re-flag; older: the runner, one day at a time) |
 
 ## Related
 
