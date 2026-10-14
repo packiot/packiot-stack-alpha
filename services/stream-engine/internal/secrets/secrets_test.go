@@ -1,6 +1,10 @@
 package secrets
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 // TestAMQPCredsSource pins the precedence that keeps staging off the broker
 // admin: AMQP_CREDS_SOURCE wins over CREDS_SOURCE, and only the literal "env"
@@ -42,5 +46,15 @@ func TestFetchAMQPCredsEnvPath(t *testing.T) {
 	}
 	if c.Username != "stream-engine" || c.Host != "rabbitmq" || c.Port != 5672 {
 		t.Fatalf("unexpected creds %+v", *c)
+	}
+}
+
+// An unset PG_SECRET_ID is a boot error, never a fall back to the admin secret (the config default
+// used to be packiot/staging/db). Fails before any AWS call.
+func TestFetchDBCredsEmptySecretIDFailsClosed(t *testing.T) {
+	t.Setenv("CREDS_SOURCE", "")
+	if _, err := FetchDBCreds(context.Background(), "us-east-1", ""); err == nil ||
+		!strings.Contains(err.Error(), "PG_SECRET_ID is empty") {
+		t.Fatalf("want the empty-secret error, got %v", err)
 	}
 }

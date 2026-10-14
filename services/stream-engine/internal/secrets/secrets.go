@@ -142,6 +142,10 @@ func FetchDBCreds(ctx context.Context, region, secretID string) (*DBCreds, error
 	if os.Getenv("CREDS_SOURCE") == credsSourceEnv {
 		return fetchDBCredsFromEnv()
 	}
+	if secretID == "" {
+		// No default secret: an unset PG_SECRET_ID must not fall back to the admin login.
+		return nil, fmt.Errorf("PG_SECRET_ID is empty (staging: packiot/staging/stream-engine-db-creds)")
+	}
 	raw, err := getSecretJSON(ctx, region, secretID)
 	if err != nil {
 		return nil, err
