@@ -140,7 +140,22 @@ const hourCascadeDayLiveSQL = `
 // speed verbatim — and, verbatim, only for EXISTING 1min rows: an
 // empty hour avgs to NULL → zero-fill (prod writes 0 there, never
 // production_speed — aggregate-INTO is always FOUND).
+//
+// READ/APPLY SPLIT (ADR-0063 Phase A2, 2026-10-14). The speed pass reads the
+// real-time 1-minute cagg. TimescaleDB constifies a real-time cagg's watermark
+// only when it plans a SELECT (a CREATE TABLE AS counts); inside an UPDATE the
+// watermark stays a runtime cagg_watermark() call and the planner priced the
+// raw tail at every equipment_values chunk (staging plan: 458 M rows, cost
+// 2.5e8). The same read as a SELECT runs in 107 ms on staging; the UPDATE
+// averaged 6–9 s per tick and was the largest statement on the DB (10 % of
+// statement time in a 7-minute window on 2026-10-14). So the pass is two
+// statements in one string (simple protocol, as every caller runs it): a CREATE
+// TEMP TABLE … AS computes sp, then the UPDATE reads only that temp table.
+// The golden test (hour_speed_split_golden_test.go) rebuilds the old single
+// statement from this text and compares the two row for row.
 const hourSpeedSQL = `
+	DROP TABLE IF EXISTS pg_temp.hour_sp;
+	CREATE TEMP TABLE hour_sp ON COMMIT DROP AS
 	WITH sp AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           avg(CASE WHEN m.id_equipment IS NOT NULL THEN COALESCE(
@@ -181,10 +196,11 @@ const hourSpeedSQL = `
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	     GROUP BY el.id_equipment, el.ts_value
 	)
+	SELECT * FROM sp;
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       speed       = COALESCE(sp.speed, 0),
 	       ideal_speed = COALESCE(sp.ideal_speed, 0)
-	  FROM sp
+	  FROM hour_sp sp
 	 WHERE e.id_equipment = sp.id_equipment AND e.ts_value = sp.ts_value`
 
 // Phase E: CONDITIONAL; the ONLY flag clear. ideal_speed read from

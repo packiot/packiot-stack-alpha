@@ -2,7 +2,7 @@
 title: stream-engine
 layer: 3
 owner_area: compute
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 ---
 # stream-engine
 
@@ -218,6 +218,10 @@ The statement-by-statement walkthrough is in
 - **Hour** (lines and sectors only, `tp_equipment > 1`): counts from `equipment_categorical_1hour`,
   speed from `_1min`, time in state from overlapping `equipment_events` (an open event ends at the
   next event, or at the last data-bearing hour + 1 h, never later than now).
+  The speed pass computes its per-hour averages with `CREATE TEMP TABLE hour_sp AS …` and then
+  updates from that table (ADR-0063 Phase A2, 2026-10-14). As a single `UPDATE`, the real-time cagg's
+  watermark was not constified: 6–9 s per tick, 10 % of DB statement time. The same read as a `SELECT`
+  takes 107 ms (`TestGoldenHourSpeedCaggReadIsPlannedAsSelect`).
 - **Day** sums hour rows by production day. **Week/month** sum day rows. **Area/site** sum lines.
 - **Shift** is computed from the hourly cagg and events, at most `ROLLUP_SHIFT_LIMIT` rows per tick,
   ordered `computed_at NULLS FIRST, ts_value` (fair order, #1467).
@@ -307,6 +311,16 @@ any statement that reads the cagg with an unconstified watermark.
 
 Updates match on the true key `(id_equipment, ts_event)`; `id_equipment_event` is not unique (the
 sandbox twin reuses CPACK ids).
+
+Steps 1–2 use the same read/apply split as the CPAC deriver (ADR-0063 Phase A2, 2026-10-14). A plain
+`SELECT` (`closeReadSQL`) reads each equipment's last productive minute from
+`equipment_categorical_1min` and the horizon start. The `UPDATE` (`closeApplySQL`) takes both as
+parameters, never reads the cagg, and bounds its target to the horizon. Before this, the single
+`UPDATE` averaged 19.8 s (25 s as `stream_engine`) and used 15 % of all DB statement time since 09-24.
+Its plan priced the cagg's raw tail at 458 M rows and merge-joined against all 3.16 M
+`equipment_events` rows. The new `UPDATE` plans at cost 7.6 × 10³ instead of 2.4 × 10⁸, and touches
+the 4 chunks inside the horizon. `TestGoldenCloserCaggReadIsPlannedAsSelect` and
+`TestGoldenCloserSnapshotMatchesInline` pin the plan and the result.
 
 On staging, CPACK (ent 3) events come from the legacy platform through the legacy replicator
 ([analytics-sync](analytics-sync.md), part of the [legacy bridge](../subsystems/legacy-bridge.md));
