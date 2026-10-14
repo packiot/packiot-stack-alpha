@@ -21,7 +21,7 @@ func multiSourceDescriptorPath(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// thisFile = <repo>/services/edge-transformer/internal/agent/clientdescriptor/generate_multisource_test.go
+	// thisFile = <repo>/services/sparkplug-decoder/internal/agent/clientdescriptor/generate_multisource_test.go
 	// docs/clients lives at the repo root, five directories up from the package.
 	pkgDir := filepath.Dir(thisFile)
 	return filepath.Join(pkgDir, "..", "..", "..", "..", "..",

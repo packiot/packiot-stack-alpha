@@ -153,7 +153,17 @@ func main() {
 		// This call is idempotent and safe if the scheduler is already up, so
 		// running it on every worker start self-heals the scheduler after any
 		// DB restart. Best-effort: a failure here must not stop the worker.
-		if _, err := analyticsPool.Exec(ctx, `SELECT _timescaledb_functions.start_background_workers()`); err != nil {
+		//
+		// start_background_workers() is superuser-only. As the least-privilege
+		// stream_engine role the worker calls the narrow SECURITY DEFINER wrapper
+		// public.ensure_timescaledb_workers() instead (db/migrations/t-stream-engine-role:
+		// no arguments, does only this, EXECUTE granted to stream_engine alone).
+		q := `SELECT _timescaledb_functions.start_background_workers()`
+		var super bool
+		if err := analyticsPool.QueryRow(ctx, `SELECT current_setting('is_superuser') = 'on'`).Scan(&super); err == nil && !super {
+			q = `SELECT public.ensure_timescaledb_workers()`
+		}
+		if _, err := analyticsPool.Exec(ctx, q); err != nil {
 			logger.Warn("could not start shadow TimescaleDB background workers — cagg refresh may lag",
 				slog.String("err", err.Error()))
 		} else {
@@ -373,7 +383,8 @@ func main() {
 
 	// Stranded-flag sweep (2026-10-01): flags no consumer can ever drain (PO rows
 	// closed before the window, shift > 30 d or out of scope, hour > backfill
-	// horizon or tp=1) are cleared hourly with a WARN, so a stranded repair is seen.
+	// horizon or tp=1, day/week/month past their window or tp=1) are cleared hourly
+	// with a WARN, so a stranded repair is seen.
 	if cfg.StrandedFlagSweepEnabled && (cfg.PORecalcEnabled || cfg.RuntimeRollupEnabled) {
 		hourHorizon := ""
 		if cfg.RollupBackfillEnabled {

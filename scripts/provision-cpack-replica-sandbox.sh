@@ -50,7 +50,7 @@ TENANT_UPPER="SBXCPACK"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ED="$HERE/docs/clients/sandbox-edge"
 DESC="$ED/${TENANT_SLUG}.descriptor.yaml"
-ETSRC="$HERE/services/edge-transformer"          # Go module: agent + s7/modbus/opcua readers + onboard-gen
+ETSRC="$HERE/services/sparkplug-decoder"         # Go module: agent + s7/modbus/opcua readers + onboard-gen (was services/sparkplug-decoder)
 WORK="${WORK:-$HERE/.sbxcpack-replica-work}"      # local scratch (gitignored by you)
 BUNDLE="$WORK/bundle"                              # the config bundle staged for the box
 
@@ -82,7 +82,7 @@ ls -l "$BUNDLE/$TENANT_SLUG/"
 if grep -qiE 'ingest\.prod|ingest\.staging|ssl://ingest|amazonaws\.com' "$BUNDLE/$TENANT_SLUG/${TENANT_SLUG}-agent.yaml"; then
   die "generated agent.yaml references a REAL ingest host — refusing (data path not severed). Fix $DESC."
 fi
-# NOTE (config-as-data reader model): onboard-gen on THIS branch (services/edge-transformer)
+# NOTE (config-as-data reader model): onboard-gen (services/sparkplug-decoder; this note predates the merge)
 # emits the tee-model set. The Go-reader artifacts (${TENANT_SLUG}-client.yaml +
 # ${TENANT_SLUG}-reader-flow.json) are produced by onboard-gen on branch
 # feat/edge-ssm-register (services/sparkplug-decoder, descriptor needs a plc: block).

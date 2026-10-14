@@ -1,7 +1,7 @@
 # clients/cpack/client.yaml — RUNTIME-ACTIVE config for C-Pack Solutions
 #
 # This file is mounted into the edge-transformer container at
-# /etc/packiot/client.yaml and parsed by services/edge-transformer/internal/
+# /etc/packiot/client.yaml and parsed by services/sparkplug-decoder/internal/
 # clientconfig/loader.go at boot.
 #
 # Current schema = SKELETON-MINIMUM (loader.go Config struct as of Phase 2):

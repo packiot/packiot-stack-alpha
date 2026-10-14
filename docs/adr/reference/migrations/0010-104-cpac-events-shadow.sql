@@ -33,10 +33,12 @@
 CREATE TABLE IF NOT EXISTS public.equipment_events_cpac_shadow
     (LIKE public.equipment_events INCLUDING ALL);
 
--- Guarantee the idempotency key exists even if the source's UNIQUE was not
--- captured by INCLUDING ALL (defensive — the deriver's ON CONFLICT needs it).
-CREATE UNIQUE INDEX IF NOT EXISTS equipment_events_cpac_shadow_key
-    ON public.equipment_events_cpac_shadow (id_equipment, ts_event);
+-- The idempotency key the deriver's ON CONFLICT needs is the PRIMARY KEY that
+-- INCLUDING ALL copies (id_equipment, ts_event). A "defensive" extra
+--   CREATE UNIQUE INDEX equipment_events_cpac_shadow_key ON … (id_equipment, ts_event)
+-- used to sit here; together with the copied equipment_events_pk it left THREE
+-- identical unique indexes (40 MB each on staging, every one an ON CONFLICT
+-- arbiter). Removed 2026-10-14: db/migrations/t-cpac-shadow-dup-indexes.
 
 -- The derived rows carry forced_creation_system=false explicitly; make the
 -- column NOT-NULL-safe for the human-touched guard (NULL would read as "not

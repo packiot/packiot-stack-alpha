@@ -48,9 +48,9 @@ func TestComputeShape(t *testing.T) {
 		"ee.status IN (5, 10, 11)",     // stopped
 		"greatest(ee.ts_event, el.lo)", // overlap math
 		"LEFT JOIN sums",               // phase A always-updates
-		"recalc_needed    = false",
+		"recalc_needed    = false",       // phase A apply clears the flag
 	} {
-		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL+applyValuesSQL, m) {
 			t.Errorf("compute lost %q", m)
 		}
 	}
@@ -99,7 +99,7 @@ func TestComputeSplitInstrumentation(t *testing.T) {
 	if strings.Contains(computeEventsSQL, "lead_machine") {
 		t.Error("the events pass must not read lead_machine")
 	}
-	if !strings.Contains(computeValuesSQL, "WHEN el.line_lead THEN e.net_production") {
+	if !strings.Contains(computeValuesSQL, "el.line_lead") || !strings.Contains(applyValuesSQL, "WHEN r.line_lead THEN e.net_production") {
 		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
 	}
 	// The enterprise gate is rendered from LineLeadScope; with no per-line overrides
@@ -262,45 +262,46 @@ func TestDayShape(t *testing.T) {
 	}
 }
 
-// Day over-mint clamp (task #59): the summed time metrics must be
-// bounded by the TRUE per-equipment production-day length, and that
-// length must NOT be a hardcoded 86400 (DST days are 90000 / 82800s).
-// The behavioural proof (non-hour-aligned over-mint capped, hour-aligned
-// unchanged, DST 90000 not mis-clamped) lives in the golden DB test
-// (day_clamp_golden_test.go, -tags golden); these are the always-on
-// string guards so a refactor can't silently drop the ceiling.
-func TestDayOverMintClamp(t *testing.T) {
-	// The four additive wall-clock time metrics get the LEAST ceiling.
+// Day time sums are stored RAW (2026-10-13, user decision "remove the
+// day-length cap like P and Q"; replaces the task #59 production-day-length
+// ceiling). Every additive time metric is the plain Σ of its hour rows; only
+// the availability RATIO stays capped at 1. A day above its own length is a
+// data-quality signal surfaced by invariant K7 (t-data-invariants-v10), not
+// clamped. The behavioural proof lives in the golden DB test
+// (day_clamp_golden_test.go, -tags golden); these are the always-on string
+// guards so a refactor can't silently reintroduce a ceiling.
+func TestDayStoresRawTimeSums(t *testing.T) {
 	for _, m := range []string{
-		"LEAST(sum(hr.available_time), el.day_len_s)",
-		"LEAST(sum(hr.running_time),   el.day_len_s)",
-		"LEAST(sum(hr.stopped_time),   el.day_len_s)",
-		"LEAST(sum(hr.downtime),   el.day_len_s)",
+		"sum(hr.available_time)   AS available_time",
+		"sum(hr.running_time)     AS running_time",
+		"sum(hr.stopped_time)     AS stopped_time",
+		"sum(hr.downtime)         AS downtime",
+		"sum(hr.planned_downtime) AS planned_downtime",
+		"sum(hr.changeover_time)  AS changeover_time",
+		"sum(hr.no_data_time)        AS no_data_time",
+		"sum(hr.out_of_service_time) AS out_of_service_time",
 	} {
 		if !strings.Contains(dayRollupSQL, m) {
-			t.Errorf("day over-mint clamp lost %q", m)
+			t.Errorf("day time metric no longer a raw sum: %q", m)
 		}
 	}
-	// day_len_s must be grouped through the CTE so the ceiling is per-row.
-	if !strings.Contains(dayRollupSQL, "GROUP BY el.id_equipment, el.ts_value, el.day_len_s") {
-		t.Error("day_len_s must be in the GROUP BY (per-day ceiling)")
-	}
-	// The ceiling source: the day-boundary function, next anchor via the
-	// CALENDAR '1 day' interval (DST-correct) — NEVER a hardcoded 86400.
-	if !strings.Contains(dayEligibleSQL, "piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day')") {
-		t.Error("day_len_s must source the next anchor from the day-boundary fn")
-	}
-	if !strings.Contains(dayEligibleSQL, "AS day_len_s") {
-		t.Error("day_len_s column missing from the eligibility temp table")
-	}
-	// The ceiling must be the per-row anchor-derived length, never a
-	// hardcoded literal (DST days are 90000 / 82800s). The exact-match
-	// LEAST assertions above already fail if the arg is swapped for a
-	// number; this pins the anti-pattern explicitly for a future reader.
-	for _, antipattern := range []string{"), 86400)", ", 86400.", "day_len_s = 86400"} {
+	// No day-length ceiling of any spelling may come back.
+	for _, antipattern := range []string{
+		"day_len_s", "86400", "90000",
+		"LEAST(sum(hr.available_time)", "LEAST(sum(hr.running_time),", "LEAST(sum(hr.stopped_time)",
+		"LEAST(sum(hr.downtime)", "LEAST(sum(hr.planned_downtime)", "LEAST(sum(hr.changeover_time)",
+		"LEAST(sum(hr.no_data_time)", "LEAST(sum(hr.out_of_service_time)",
+	} {
 		if strings.Contains(dayRollupSQL+dayEligibleSQL, antipattern) {
-			t.Errorf("day length hardcoded via %q — must derive from the day anchors (DST breaks 86400)", antipattern)
+			t.Errorf("day-length cap reintroduced via %q — policy is store raw (2026-10-13)", antipattern)
 		}
+	}
+	// Availability is the one ratio that stays capped at 1 (CHECK
+	// *_oee_bounds: 0 <= oee_a <= 1), and it must divide in float: hour time
+	// columns are integer, so Σ/Σ without the cast is integer division.
+	if !strings.Contains(dayRollupSQL, "GREATEST(LEAST(sum(hr.running_time)::float") ||
+		!strings.Contains(dayRollupSQL, "/ NULLIF(sum(hr.available_time), 0), 1), 0) AS oee_a") {
+		t.Error("day oee_a must be LEAST(Σrunning::float / Σavailable, 1) floored at 0")
 	}
 }
 

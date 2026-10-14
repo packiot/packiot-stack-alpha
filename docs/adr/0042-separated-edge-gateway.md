@@ -2,7 +2,7 @@
 
 **Status:** Proposed · **Date:** 2026-07-23 · **Scope:** edge (client-side edge stack) + the client-delivery pipeline · **Decision owner:** chief architect (pending USER sign-off) · **Altitude:** this ADR is the *how* for the north-star's P1 Connectivity/Edge pillar and its principle #7 (edge/cloud durable split); it sits under [ADR-0038](0038-north-star-factory-platform.md) and refines the edge trajectory [ADR-0009](0009-edge-transformer-go-service-and-nodered-split.md)/[ADR-0010](0010-sparkplug-decode-in-go-end-state.md)/[ADR-0011](0011-durability-boundary-and-store-and-forward.md) began.
 
-**Synthesis note.** This ADR records the *converged* decision of four independent design-squad lenses — an edge/SparkPlug architect, a Go-implementation lens, a DevOps/client-CI-CD lens, and a customization/operator-migration lens. The analysis is complete; this document is the decision of record, not a re-investigation. Where a claim cites a file (`services/edge-transformer/cmd/s7-reader/main.go`, `internal/sparkplug/`, `internal/outbox/`), the lens grounded it against the live tree.
+**Synthesis note.** This ADR records the *converged* decision of four independent design-squad lenses — an edge/SparkPlug architect, a Go-implementation lens, a DevOps/client-CI-CD lens, and a customization/operator-migration lens. The analysis is complete; this document is the decision of record, not a re-investigation. Where a claim cites a file (`services/sparkplug-decoder/cmd/s7-reader/main.go`, `internal/sparkplug/`, `internal/outbox/`), the lens grounded it against the live tree.
 
 ---
 
@@ -25,7 +25,7 @@ The mistake would be to treat these as two architectures. They are **one archite
 
 ### 1.3 The load-bearing observation — s7-reader already welds it
 
-The decisive grounding is that **the agent already exists in embryo.** `services/edge-transformer/cmd/s7-reader/main.go` reads a Siemens S7 PLC and *republishes its tags as SparkPlug B over MQTT* — its own header says it makes "a real S7 line … look to the rest of the stack exactly like plc-sim / a native SparkPlug PLC." It calls `poller.EncodeBirth`/`EncodeData`, publishes `spBv1.0/<group>/NBIRTH/<node>` (retained) and `spBv1.0/<group>/NDATA/<node>`, drops `birthed=false` to force a re-birth on read failure, and loads its tag map from `client.yaml` (`internal/clientconfig`). That is a PLC-reader **welded to** a SparkPlug transmitter in one binary.
+The decisive grounding is that **the agent already exists in embryo.** `services/sparkplug-decoder/cmd/s7-reader/main.go` reads a Siemens S7 PLC and *republishes its tags as SparkPlug B over MQTT* — its own header says it makes "a real S7 line … look to the rest of the stack exactly like plc-sim / a native SparkPlug PLC." It calls `poller.EncodeBirth`/`EncodeData`, publishes `spBv1.0/<group>/NBIRTH/<node>` (retained) and `spBv1.0/<group>/NDATA/<node>`, drops `birthed=false` to force a re-birth on read failure, and loads its tag map from `client.yaml` (`internal/clientconfig`). That is a PLC-reader **welded to** a SparkPlug transmitter in one binary.
 
 The same welding lives in `cmd/plc-sim` (synthetic totalizers → SparkPlug) and, in JavaScript, in the Node-RED SparkPlug subflow. **The transmission plane is real, proven, and tested** (`internal/sparkplug/parity_test.go` confirms Go-encoded bytes decode identically under the JS `sparkplug-payload` lib Node-RED wraps). What it is *not* is **separated, productized, or reusable** as the client edge's transmission tier.
 
@@ -73,7 +73,7 @@ This is the same "logic-type seam, not customer-vs-team seam" ADR-0009 chose, pu
 
 ### 2.2 The agent is a DECOUPLING, not a greenfield
 
-`services/edge-transformer/cmd/sparkplug-agent` **is `s7-reader` with the PLC input swapped for the internal raw-tag feed.** It reuses, verbatim where possible:
+`services/sparkplug-decoder/cmd/sparkplug-agent` **is `s7-reader` with the PLC input swapped for the internal raw-tag feed.** It reuses, verbatim where possible:
 
 | Reused component | From | Role in the agent |
 |---|---|---|

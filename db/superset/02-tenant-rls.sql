@@ -61,8 +61,15 @@
 -- exist". current_tenant()'s body only touches built-ins (current_setting, NULLIF,
 -- int4) which are always resolvable, so it is safe unqualified; is_all_tenant()
 -- calls current_tenant() and MUST qualify it (public.current_tenant()).
+--
+-- PARALLEL SAFE + LEAKPROOF (t-rls-helpers-parallel-safe, 2026-10-14): the CREATE default
+-- (PARALLEL UNSAFE) made every query a NOBYPASSRLS role runs over an RLS table ineligible for a
+-- parallel plan — the policy quals are added before the planner's parallel-safety check. Both
+-- helpers only read a GUC (synchronised to parallel workers) and take no arguments (nothing to
+-- leak). LEAKPROOF needs a superuser: apply this file as postgres. Keep these clauses — a
+-- CREATE OR REPLACE without them silently resets the attributes.
 CREATE OR REPLACE FUNCTION public.current_tenant() RETURNS int
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE PARALLEL SAFE LEAKPROOF AS $$
   SELECT NULLIF(current_setting('app.tenant_id', true), '')::int
 $$;
 
@@ -114,7 +121,7 @@ $$;
 -- `AND pg_has_role(current_user, 'superset_admin_ro', 'MEMBER')` and route the admin
 -- session through that role in DB_CONNECTION_MUTATOR.
 CREATE OR REPLACE FUNCTION public.is_all_tenant() RETURNS boolean
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE PARALLEL SAFE LEAKPROOF AS $$
   SELECT public.current_tenant() = -1
 $$;
 

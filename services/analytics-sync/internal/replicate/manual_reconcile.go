@@ -310,27 +310,28 @@ func planManual(winners []legacyManual, seenLegacy map[int64]bool, dest []destMa
 
 // ─── SQL (all schema-qualified; the #261 lesson) ───
 
-const manualLinkSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ops`
+// ops.legacy_manual_event_link is OWNED BY MIGRATIONS (t-replicate-manual-events creates
+// it; t-legacy-replicator-role re-asserts it), never created here: the replicator's role
+// has no CREATE. No FK to silver.equipment_events_man on purpose: a FK would make TRUNCATE
+// / sandbox re-clone of the silver table fail; dangling links are pruned instead.
+const sqlCheckManualLink = `SELECT t IS NOT NULL,
+	       COALESCE(has_table_privilege(t::oid, 'SELECT')
+	            AND has_table_privilege(t::oid, 'INSERT')
+	            AND has_table_privilege(t::oid, 'UPDATE')
+	            AND has_table_privilege(t::oid, 'DELETE'), false)
+	  FROM (SELECT to_regclass('ops.legacy_manual_event_link') AS t) x`
 
-// Provenance table. Same DDL as db/migrations/t-replicate-manual-events/01-up.sql.
-// No FK to silver.equipment_events_man on purpose: a FK would make TRUNCATE /
-// sandbox re-clone of the silver table fail; dangling links are pruned instead.
-const manualLinkDDL = `CREATE TABLE IF NOT EXISTS ops.legacy_manual_event_link (
-	id_equipment_event        integer     PRIMARY KEY,
-	dst_enterprise            integer     NOT NULL,
-	legacy_id_equipment_event bigint,
-	linked_at                 timestamptz NOT NULL DEFAULT now()
-)`
-
-const manualLinkIndexDDL = `CREATE INDEX IF NOT EXISTS legacy_manual_event_link_ent_legacy_idx
-	ON ops.legacy_manual_event_link (dst_enterprise, legacy_id_equipment_event)`
-
-// EnsureManualLink creates the provenance table if absent (idempotent).
-func EnsureManualLink(ctx context.Context, dst *pgxpool.Pool) error {
-	for _, q := range []string{manualLinkSchemaDDL, manualLinkDDL, manualLinkIndexDDL} {
-		if _, err := dst.Exec(ctx, q); err != nil {
-			return err
-		}
+// CheckManualLink fails when the provenance table is missing or the login cannot use it.
+func CheckManualLink(ctx context.Context, dst *pgxpool.Pool) error {
+	var exists, usable bool
+	if err := dst.QueryRow(ctx, sqlCheckManualLink).Scan(&exists, &usable); err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("ops.legacy_manual_event_link is missing (apply db/migrations/t-legacy-replicator-role/01-up.sql)")
+	}
+	if !usable {
+		return errors.New("login lacks SELECT/INSERT/UPDATE/DELETE on ops.legacy_manual_event_link (apply db/migrations/t-legacy-replicator-role/01-up.sql)")
 	}
 	return nil
 }
@@ -515,9 +516,9 @@ func (mr *ManualReconciler) RunForever(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	if err := EnsureManualLink(ctx, mr.dest); err != nil {
+	if err := CheckManualLink(ctx, mr.dest); err != nil {
 		// Without the provenance table nothing can be linked or safely deleted.
-		mr.logger.Error("manual-event reconciler: ensure ops.legacy_manual_event_link failed — pass disabled",
+		mr.logger.Error("manual-event reconciler: ops.legacy_manual_event_link not usable — pass disabled",
 			slog.String("err", err.Error()))
 		<-ctx.Done()
 		return ctx.Err()

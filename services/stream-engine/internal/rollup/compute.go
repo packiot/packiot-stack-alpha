@@ -97,26 +97,40 @@ const computeValuesSQL = `
 	      ) s
 	     WHERE s.n > 0
 	)
-	UPDATE %[4]s.production_orders_runtime e SET
-	       gross_production = CASE WHEN el.line_lead THEN e.gross_production ELSE COALESCE(s.gross, 0) END,
+	SELECT e.id_production_order_runtime AS pk, e.xmin::text AS xm, el.line_lead,
+	       COALESCE(s.gross, 0)::double precision AS gross_production,
 	       -- gross-only reconciliation (line_lead's "gross-only ⇒ net=gross"): a
 	       -- split-instrumentation member emits the input counter only (no net), so
 	       -- net falls back to gross (quality 1.0). GATED on gross_machine IS NOT NULL
 	       -- so a self-metered PO with a genuine net=0 (e.g. an all-scrap run) is
 	       -- left untouched — the reconciliation reaches ONLY line-metered lines.
-	       net_production   = CASE WHEN el.line_lead THEN e.net_production
-	                               WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
-	                               THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END,
-	       oee_q            = CASE WHEN el.line_lead THEN e.oee_q ELSE GREATEST(COALESCE(
-	                            (CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
-	                                  THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END)
-	                            / NULLIF(s.gross, 0), 0), 0) END, -- uncapped since 2026-09-29
-	       speed            = COALESCE(s.speed, 0),
-	       recalc_needed    = false
+	       CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
+	            THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END::double precision AS net_production,
+	       GREATEST(COALESCE(
+	            (CASE WHEN el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0
+	                  THEN COALESCE(s.gross, 0) ELSE COALESCE(s.net, 0) END)
+	            / NULLIF(s.gross, 0), 0), 0)::double precision AS oee_q, -- uncapped since 2026-09-29
+	       COALESCE(s.speed, 0)::double precision AS speed
 	  FROM eligible el
 	  LEFT JOIN sums s ON s.id_equipment = el.id_equipment AND s.lo = el.lo
-	 WHERE e.id_equipment = el.id_equipment
+	  JOIN %[4]s.production_orders_runtime e
+	    ON e.id_equipment = el.id_equipment
 	   AND lower(e.runtime_timerange) = el.lo`
+
+// Phase A apply: line-lead rows keep the counters Phase A2 just wrote in this
+// transaction (WHEN r.line_lead THEN e.net_production), every eligible row gets
+// speed and recalc_needed    = false.
+const applyValuesSQL = `
+	UPDATE %[4]s.production_orders_runtime e SET
+	       gross_production = CASE WHEN r.line_lead THEN e.gross_production ELSE r.gross_production END,
+	       net_production   = CASE WHEN r.line_lead THEN e.net_production ELSE r.net_production END,
+	       oee_q            = CASE WHEN r.line_lead THEN e.oee_q ELSE r.oee_q END,
+	       speed            = r.speed,
+	       recalc_needed    = false
+	  FROM jsonb_to_recordset($1::jsonb) AS r(pk bigint, line_lead boolean, gross_production double precision,
+	       net_production double precision, oee_q double precision, speed double precision)
+	 WHERE e.id_production_order_runtime = r.pk
+	   AND r.pk = ANY($2::bigint[])`
 
 // Phase A2: LINE-LEAD PO counters (2026-09-25). A PO on a line-lead line used to read the
 // line's OWN counters — for CPACK lines those are often gross-only (L4/L5: net 0 ⇒ the operator
@@ -202,13 +216,24 @@ const computeLineLeadValuesSQL = `
 	      LEFT JOIN reconciled r ON r.id_equipment = el.id_equipment AND r.lo = el.lo
 	     GROUP BY el.id_equipment, el.lo
 	)
-	UPDATE %[4]s.production_orders_runtime e SET
-	       gross_production = t.gross,
-	       net_production   = t.net,
-	       oee_q            = GREATEST(COALESCE(t.net / NULLIF(t.gross, 0), 0), 0)
+	SELECT e.id_production_order_runtime AS pk, e.xmin::text AS xm,
+	       t.gross::double precision AS gross_production,
+	       t.net::double precision   AS net_production,
+	       GREATEST(COALESCE(t.net / NULLIF(t.gross, 0), 0), 0)::double precision AS oee_q
 	  FROM totals t
-	 WHERE e.id_equipment = t.id_equipment
+	  JOIN %[4]s.production_orders_runtime e
+	    ON e.id_equipment = t.id_equipment
 	   AND lower(e.runtime_timerange) = t.lo`
+
+const applyLineLeadValuesSQL = `
+	UPDATE %[4]s.production_orders_runtime e SET
+	       gross_production = r.gross_production,
+	       net_production   = r.net_production,
+	       oee_q            = r.oee_q
+	  FROM jsonb_to_recordset($1::jsonb) AS r(pk bigint, gross_production double precision,
+	       net_production double precision, oee_q double precision)
+	 WHERE e.id_production_order_runtime = r.pk
+	   AND r.pk = ANY($2::bigint[])`
 
 // Phase B: event overlap sums — CONDITIONAL (inner join; prod's
 // GROUP BY → FOUND false when no overlapping events).
@@ -250,19 +275,28 @@ const computeEventsSQL = `
 	      ) x
 	     WHERE x.n > 0
 	)
-	UPDATE %[4]s.production_orders_runtime e SET
+	SELECT e.id_production_order_runtime AS pk, e.xmin::text AS xm,
 	       -- #253: bound to the PO wall-clock span, matching hour.go/shift.go/line_lead.go
-	       -- (running_time = LEAST(running, ts_total)). ev.running SUMS status=6 event
+	       -- (LEAST(running, ts_total)). ev.running SUMS status=6 event
 	       -- durations, which double-counts when a tp=3 line carries interleaved
 	       -- member-machine event streams → running_time can exceed elapsed time (the
 	       -- 34–78× overflow the F3 sentinel flags). running_time can never physically
 	       -- exceed the PO's wall-clock span; this enforces that invariant in the
 	       -- computation (NOT a DQ clamp). No-op on clean single-stream data.
-	       running_time = LEAST(ev.running, GREATEST(extract(epoch FROM (COALESCE(upper(e.runtime_timerange), now()) - lower(e.runtime_timerange))), 0)),
-	       stopped_time = ev.stopped
+	       LEAST(ev.running, GREATEST(extract(epoch FROM (COALESCE(upper(e.runtime_timerange), now()) - lower(e.runtime_timerange))), 0))::numeric AS running_time,
+	       ev.stopped::numeric AS stopped_time
 	  FROM ev
-	 WHERE e.id_equipment = ev.id_equipment
+	  JOIN %[4]s.production_orders_runtime e
+	    ON e.id_equipment = ev.id_equipment
 	   AND lower(e.runtime_timerange) = ev.lo`
+
+const applyEventsSQL = `
+	UPDATE %[4]s.production_orders_runtime e SET
+	       running_time = r.running_time,
+	       stopped_time = r.stopped_time
+	  FROM jsonb_to_recordset($1::jsonb) AS r(pk bigint, running_time numeric, stopped_time numeric)
+	 WHERE e.id_production_order_runtime = r.pk
+	   AND r.pk = ANY($2::bigint[])`
 
 // Phase B2 (FU#8): the PO-grain availability write path. available_time and
 // planned_downtime are NEVER written to production_orders_runtime by any code
@@ -310,28 +344,63 @@ const computeAvailabilitySQL = `
 	      ) x/*EXCL_JOIN*/
 	     WHERE x.n > 0
 	)
-	UPDATE %[4]s.production_orders_runtime e SET
-	       available_time   = GREATEST(ev.ts_total - LEAST(ev.planned, ev.ts_total)/*EXCL_TERM*/, 0)::int,
-	       planned_downtime = LEAST(ev.planned, ev.ts_total)::int/*EXCL_SET*/
+	SELECT e.id_production_order_runtime AS pk, e.xmin::text AS xm,
+	       GREATEST(ev.ts_total - LEAST(ev.planned, ev.ts_total)/*EXCL_TERM*/, 0)::int AS available_time,
+	       LEAST(ev.planned, ev.ts_total)::int AS planned_downtime/*EXCL_SET*/
 	  FROM ev
-	 WHERE e.id_equipment = ev.id_equipment
+	  JOIN %[4]s.production_orders_runtime e
+	    ON e.id_equipment = ev.id_equipment
 	   AND lower(e.runtime_timerange) = ev.lo`
+
+// applyAvailabilitySQL — /*EXCL_COLS*/ and /*EXCL_APPLY*/ are filled by
+// withPOExclusions (no_data_time / out_of_service_time) when exclusions are on.
+const applyAvailabilitySQL = `
+	UPDATE %[4]s.production_orders_runtime e SET
+	       available_time   = r.available_time,
+	       planned_downtime = r.planned_downtime/*EXCL_APPLY*/
+	  FROM jsonb_to_recordset($1::jsonb) AS r(pk bigint, available_time int, planned_downtime int/*EXCL_COLS*/)
+	 WHERE e.id_production_order_runtime = r.pk
+	   AND r.pk = ANY($2::bigint[])`
 
 // NOTE (phase order): prod runs phase A (which CLEARS recalc_needed)
 // before phase B reads its own eligible set — but prod's loop
 // evaluates BOTH phases per row from the SAME loop selection. The
-// set-based port therefore snapshots eligibility ONCE per pass: both
-// statements share the predicate, and phase B runs BEFORE phase A so
-// the flag-clear cannot shrink its set. Outputs identical; order of
-// column writes within a pass is not observable between passes.
+// set-based port therefore snapshots eligibility ONCE per pass (the
+// compute snapshot below) and applies phase B before phase A, so the
+// flag-clear cannot shrink its set. Outputs identical; order of column
+// writes within a pass is not observable between passes.
 
+// Re-flags run in the short apply transaction. SKIP LOCKED: a row another writer
+// holds right now (edge-api closing the PO) is left alone — that writer flags it
+// itself, and the next pass re-flags it anyway. `recalc_needed IS NOT TRUE` skips
+// the no-op rewrite of rows that are already flagged.
 const computeReflagOpenSQL = `
 	UPDATE %[4]s.production_orders_runtime SET recalc_needed = true
-	 WHERE upper(runtime_timerange) IS NULL`
+	 WHERE id_production_order_runtime IN (
+	       SELECT id_production_order_runtime FROM %[4]s.production_orders_runtime
+	        WHERE upper(runtime_timerange) IS NULL AND recalc_needed IS NOT TRUE
+	          FOR UPDATE SKIP LOCKED)`
 
 const computeReflagRecentSQL = `
 	UPDATE %[4]s.production_orders_runtime SET recalc_needed = true
-	 WHERE upper(runtime_timerange) > now() - interval '48 hours'`
+	 WHERE id_production_order_runtime IN (
+	       SELECT id_production_order_runtime FROM %[4]s.production_orders_runtime
+	        WHERE upper(runtime_timerange) > now() - interval '48 hours' AND recalc_needed IS NOT TRUE
+	          FOR UPDATE SKIP LOCKED)`
+
+// lockSnapshotRowsSQL — the optimistic-concurrency gate of the apply transaction.
+// It locks only the runtime rows that are STILL the version the compute snapshot
+// read (same xmin = no writer has touched the row since) and that nobody holds now
+// (SKIP LOCKED). A row changed or held by another writer is left out of the apply:
+// it keeps its recalc_needed flag and the next pass computes it from fresh data.
+// $1 = [{pk, xm}] from the snapshot.
+const lockSnapshotRowsSQL = `
+	SELECT e.id_production_order_runtime
+	  FROM %[4]s.production_orders_runtime e
+	  JOIN jsonb_to_recordset($1::jsonb) AS s(pk bigint, xm text)
+	    ON e.id_production_order_runtime = s.pk
+	 WHERE e.xmin = s.xm::xid
+	   FOR UPDATE OF e SKIP LOCKED`
 
 // computePropagateHeadersSQL — a PO header is the SUM of its runtime rows
 // (recalc.go), so whenever a runtime row is about to be recomputed its header
@@ -449,52 +518,101 @@ func isIntOverflow(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "22003"
 }
 
+// computeStep is one phase of the pass: a read-only SELECT evaluated in the
+// compute snapshot and the UPDATE that applies its rows.
+type computeStep struct {
+	name    string
+	compute string // SELECT pk, xm, <values> — run in the snapshot
+	apply   string // UPDATE ... FROM jsonb_to_recordset($1) ... WHERE pk = ANY($2)
+	args    []any
+	rows    string // the snapshot's rows as a JSON array (filled by the compute tx)
+}
+
 // RunCompute executes one compute pass for one destination. poAvail (FU#8) gates
 // the PO-grain availability write path; default false ⇒ byte-identical parity.
+//
+// TWO TRANSACTIONS, SHORT LOCKS (2026-10-14). The pass used to be ONE repeatable-read
+// transaction whose UPDATE statements each computed and wrote: the first phase's
+// UPDATE row-locked every flagged runtime row — every OPEN PO of every line — and
+// held the locks until COMMIT, through the 20–45 s of the remaining phases. A Change
+// PO (edge-api setup) closes exactly that open row, so it queued behind the engine
+// for 16–44 s ("process … still waiting for ShareLock … while updating tuple … in
+// relation production_orders_runtime", staging Postgres log, 2026-10-14 17:04–17:13)
+// and the operator tablet timed out at 12 s.
+//
+//  1. COMPUTE — a READ ONLY repeatable-read transaction runs every phase as a plain
+//     SELECT over ONE snapshot (the 2026-09-30 one-snapshot rule: all phases see the
+//     same eligible set). SELECTs take no row locks, so writers are never blocked by
+//     the slow part. Each phase returns its rows (id + the row version it read, xmin).
+//  2. APPLY — a short read-committed transaction locks the rows that are still the
+//     version the snapshot read (same xmin) and not held by anyone (SKIP LOCKED),
+//     then writes the computed values by primary key, phase by phase, in the old
+//     order. A row another writer changed after the snapshot (a PO closed or a row
+//     re-flagged mid-pass) is skipped: it keeps its flag and the next pass computes
+//     it from fresh data — never a lost recompute, never a stale overwrite, and no
+//     40001 that throws away the whole pass.
 func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail, poExcl bool, scope LineLeadScope) (int64, error) {
-	// ONE SNAPSHOT for every phase (2026-09-30). Each phase builds its own eligible
-	// set from recalc_needed; as separate autocommit statements (READ COMMITTED =
-	// a fresh snapshot per statement) a row flagged by another writer AFTER Phase A2
-	// read the set but BEFORE Phase A did was cleared by A with no line-lead values —
-	// a silently lost recompute (5 repaired CPACK POs left NULL, 2026-09-30).
-	// REPEATABLE READ gives all phases the same set: a row flagged mid-pass is not
-	// in the snapshot, keeps its flag and is computed next tick. A writer that
-	// changes a row this pass also updates makes the pass fail with 40001 — the
-	// whole pass rolls back and the next tick retries; nothing is lost either way.
-	tx, err := d.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return 0, fmt.Errorf("compute begin: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
-	// Phase B first (see NOTE): its eligible set must predate A's clear.
-	if _, err := tx.Exec(ctx, fmtRD(computeEventsSQL, d), window); err != nil {
-		return 0, fmt.Errorf("compute events: %w", err)
-	}
-	// Phase B2 (FU#8): the availability write path — MUST run before Phase A
-	// clears recalc_needed (its eligible set reads recalc_needed, like Phase B).
-	// Off ⇒ skipped ⇒ available_time/planned_downtime stay NULL (parity).
-	if poAvail {
-		if _, err := tx.Exec(ctx, fmtRD(withPOExclusions(computeAvailabilitySQL, poExcl, d.ConfigSchema), d, plannedDowntimeExpr(false)), window); err != nil {
-			return 0, fmt.Errorf("compute availability: %w", err)
-		}
-	}
-	// Phase A2 (line-lead PO counters) — before Phase A clears recalc_needed.
 	ll := scope.Enterprises
 	if ll == nil {
 		ll = []int{}
 	}
 	pred := scope.Predicate("$2::int[]")
+	// Apply order = the old statement order: Phase B (events), B2 (availability),
+	// A2 (line-lead counters), A (values; reads A2's counters for line-lead rows and
+	// clears recalc_needed).
+	steps := []*computeStep{{name: "events", compute: fmtRD(computeEventsSQL, d), apply: fmtRD(applyEventsSQL, d), args: []any{window}}}
+	if poAvail {
+		// Phase B2 (FU#8). Off ⇒ skipped ⇒ available_time/planned_downtime stay NULL (parity).
+		steps = append(steps, &computeStep{name: "availability",
+			compute: fmtRD(withPOExclusions(computeAvailabilitySQL, poExcl, d.ConfigSchema), d, plannedDowntimeExpr(false)),
+			apply:   fmtRD(withPOExclusions(applyAvailabilitySQL, poExcl, d.ConfigSchema), d),
+			args:    []any{window}})
+	}
 	if scope.Any() {
-		if _, err := tx.Exec(ctx, fmtRD(computeLineLeadValuesSQL, d, pred), window, ll); err != nil {
-			return 0, fmt.Errorf("compute line-lead values: %w", err)
-		}
+		steps = append(steps, &computeStep{name: "line-lead values", compute: fmtRD(computeLineLeadValuesSQL, d, pred),
+			apply: fmtRD(applyLineLeadValuesSQL, d), args: []any{window, ll}})
+	}
+	values := &computeStep{name: "values", compute: fmtRD(computeValuesSQL, d, pred), apply: fmtRD(applyValuesSQL, d), args: []any{window, ll}}
+	steps = append(steps, values)
+
+	snapshot, err := computeSnapshot(ctx, d, steps)
+	if err != nil {
+		return 0, err
 	}
 	if computeBetweenPhasesHook != nil {
 		computeBetweenPhasesHook(ctx)
 	}
-	tag, err := tx.Exec(ctx, fmtRD(computeValuesSQL, d, pred), window, ll)
+
+	tx, err := d.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return 0, fmt.Errorf("compute values: %w", err)
+		return 0, fmt.Errorf("compute apply begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	locked := []int64{}
+	if snapshot != "[]" {
+		rows, err := tx.Query(ctx, fmtRD(lockSnapshotRowsSQL, d), snapshot)
+		if err != nil {
+			return 0, fmt.Errorf("compute lock: %w", err)
+		}
+		locked, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return 0, fmt.Errorf("compute lock: %w", err)
+		}
+	}
+	var affected int64
+	if len(locked) > 0 {
+		for _, st := range steps {
+			if st.rows == "[]" {
+				continue
+			}
+			tag, err := tx.Exec(ctx, st.apply, st.rows, locked)
+			if err != nil {
+				return 0, fmt.Errorf("compute %s: %w", st.name, err)
+			}
+			if st == values {
+				affected = tag.RowsAffected()
+			}
+		}
 	}
 	if _, err := tx.Exec(ctx, fmtRD(computeReflagOpenSQL, d)); err != nil {
 		return 0, fmt.Errorf("reflag open: %w", err)
@@ -505,12 +623,50 @@ func RunCompute(ctx context.Context, d flows.Dest, window string, poAvail, poExc
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("compute commit: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	return affected, nil
 }
 
-// computeBetweenPhasesHook is a test seam: nil in production. The golden test sets
-// it to flag a row from ANOTHER connection between Phase A2 and Phase A — the exact
-// interleaving that lost recomputes before RunCompute ran in one snapshot.
+// computeSnapshot runs every step's SELECT in ONE read-only repeatable-read
+// snapshot, stores each step's rows (JSON array) in st.rows and returns the union
+// of the rows' {pk, xm} versions the apply transaction must find unchanged.
+func computeSnapshot(ctx context.Context, d flows.Dest, steps []*computeStep) (string, error) {
+	tx, err := d.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return "", fmt.Errorf("compute begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read-only; Commit below ends it
+	for _, st := range steps {
+		q := "SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb)::text FROM (" + st.compute + "\n) r"
+		if err := tx.QueryRow(ctx, q, st.args...).Scan(&st.rows); err != nil {
+			return "", fmt.Errorf("compute %s: %w", st.name, err)
+		}
+	}
+	// The row versions every step read: one {pk, xm} per runtime row (all steps
+	// read the same snapshot, so a row has the same xm in every step).
+	var snapshot string
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('pk', x.pk, 'xm', x.xm)), '[]'::jsonb)::text
+		  FROM unnest($1::jsonb[]) AS a(rows), jsonb_to_recordset(a.rows) AS x(pk bigint, xm text)`,
+		stepRows(steps)).Scan(&snapshot); err != nil {
+		return "", fmt.Errorf("compute snapshot: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("compute snapshot commit: %w", err)
+	}
+	return snapshot, nil
+}
+
+func stepRows(steps []*computeStep) []string {
+	out := make([]string, 0, len(steps))
+	for _, st := range steps {
+		out = append(out, st.rows)
+	}
+	return out
+}
+
+// computeBetweenPhasesHook is a test seam: nil in production. It runs after the
+// compute snapshot and before the apply transaction — where a concurrent writer's
+// commit (a re-flag, a PO closed by edge-api) lands in real life.
 var computeBetweenPhasesHook func(ctx context.Context)
 
 // RunPropagateHeaders flags the header of every runtime row the next compute

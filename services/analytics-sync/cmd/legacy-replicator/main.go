@@ -41,13 +41,25 @@ func main() {
 		serveHTTP(cfg.HealthPort, m, logger)
 		return
 	}
-	if cfg.LegacyPassword == "" || cfg.DestPassword == "" {
-		logger.Error("LEGACY_DB_PASSWORD / DEST_DB_PASSWORD required — refusing to boot")
+	if cfg.LegacyPassword == "" {
+		logger.Error("LEGACY_DB_PASSWORD required — refusing to boot")
 		os.Exit(1)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// DEST login: Secrets Manager PG_SECRET_ID (staging/prod) or CREDS_SOURCE=env (dev).
+	// Resolved before any pool opens so a bad secret fails fast. Legacy is untouched.
+	dc, err := replicate.LoadDestCreds(ctx, cfg, replicate.AWSSecret)
+	if err != nil {
+		logger.Error("dest DB credentials", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	if dc.User != replicate.DestRole {
+		logger.Warn("dest DB login is not the least-privilege role",
+			slog.String("user", dc.User), slog.String("want", replicate.DestRole))
+	}
 
 	// SOURCE pool — legacy prod, SELECT-only. Natural-key resolution only.
 	legacyCreds := &db.DBCreds{Host: cfg.LegacyHost, Port: cfg.LegacyPort, User: cfg.LegacyUser, Password: cfg.LegacyPassword}
@@ -59,8 +71,12 @@ func main() {
 	defer legacyPool.Close()
 
 	// DEST pool — staging analytics. All writes + cursor.
-	destCreds := &db.DBCreds{Host: cfg.DestHost, Port: cfg.DestPort, User: cfg.DestUser, Password: cfg.DestPassword}
-	destPool, err := db.NewPool(ctx, destCreds, cfg.DestDBName, "legacy-replicator-dst", logger)
+	// Tenant stamp: every DEST connection is scoped to DST_ENTERPRISE for row-level security. The role has
+	// no tenant default, so a connection without the stamp sees no tenant rows (fails closed); see
+	// db/migrations/t-legacy-replicator-role § RLS.
+	destCreds := &db.DBCreds{Host: dc.Host, Port: dc.Port, User: dc.User, Password: dc.Password,
+		Params: map[string]string{"app.tenant_id": strconv.Itoa(cfg.DstEnterprise)}}
+	destPool, err := db.NewPool(ctx, destCreds, dc.Database, "legacy-replicator-dst", logger)
 	if err != nil {
 		logger.Error("dest pool init failed", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -137,6 +153,17 @@ func main() {
 	go func() {
 		if err := manualRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("manual-event reconciler terminated with error", slog.String("err", err.Error()))
+		}
+	}()
+
+	// Base (PLC) event reconciler — copies legacy equipment_events the twin lacks.
+	// The replay only sees base events announced in user_logs; since the CPACK
+	// edge moved to Pub/Sub (2026-10-07) legacy writes them without an audit row.
+	// Ships INERT (RECONCILE_BASE_EVENTS_ENABLED=false).
+	baseRecon := replicate.NewBaseReconciler(legacyPool, destPool, resolver, cfg, m, logger)
+	go func() {
+		if err := baseRecon.RunForever(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("base-event reconciler terminated with error", slog.String("err", err.Error()))
 		}
 	}()
 

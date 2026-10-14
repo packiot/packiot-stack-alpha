@@ -34,56 +34,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dlqSchemaDDL homes the DLQ in the `ops` schema (operational-plumbing tier of the
-// task #241 app-split). Created explicitly (never via an unqualified CREATE that a
-// widened search_path would land in the wrong schema): CREATE TABLE IF NOT EXISTS
-// checks ONLY the creation namespace (first schema on the path), not the whole path —
-// an empty `core`/`gold` ahead of `ops` on the path would otherwise spawn an empty
-// shadow table. Schema-qualifying every ref removes that hazard entirely.
-const dlqSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ops`
+// ops.mirror_replay_dlq is OWNED BY A MIGRATION (db/migrations/t-legacy-replicator-role
+// re-asserts it, retry columns included), never created here: the replicator's role has
+// no CREATE. CheckDLQ only probes that the table is there and writable, so a gap shows
+// at boot instead of as a "DLQ write failed" on the first failing row.
+const sqlCheckDLQ = `SELECT t IS NOT NULL,
+	       COALESCE(has_table_privilege(t::oid, 'INSERT')
+	            AND has_table_privilege(t::oid, 'SELECT')
+	            AND has_table_privilege(t::oid, 'UPDATE')
+	            AND has_table_privilege(t::oid, 'DELETE'), false)
+	  FROM (SELECT to_regclass('ops.mirror_replay_dlq') AS t) x`
 
-// dlqDDL creates the DLQ table on demand. Shape matches edge-node-red/db/
-// 25-mirror-replay-schema.sql plus the retry_attempts / last_retry_at columns
-// the retrier needs (mirror-worker-go carries the same two columns).
-const dlqDDL = `CREATE TABLE IF NOT EXISTS ops.mirror_replay_dlq (
-	id             BIGSERIAL   PRIMARY KEY,
-	source         text        NOT NULL,
-	source_log_id  bigint      NOT NULL,
-	category       text,
-	subcategory    text,
-	payload        jsonb,
-	error          text        NOT NULL,
-	retry_attempts int         NOT NULL DEFAULT 0,
-	last_retry_at  timestamptz,
-	created_at     timestamptz NOT NULL DEFAULT now()
-)`
-
-const dlqIndexDDL = `CREATE INDEX IF NOT EXISTS mirror_replay_dlq_source_idx
-	ON ops.mirror_replay_dlq (source, created_at DESC)`
-
-// EnsureDLQ creates the DLQ table + index if absent. Called once at loop start
-// (and idempotent). Failure here is returned so the caller can decide — but the
-// loop treats a missing DLQ as fail-open (see writeDLQ) so capture is best
-// effort and never wedges replay.
-func EnsureDLQ(ctx context.Context, dst *pgxpool.Pool) error {
-	// Home schema first (idempotent) so the qualified CREATE TABLE below has a
-	// target on a fresh dest (greenfield) as well as staging.
-	if _, err := dst.Exec(ctx, dlqSchemaDDL); err != nil {
+// CheckDLQ reports an error when the DLQ table is missing or the login cannot use it.
+// The caller treats that as fail-open (capture degrades to log-only).
+func CheckDLQ(ctx context.Context, dst *pgxpool.Pool) error {
+	var exists, usable bool
+	if err := dst.QueryRow(ctx, sqlCheckDLQ).Scan(&exists, &usable); err != nil {
 		return err
 	}
-	if _, err := dst.Exec(ctx, dlqDDL); err != nil {
-		return err
+	if !exists {
+		return errors.New("ops.mirror_replay_dlq is missing (apply db/migrations/t-legacy-replicator-role/01-up.sql)")
 	}
-	// Older deployments created the table without the retry columns — add them
-	// idempotently so a shared table converges to the full shape.
-	if _, err := dst.Exec(ctx,
-		`ALTER TABLE ops.mirror_replay_dlq
-		   ADD COLUMN IF NOT EXISTS retry_attempts int NOT NULL DEFAULT 0,
-		   ADD COLUMN IF NOT EXISTS last_retry_at  timestamptz`); err != nil {
-		return err
+	if !usable {
+		return errors.New("login lacks SELECT/INSERT/UPDATE/DELETE on ops.mirror_replay_dlq (apply db/migrations/t-legacy-replicator-role/01-up.sql)")
 	}
-	_, err := dst.Exec(ctx, dlqIndexDDL)
-	return err
+	return nil
 }
 
 // writeDLQ appends a failed row for retry + inspection. Best-effort: a failure

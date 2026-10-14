@@ -97,7 +97,7 @@ Cross-cutting facts used by many sections:
 | COGNITO_USER_POOL_ID / COGNITO_CS_ADMIN_GROUP | `edge-api/src/usecases/cognito-users/shared/cognito-users.config.ts:40,42` | `''` → 503 | `us-east-1_0T9t1sTwt` / `cs-admin` (`:653-654`) | **AWS Cognito admin API** |
 | AWS_REGION | `edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts:225`, `edge-api/src/usecases/cognito-users/shared/cognito-users.config.ts:39` | `us-east-1` | `"us-east-1"` (`:564`) | **AWS** |
 | SSM_* (≈30 vars: HYBRID_INSTANCE_ROLE, SHARED_AGENT_INSTANCE_ID/DIR/…, EDGE_INGEST_URL/KEY, SESSION_*, ONPREM_*) | `edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts:228-304` | `SSM_EDGE_INGEST_URL` defaults to **`https://ingest.prod.packiot.app`** (`edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts:63`) | `SSM_HYBRID_INSTANCE_ROLE`, `SSM_SHARED_AGENT_INSTANCE_ID=i-06c9547a2c7091ab7`, `SSM_SHARED_AGENT_DIR`, `SSM_EDGE_INGEST_URL=https://ingest.staging.packiot.app:8449/v1/tags`, `SSM_EDGE_INGEST_KEY` (`:565,581-582,592-593`) | **AWS SSM**, prod-default URL |
-| EDGE_SESSION_BROKER_WS_URL / HTTP_URL / TOKEN | `edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts:307-309` | empty ⇒ 503 | `ws://edge-session-broker:8090/shell`, `http://edge-session-broker:8091`, `${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}` (`:686-688`) | |
+| EDGE_SESSION_BROKER_WS_URL / HTTP_URL / TOKEN | `edge-api/src/usecases/edge-ssm/shared/edge-ssm.config.ts:307-309` | empty ⇒ 503 | `ws://edge-session-broker:8090/shell`, `http://edge-session-broker:8091`, `${EDGE_SESSION_BROKER_TOKEN:?}` (Secrets Manager `packiot/staging/app.edge_session_broker_token`) | |
 | ONBOARD_GENERATE_URL / ONBOARD_SIMULATE_URL / ONBOARD_API_KEY / ONBOARD_DEFAULT_PRODUCTION_SPEED / EDGE_API_ONBOARDING_ENABLED | `edge-api/src/usecases/onboarding/shared/onboarding.config.ts:51-62` | simulate = generate with `/generate`→`/simulate`; speed 60 | `http://sparkplug-decoder:9105/v1/onboard/generate`, `${ONBOARD_API_KEY}`, enabled `"true"` (`:656,677-678`) | |
 | EDGE_API_TEARDOWN_ENABLED / TEARDOWN_PROTECTED_ENTERPRISES / TEARDOWN_INGEST_SECURITY_GROUP_ID | `edge-api/src/usecases/teardown/shared/teardown.config.ts:63-70` | | enabled `"true"` (`:673`) | SG id ⇒ AWS EC2 (UNPROVEN usage) |
 | EDGE_API_PROMOTE_ENABLED / _APPLY_ENABLED / PROMOTE_SOURCE_ENV | `edge-api/src/usecases/promote/shared/promote.config.ts:30-31`, `edge-api/src/usecases/promote/extract/extract.service.ts:50` | off | not set | |
@@ -318,7 +318,7 @@ Cross-cutting facts used by many sections:
      `VITE_EQUIPMENT_SETUP_GROUPS` (`src/Components/EquipmentSetup/index.jsx:18`, default `'PACK,C-PACK'`, not passed).
      Staging build args: `VITE_PO_WRITE_QUEUE_ENABLED: "true"`, pool `us-east-1_0T9t1sTwt`, client `2ckuoa0ov598rdpdn3uv039h6e` (`compose.staging.yml:3431-3442`).
    - Runtime (nginx envsubst): `EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}` (CPACK `enterprises.api_key`), `REFDATA_API_KEY:
-     ${OPERATOR_REFDATA_API_KEY:-stg-cpack-key}` (`compose.staging.yml:3461-3463`). read-api maps `stg-cpack-key:3` (`compose.staging.yml:2944`).
+     ${OPERATOR_REFDATA_API_KEY:-<cpack-read-key>}` (`compose.staging.yml:3461-3463`). read-api maps `<cpack-read-key>:3` (`compose.staging.yml:2944`).
 3. **Backend calls** (same-origin): edge-api `POST /session`, `/session/switch`, `/session/enterprises` (`operator/src/Services/endpoints.js:595-605`,
    `src/Components/Header/components/EnterpriseSwitcher.jsx:18`); `/api/downtimes/{justify,edit-manual-event,create-manual-event,split}`
    (`operator/src/Services/endpoints.js:326,358,391,435`); `/api/production-orders/{start,create-and-start,replace,setup,create}` (`operator/src/Services/endpoints.js:473,497,526,543,582`);
@@ -334,8 +334,8 @@ Cross-cutting facts used by many sections:
 7. **External**: AWS Cognito; Google Fonts (`operator/index.html:10`); npm/yarn registry at build.
 8. **Health/ports**: no compose healthcheck for `operator` (none in `:3426-3482`); nginx :80 → host 8083.
 9. **Variants** (same build stanza ⇒ same image):
-   - `operator-sbx` (`compose.staging.yml:3509-3546`): `EDGE_API_KEY=${OPERATOR_SBX_EDGE_API_KEY:-}` (sandbox ent 2000003), `REFDATA_API_KEY=${…:-stg-sbxcpack-key}`, host port 8085, no static IP.
-   - `operator-bispharma` (`compose.staging.yml:3552-3588`): `EDGE_API_KEY=${OPERATOR_BISPHARMA_EDGE_API_KEY:-}` (ent 5), `REFDATA_API_KEY=${…:-stg-bispharma-key}`, host port 8087.
+   - `operator-sbx` (`compose.staging.yml:3509-3546`): `EDGE_API_KEY=${OPERATOR_SBX_EDGE_API_KEY:-}` (sandbox ent 2000003), `REFDATA_API_KEY=${…:-<sbxcpack-read-key>}`, host port 8085, no static IP.
+   - `operator-bispharma` (`compose.staging.yml:3552-3588`): `EDGE_API_KEY=${OPERATOR_BISPHARMA_EDGE_API_KEY:-}` (ent 5), `REFDATA_API_KEY=${…:-<bispharma-read-key>}`, host port 8087.
 10. **UNPROVEN**: service-worker cached endpoints list (`isCacheableRead` body not traced); whether `/session` still returns HS256 tokens anywhere.
 
 ---

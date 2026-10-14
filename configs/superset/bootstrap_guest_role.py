@@ -23,10 +23,10 @@
 #     GuestViewer (#1), which anon never assumes.
 #
 #  3. MINIMAL GUEST-TOKEN MINTER ROLE ("GuestTokenMinter" = only
-#     `can_grant_guest_token on SecurityRestApi`). edge-api authenticates as the
+#     `can_read` + `can_grant_guest_token` on SecurityRestApi: csrf_token + mint). edge-api authenticates as the
 #     minter service account to MINT guest tokens; it does not need — and must not
 #     have — full Admin. We scope the service account down to this one permission
-#     (blast radius 167 Admin perms → 1), lockout-safe (see below).
+#     (blast radius 167 Admin perms → 2), lockout-safe (see below).
 #
 # RLS is STILL the tenant enforcer. These grants only let the guest role REACH the
 # chart-data endpoint; the per-tenant guest-token RLS clause + the Postgres
@@ -64,9 +64,18 @@ GUEST_EMBED_PERMS = [
     ("all_datasource_access", "all_datasource_access"),
 ]
 
-# The ONLY permission the guest-token mint endpoint (POST /api/v1/security/guest_token/)
-# checks. `can_grant_guest_token` lives on the `SecurityRestApi` view-menu.
-MINTER_PERMS = [("can_grant_guest_token", "SecurityRestApi")]
+# What edge-api's mint flow needs (src/usecases/superset-embed): it first GETs
+# /api/v1/security/csrf_token/ (sets the session cookie + token the mint POST
+# carries) — gated by `can_read on SecurityRestApi` in Superset 4.1 — then POSTs
+# /api/v1/security/guest_token/, gated by `can_grant_guest_token on SecurityRestApi`.
+# With only the grant, the CSRF fetch 403'd and every front4 Reports embed failed
+# with "Couldn't load this report (401)" for every tenant (found 2026-10-13).
+# `can_read on SecurityRestApi` only covers the security API's read endpoints
+# (csrf_token, …); it grants no dashboard/dataset/chart access.
+MINTER_PERMS = [
+    ("can_read", "SecurityRestApi"),
+    ("can_grant_guest_token", "SecurityRestApi"),
+]
 
 MINTER_ROLE_NAME = "GuestTokenMinter"
 

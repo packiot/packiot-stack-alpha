@@ -54,7 +54,7 @@ Behind `AGENT_TAGMAP_FROM_REGISTER=true`, the sparkplug-agent:
 
 The DB is a seam (`RegisterFetcher`); the pgx pool is dialled **only** when the flag
 is on, keeping the default agent run DB-free. pgx was added to
-`services/edge-transformer/go.mod` for exactly the ADR-0009 Phase-2 purpose its
+`services/sparkplug-decoder/go.mod` for exactly the ADR-0009 Phase-2 purpose its
 prior "intentionally NOT included" note anticipated.
 
 The agent + edge-transformer stay **generic** — they LOAD the profile + register and

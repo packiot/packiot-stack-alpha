@@ -52,12 +52,12 @@ Source evidence:
   scope-guards on the topic/group first segment, stamps `source_type`, and `Publisher.Publish`es **verbatim**
   to `oee`/`sparkplug.data.<tenant>`. **No `sparkplug.Decode`, no `StateStore`, no Calc.** It is a pure
   authenticated transport front-door so RabbitMQ stays internal.
-- `services/edge-transformer/cmd/edge-transformer/main.go` — the MQTT `sparkplugHandler`
+- `services/sparkplug-decoder/cmd/edge-transformer/main.go` — the MQTT `sparkplugHandler`
   (`main.go:416`) decodes, resolves aliases via `sparkplug.StateStore`, runs the Calc Production Counters port
   (`runShadow`/`buildCutoverMetrics`, `main.go:858-1017`), and triple-emits. This is the "Go Calc brain."
-- `services/edge-transformer/internal/sparkplug/decoder.go:77` — `Decode(body)` is
+- `services/sparkplug-decoder/internal/sparkplug/decoder.go:77` — `Decode(body)` is
   `proto.Unmarshal` — **"Sparkplug B is binary-only over the wire … NOT the JSON representation."**
-- `services/edge-transformer/cmd/plc-sim/main.go` — `sparkplug.EncodeSim(...)` → `proto.Marshal`,
+- `services/sparkplug-decoder/cmd/plc-sim/main.go` — `sparkplug.EncodeSim(...)` → `proto.Marshal`,
   `c.Publish("spBv1.0/CPACK/NBIRTH/<edge>", 0, true, body)` (retained NBIRTH establishes aliases) then
   `spBv1.0/CPACK/NDATA/<edge>` (alias-only). **This is exactly the wire shape a real PLC/Node-RED must
   reproduce for Path B.**

@@ -111,13 +111,17 @@ Jobs: `packiot-db-backup.timer` (DB box, 02:00 UTC), `packiot-historian-backup.t
 04:30 UTC). Alerts: `BackupStale`, `BackupShrank`, `BackupMetricsMissing`, `BackupMirrorIncomplete`
 (`monitoring/prometheus/rules.yml`).
 
-## Gaps (not done — need a decision / `terraform apply`)
+## Gaps
 
-- **Button for analytics/superset needs `aws_iam_role_policy.app_backup_ops`** (terraform/staging/backups.tf):
-  the runner's role cannot `ssm:SendCommand` to the DB box yet. Until applied, only `historian`
-  runs from the button; the others use the manual fallback.
-- **Historian Parquet has no copy** until the same grant is applied and the app box is switched to
-  `MODE=target` (`install-historian-backup.sh`), and **bucket versioning** (historian.tf) is applied.
-- Backup bucket versioning, DB-box EBS snapshots (snapshots.tf) — in terraform, not applied.
+Status checked read-only on 2026-10-13:
+
+- **Applied:** `aws_iam_role_policy.app_backup_ops` (the button can reach the DB box for
+  analytics/superset), versioning on the DB-backup and historian buckets, and the DB-box
+  AWS Backup selection (`packiot-staging-db-ec2`).
+- **Historian Parquet still has no copy outside its bucket** unless the app box runs
+  `backup-historian.sh` in `MODE=target` (`install-historian-backup.sh`); versioning protects
+  against overwrites and deletes inside the bucket, not against losing the bucket. Check the
+  mode on the host before relying on it.
+- **Not re-drilled since the grant:** the last analytics/superset button drills ran 2026-09-30.
 - No PITR (WAL archiving): RPO is a day, not minutes. Single account + region: no copy survives
   an account compromise or a regional S3 outage.

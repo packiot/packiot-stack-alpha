@@ -82,7 +82,7 @@ This is a **staging** change; **prod is untouched** (staging exists to mirror pr
                                             BAKE_COMPARATOR_ENABLED=true (F1 vs F3 diff)
 ```
 
-- **`edge-transformer`** (`services/edge-transformer`, `.23`): MQTT subscriber (`MQTT_ENABLED=true`), Go Calc port live (`USE_GO_PORT=true`, `CALC_CUTOVER_REFACTORED=true`). Emits all three `source_type` legs. Flow routing lives in `internal/shadowpub/publisher.go`; the F3 Calc-shape branch gates on `st == "refactored"`.
+- **`edge-transformer`** (`services/sparkplug-decoder`, `.23`): MQTT subscriber (`MQTT_ENABLED=true`), Go Calc port live (`USE_GO_PORT=true`, `CALC_CUTOVER_REFACTORED=true`). Emits all three `source_type` legs. Flow routing lives in `internal/shadowpub/publisher.go`; the F3 Calc-shape branch gates on `st == "refactored"`.
 - **`oeecloud-worker`** (`services/oeecloud-worker`, `.20`): AMQP consumer; flow routing table in `internal/flows/flows.go`; per-flow writers in `internal/writers/`; the F1-vs-F3 comparator in `internal/bake/` (`BAKE_COMPARATOR_ENABLED`, `BAKE_ENTERPRISE_IDS="3,4"`). Shift resolver, events deriver, PO recalc, UNS derivers all fan per-flow.
 - **`ingest-shim`** (`.29`): Incoplast real-tee HTTPS ingress → `oee`/`sparkplug.data.incoplast`.
 - **`plc-sim`** (`.200`): synthetic SparkPlug B; THE staging MQTT ingest (simulates a subset of CPACK lines — L8/L5-BREYER/L5-TEXA/L3-PTH/L4-TEXA — with absolute totalizers).

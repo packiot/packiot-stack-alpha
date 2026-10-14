@@ -249,8 +249,8 @@ export function OeeProfilePage() {
                 {lines.some((l) => l.hasLead === false) && (
                   <p className="mt-2 text-[12px] text-muted-foreground">
                     A line without a lead machine can&apos;t use it. Set one in{" "}
-                    <a className="text-primary hover:underline" href={csadminUrl("/app/line-config", id)} target="_blank" rel="noreferrer">
-                      CS Admin → Line configuration ↗
+                    <a className="text-primary hover:underline" href={csadminUrl("/app/lines", id)} target="_blank" rel="noreferrer">
+                      CS Admin → Lines → Line settings ↗
                     </a>
                     .
                   </p>

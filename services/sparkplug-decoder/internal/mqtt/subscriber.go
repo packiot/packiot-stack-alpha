@@ -382,7 +382,8 @@ func (s *Subscriber) Run(ctx context.Context) error {
 	// Start the drainer goroutine — one at a time (single-goroutine
 	// serialization matches the alias-table state machine's per-publisher
 	// sequential expectation). If the Handler needs parallelism later, add
-	// N drainers here; alias-table's sync.RWMutex tolerates that.
+	// N drainers here — but see the drainQueue INVARIANT first (durable Calc
+	// baselines need per-publisher dirty sets before a second drainer).
 	drainerDone := make(chan struct{})
 	go s.drainQueue(ctx, drainerDone)
 
@@ -435,6 +436,12 @@ func (s *Subscriber) Run(ctx context.Context) error {
 // Any Handler panic here would kill the goroutine + halt processing —
 // wrapped in a recover so an errant customer handler doesn't take the
 // whole subscriber down. Panic surfaces as an ERROR log line + metric bump.
+//
+// INVARIANT — exactly ONE drainer: the decoder's durable Calc baselines
+// (CALC_STATE_DURABLE, calc_production_counters.TrackedState) checkpoint a
+// process-wide dirty set in each message's outbox transaction, which is only
+// exact when messages are processed one at a time. Adding drainers requires
+// per-publisher dirty sets first, or a restart can lose/double-count deltas.
 func (s *Subscriber) drainQueue(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
 	for m := range s.queue {

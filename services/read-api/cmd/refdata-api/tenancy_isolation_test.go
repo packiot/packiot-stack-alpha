@@ -474,6 +474,11 @@ func TestXApiKeyWinsOverBearer(t *testing.T) {
 var roleDatasets = map[string]bool{
 	"entities-per-user-role": true,
 	"menu-per-user-role":     true,
+	// 2026-10-13: user-roles is the caller's role only — it used to ship every
+	// role of the tenant and front4 took an arbitrary [0] as the session's
+	// permissions. The tenant-wide list for the Settings admin screen is
+	// edge-api GET /api/user-roles, not this dataset.
+	"user-roles": true,
 }
 
 // TestRoleDatasetsBindTenantAndUserRoleAxes pins the two-axis contract:
@@ -501,7 +506,7 @@ func TestRoleDatasetsBindTenantAndUserRoleAxes(t *testing.T) {
 			t.Errorf("dataset %q: expected exactly one pUserRole axis, got %d", name, nRole)
 		}
 		if !want && nRole != 0 {
-			t.Errorf("dataset %q: unexpected pUserRole axis (%d) — only the variables-context role datasets take a user axis", name, nRole)
+			t.Errorf("dataset %q: unexpected pUserRole axis (%d) — only the roleDatasets take a user axis", name, nRole)
 		}
 		if !want {
 			continue

@@ -1,17 +1,38 @@
 # Packiot wiki: style guide and page templates
 
-The wiki (`docs/wiki/`, served at wiki.packiot.app by mkdocs-material) is written in
-**layers**. Every page belongs to exactly one layer and links down to the next layer for
-detail and up to the previous one for context. A reader should be able to stop at any
-layer and still hold a correct (if less detailed) picture.
+The wiki (`docs/wiki/`, served at wiki.packiot.app by mkdocs-material) is organised by
+**what the reader is trying to do** (the [Diátaxis](https://diataxis.fr/) model), split by
+audience. Put every page in exactly one section; if a page does two jobs, split it.
 
-| Layer | Folder | Answers | Typical length |
-|---|---|---|---|
-| 0 Start here | `docs/wiki/` (index, glossary, reading paths) | What is Packiot? Where do I start? | short |
-| 1 Architecture | `docs/wiki/architecture/` | How does the whole system fit together? | medium |
-| 2 Subsystems | `docs/wiki/subsystems/` | What does this part of the system own; what are its parts; how do they talk? | medium |
-| 3 Components | `docs/wiki/components/` | How does this one deployable unit work, down to config, SQL, jobs and failure modes? | long |
-| 4 Reference & operations | `docs/wiki/reference/`, `docs/wiki/operations/` | Look something up; do a task step by step | any |
+| Section | Folder | Reader's question | Page type | Audience |
+|---|---|---|---|---|
+| Home | `docs/wiki/index.md` | Where do I start? | entry | everyone |
+| 1 · Learn | `learn/` | Teach me, step by step | **tutorial**: one guided path, ends with something working | new engineers, new CS staff |
+| 2 · Use Packiot | `use/` | How do I do this in the product? | **how-to**, plain language, no jargon | Customer Success, automation team |
+| 3 · Build & operate | `build/develop/`, `build/operate/` | How do I change or run the platform? | **how-to** / runbook: one task, commands, verification | engineers, on call |
+| 4 · Understand | `understand/` (`architecture/`, `subsystems/`, `components/`) | How does it work, and why? | **explanation**, in the layers below | engineers |
+| 5 · Reference | `reference/` (+ generated `reference/api/`) | Look it up | **reference**: facts, tables, generated pages | everyone |
+
+Inside **Understand**, pages keep the layering: architecture (layer 1) → subsystems
+(layer 2) → components (layer 3). Each links down for detail and up for context, so a
+reader can stop at any layer and still hold a correct picture.
+
+**Cross-linking contract** (the docs are one system, not four):
+
+- Every service has a row in `reference/service-catalog.md` linking its README, component
+  page, API reference and dashboard. Adding a service means adding the row.
+- Every component page links its README and, if it serves HTTP, its API reference page.
+- Every README links back to its component page and the service catalog.
+- Every OpenAPI spec sets `externalDocs` to its component page.
+- API reference pages are **generated** from `docs/api/openapi/*.openapi.json` by
+  `scripts/wiki-openapi-to-md.py` at build time. Never hand-edit them; change the spec in
+  code and run `make openapi` (edge-api: `npm run openapi:export`).
+- Moving a page: add an entry to the `redirects` plugin in `wiki/mkdocs.yml` so old URLs
+  keep working.
+
+How-to and tutorial pages use this shape: **Goal** (one sentence) → **Before you start**
+→ numbered **Steps** (each with the command and what you should see) → **Check it
+worked** → **If it went wrong** → **Next**.
 
 ## Non-negotiable rules
 
@@ -54,6 +75,9 @@ last_verified: 2026-09-28
 > Up: [<parent page>](<relative link>)
 ```
 
+In **Understand**, `layer` is 1–3 as above; in Learn, Use and Build it is `0` (entry) or
+`guide`; in Reference it is `4`. Generated API pages carry `generated: true`.
+
 ## Layer 2 template (subsystem page)
 
 ```markdown
@@ -65,7 +89,7 @@ last_verified: 2026-09-28
 ## Data it owns       — tables/topics/files and their lifecycle
 ## Configuration that matters — the few knobs that change behaviour
 ## Failure modes & signals    — what breaks, how you notice (metric/log/symptom), where to look
-## History & decisions — key ADRs / incidents that shaped it (link ADRs as ../reference/adr-index.md or the ADR file)
+## History & decisions — key ADRs / incidents that shaped it (link ADRs as ../../reference/adr-index.md or the ADR file)
 ## Go deeper          — links to the layer-3 pages
 ```
 

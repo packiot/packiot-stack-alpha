@@ -28,17 +28,21 @@ const deadlockGoldenFixture = `
 	DROP SCHEMA IF EXISTS gdl CASCADE;
 	CREATE SCHEMA gdl;
 	CREATE TABLE gdl.equipments (id_equipment int PRIMARY KEY, tp_equipment int);
+	-- ts_value_production: the cascade keys the day off the hour row's label, so the
+	-- current-hour rows carry today's label explicitly (the bucket+59min fallback would
+	-- name tomorrow when the test runs at 23:xx UTC).
 	CREATE TABLE gdl.equipment_oee_hourly (id_equipment int, ts_value timestamptz, recalc_needed boolean,
-	    PRIMARY KEY (id_equipment, ts_value));
+	    ts_value_production timestamptz, PRIMARY KEY (id_equipment, ts_value));
 	CREATE TABLE gdl.equipment_oee_daily (LIKE gdl.equipment_oee_hourly INCLUDING ALL);
 	CREATE FUNCTION gdl.piot_get_day_begin_by_equipment(eq int, t timestamptz)
 	  RETURNS TABLE (ts_value_production timestamptz)
 	  AS 'SELECT date_trunc(''day'', $2)' LANGUAGE sql;
 	INSERT INTO gdl.equipments VALUES (30, 3), (31, 3);
 	INSERT INTO gdl.equipment_oee_hourly VALUES
-	  (30, date_trunc('hour', now()) - interval '1 hour', false),  -- held by the "backfill"
-	  (31, date_trunc('hour', now()) - interval '1 hour', false),  -- free
-	  (31, date_trunc('hour', now()), true);                       -- already flagged
+	  (30, date_trunc('hour', now()) - interval '1 hour', false, NULL),  -- held by the "backfill"
+	  (31, date_trunc('hour', now()) - interval '1 hour', false, NULL),  -- free
+	  (31, date_trunc('hour', now()), true, date_trunc('day', now())), -- already flagged
+	  (30, date_trunc('hour', now()), false, date_trunc('day', now())); -- current hour (cascade source)
 	INSERT INTO gdl.equipment_oee_daily VALUES
 	  (30, date_trunc('day', now()), false),                       -- held by the "backfill"
 	  (31, date_trunc('day', now()), false);                       -- free`

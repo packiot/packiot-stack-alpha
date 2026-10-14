@@ -14,7 +14,7 @@
 --   NULL on every CPACK row, verified against prod packiot40), so nothing ever
 --   populated the order. This backfill closes that gap for the existing rows;
 --   the onboard-gen generator emits the same artifact for new clients going
---   forward (services/edge-transformer .../clientdescriptor GenerateEquipmentPositionSQL).
+--   forward (services/sparkplug-decoder .../clientdescriptor GenerateEquipmentPositionSQL).
 --
 -- ORDER SOURCE (three independent, agreeing authorities)
 --   1. Oracle packiot40 equipments.position for C-PACK (ent 1), mapped by name.

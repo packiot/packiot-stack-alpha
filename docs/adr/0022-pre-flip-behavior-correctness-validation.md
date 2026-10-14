@@ -167,7 +167,7 @@ than pre-committing to a flip delay on an estimate.
 
 `refdata-api`'s `QUERY_API_KEYS` is a comma-separated `key:customer_id` list. Staging ships
 CPACK and the simulator keys in `compose.staging.yml`; this ADR's PR appends the Incoplast
-entry `stg-incoplast-key:4` (matching Incoplast's `id_enterprise = 4`). If, in a given
+entry `<incoplast-read-key>:4` (matching Incoplast's `id_enterprise = 4`). If, in a given
 environment, `QUERY_API_KEYS` is sourced from a secret / `.env` outside the repo rather than
-from `compose.staging.yml`, the deployer must append `stg-incoplast-key:4` there by hand —
+from `compose.staging.yml`, the deployer must append `<incoplast-read-key>:4` there by hand —
 do **not** drop the existing CPACK/simulator entries.

@@ -17,7 +17,7 @@ import (
 type Config struct {
 	// AWS Secrets Manager
 	AWSRegion        string
-	PGSecretID       string // packiot/staging/db
+	PGSecretID       string // staging: packiot/staging/stream-engine-db-creds (least-privilege stream_engine)
 	RabbitMQSecretID string // packiot/staging/rabbitmq-stream-engine-creds
 
 	// AMQP — host/port only. Username + password come from Secrets Manager.
@@ -436,7 +436,7 @@ type Config struct {
 func Load() (*Config, error) {
 	return &Config{
 		AWSRegion:                        getenv("AWS_REGION", "us-east-1"),
-		PGSecretID:                       getenv("PG_SECRET_ID", "packiot/staging/db"),
+		PGSecretID:                       getenv("PG_SECRET_ID", ""), // no default: never fall back to the admin packiot/staging/db; compose sets it
 		RabbitMQSecretID:                 getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-stream-engine-creds"),
 		AMQPHost:                         getenv("RABBITMQ_HOST", "rabbitmq"),
 		AMQPPort:                         getenvInt("RABBITMQ_PORT", 5672),

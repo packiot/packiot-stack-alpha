@@ -418,10 +418,17 @@ const sqlClosePOChanged = `UPDATE core.production_orders
 // fcs=false events, like legacy) read 0 on every line. CPACK equipment is
 // status_type 0 and outside the wide-row list, so deriver.go's correct pass
 // (which deletes unmatched fcs=false rows in ITS scope) never touches these.
+//
+// ±1 s GUARD (2026-10-09): the payload timestamp carries milliseconds, legacy
+// stores whole seconds, and the base-event reconciler (base_reconcile.go) copies
+// legacy's row — so the same transition can arrive at two keys < 1 s apart. The
+// first writer wins; the other is skipped (one transition, one row).
 const sqlInsertEquipmentEvent = `INSERT INTO silver.equipment_events (
 		id_equipment, ts_event, status, id_equipment_event, id_enterprise,
 		forced_creation_system, last_update)
-	VALUES ($1,$2,$3,$4,$5,false,now())
+	SELECT u.eq, u.ts, $3, $4, $5, false, now()
+	  FROM (SELECT $1::int AS eq, $2::timestamptz AS ts) u
+	 WHERE ` + baseNoNeighbour + `
 	ON CONFLICT (id_equipment, ts_event) DO NOTHING`
 
 const sqlUpdateEventClassification = `UPDATE silver.equipment_events

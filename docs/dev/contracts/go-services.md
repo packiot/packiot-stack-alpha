@@ -26,7 +26,7 @@ Checkout: `origin/staging @ 28356ccc` (branch `docs/p0-dev-contracts`). All path
 | analytics-sync | `:3141` | `services/analytics-sync/Dockerfile` | `cmd/shadow-mirror` → `analytics-sync` | up, `SHADOW_MIRROR_ENABLED=false` (idle) |
 | legacy-replicator | `:3214` | `services/analytics-sync/Dockerfile.replicator` | `cmd/legacy-replicator` | on |
 | legacy-replicator-sbx | `:3345` | same | `cmd/legacy-replicator` | flag `REPLICATE_SBX_ENABLED` (default off) |
-| edge-session-broker | `:711` | `services/edge-session-broker/Dockerfile` (Node 18) | `server.mjs` | on |
+| edge-session-broker | `:711` | `services/edge-session-broker/Dockerfile` (Node 22) | `server.mjs` | on |
 
 ## Cross-service data-flow summary (from the sections below)
 
@@ -40,7 +40,7 @@ Checkout: `origin/staging @ 28356ccc` (branch `docs/p0-dev-contracts`). All path
 
 | Dependency | Services | Configurable by env? |
 |---|---|---|
-| AWS Secrets Manager (`GetSecretValue`) | sparkplug-decoder, ingest-shim, oeecloud-fanout, mirror-worker-go (used); stream-engine, operator-gateway (bypassed by `CREDS_SOURCE=env` on staging) | yes — `CREDS_SOURCE=env` + `RABBITMQ_USER/PASSWORD` / `DB_*` |
+| AWS Secrets Manager (`GetSecretValue`) | sparkplug-decoder, ingest-shim, oeecloud-fanout, mirror-worker-go, stream-engine, operator-gateway, barcode-service (DB logins: their own least-privilege roles) | yes — `CREDS_SOURCE=env` + `DB_*` (dev) |
 | AWS Cognito JWKS (`us-east-1_0T9t1sTwt`) | read-api, barcode-service | read-api: `COGNITO_ISSUER` + `COGNITO_JWKS_URL`; barcode-service: `COGNITO_ISSUER` only (JWKS = issuer + `/.well-known/jwks.json`) |
 | Google securetoken x509 (Firebase) | barcode-service (active: `FIREBASE_PROJECT_ID=""` falls back to `fbpackiot`) | URL hard-coded; project id only overridable to non-empty |
 | Legacy CPACK prod Postgres `18.220.223.110:5432/packiot40` | legacy-replicator(-sbx); mirror-worker-go (host via secret `databaseCredentials`) | yes — `LEGACY_DB_*` |
@@ -502,11 +502,11 @@ All of these are read in `services/stream-engine/internal/config/config.go:427-5
 | Var | Default (file:line) | Staging (CS line) |
 |---|---|---|
 | AWS_REGION | us-east-1 (:429) | us-east-1 (1883) — **AWS** |
-| PG_SECRET_ID | packiot/staging/db (:430) | same (1884) — **AWS SM**. Ignored when CREDS_SOURCE=env |
+| PG_SECRET_ID | none → boot error (`internal/config/config.go`, `internal/secrets/secrets.go` `FetchDBCreds`) | `${STREAM_ENGINE_PG_SECRET_ID:-packiot/staging/stream-engine-db-creds}` — **AWS SM**, the least-privilege `stream_engine` role (`db/migrations/t-stream-engine-role`) |
 | RABBITMQ_SECRET_ID | packiot/staging/rabbitmq-stream-engine-creds (:431) | same (1920) — **AWS SM**. Ignored when CREDS_SOURCE=env |
-| CREDS_SOURCE | unset (`services/stream-engine/internal/secrets/secrets.go:122,170`) | `env` (1885). Skips Secrets Manager for **both** DB and AMQP |
-| DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME | postgres / 5432 / required / required / packiot (`services/stream-engine/internal/secrets/secrets.go:242-249`) | 10.10.10.89 / 5432 / ${POSTGRES_USER} / ${POSTGRES_PASSWORD} / packiot_analytics (1904-1908) |
-| RABBITMQ_USER / RABBITMQ_PASSWORD | required when CREDS_SOURCE=env (`services/stream-engine/internal/secrets/secrets.go:267-271`) | **not in the compose env block**, so they must come from `.env` (UNPROVEN) |
+| CREDS_SOURCE | unset (`services/stream-engine/internal/secrets/secrets.go`) | unset (dev: `env`). `AMQP_CREDS_SOURCE=aws` pins AMQP to Secrets Manager |
+| DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME | postgres / 5432 / required / required / packiot (`services/stream-engine/internal/secrets/secrets.go` env mode) | not set; the secret holds 10.10.10.89 / 5432 / `stream_engine` / — / packiot_analytics. No `env_file`; engine keys from `.env` passed through as `${KEY:-}` |
+| RABBITMQ_USER / RABBITMQ_PASSWORD | required when the AMQP source is env (`services/stream-engine/internal/secrets/secrets.go`) | not set (no `env_file`; `AMQP_CREDS_SOURCE=aws`) |
 | RABBITMQ_HOST / RABBITMQ_PORT | rabbitmq / 5672 (:432-433; `services/stream-engine/internal/secrets/secrets.go:272-275`) | rabbitmq / 5672 (1921-1922) |
 | SOURCE_EXCHANGE | oee (:434) | oee (1923) |
 | WORKER_QUEUE | stream-engine-q (:435) | stream-engine-q (1924) |
@@ -516,7 +516,7 @@ All of these are read in `services/stream-engine/internal/config/config.go:427-5
 | CONSUME_LANES | 1 (:443) | 4 (1946) |
 | TENANT_DISCOVERY_INTERVAL_SECONDS | 60 (:444) | 60 (2160) |
 | WORKER_POOL_SAC_ENABLED | false (:445) | false (2170) |
-| WORKER_TENANT_ALLOWLIST | "" = all (:502) | `${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging}` (1932) |
+| WORKER_TENANT_ALLOWLIST | "" = all (:502) | `${WORKER_TENANT_ALLOWLIST:-cpack,sbxcpack,bispharmastaging,incoplast}` (1934) |
 | HEALTH_PORT | 9101 (:446; `services/stream-engine/cmd/oeecloud-worker/main.go:673`) | 9101 (1956) |
 | LOG_LEVEL | info (:447) | info (1794) |
 | POSTGRES_ANALYTICS_DB_NAME | "" (:448) | packiot_analytics (1963) |
@@ -561,7 +561,7 @@ All of these are read in `services/stream-engine/internal/config/config.go:427-5
 Stale compose vars that the code does not read: COUNTERS_ONLY_* vars are all read, but none of the SPEED33_*, REFSYNC_*, or SHADOW_GO_PORT_ENABLED vars are (compose comments CS:1976, 2018-2022 say they were removed, and grep of config.go finds none).
 
 ### 3. PostgreSQL
-- **Connection.** Two pgx pools, both direct to `10.10.10.89:5432`, which bypasses pgbouncer by design (CS:1886-1904). The role is `${POSTGRES_USER}` (CS:1906). The DSN is built with `sslmode=disable` (`services/stream-engine/internal/secrets/secrets.go:216-228`).
+- **Connection.** Two pgx pools, both direct to `10.10.10.89:5432`, which bypasses pgbouncer by design. The role is the least-privilege `stream_engine` (NOBYPASSRLS, role default `app.tenant_id=-1`; `db/migrations/t-stream-engine-role`), from Secrets Manager. The DSN is built with `sslmode=disable` (`services/stream-engine/internal/secrets/secrets.go`).
   - Main pool: `db.New`, DB = `DB_NAME` = **packiot_analytics** on staging (CS:1908; `services/stream-engine/cmd/oeecloud-worker/main.go:118`).
   - Analytics pool: `db.NewForDatabase(..., POSTGRES_ANALYTICS_DB_NAME="packiot_analytics", app "oeecloud-worker-analytics")` (`services/stream-engine/cmd/oeecloud-worker/main.go:131-132`). On staging, therefore, **both pools point at packiot_analytics**.
   - The analytics pool sets `statement_timeout = 0` per connection (`services/stream-engine/internal/db/pool.go:91`) and uses simple protocol (`services/stream-engine/internal/db/pool.go:67`).
@@ -612,7 +612,7 @@ Stale compose vars that the code does not read: COUNTERS_ONLY_* vars are all rea
 | Job (gate) | Reads | Writes | file:line |
 |---|---|---|---|
 | shift06 (SHIFT06_REPORT_ENABLED), main pool | serving.report_shift(fn) | customer_reports.shift (DELETE + INSERT) | `services/stream-engine/internal/reports/shift06.go:37,42,51` |
-| sap13 (SAP13_REPORT_ENABLED), main pool, embedded SQL | **unqualified**: equipments, equipment_oee_shift, shifts, agg_equipment_values_1min, ca_equipment_boxes_1s, equipment_events, customer_reports.boxes; downtime_reason/equipment_downtime_reason when FROM_DIM | customer_reports.sap_data_sync | `services/stream-engine/internal/reports/sap13_body.sql:17,63,74,83,104,118,259,453`; `services/stream-engine/internal/reports/sap13_reasons_dim.sql:13-15`; exec `services/stream-engine/internal/reports/sap13.go:67` |
+| sap13 (SAP13_REPORT_ENABLED), main pool, embedded SQL | **unqualified**: equipments, equipment_oee_shift, shifts, agg_equipment_values_1min, equipment_events, customer_reports.boxes; downtime_reason/equipment_downtime_reason when FROM_DIM | customer_reports.sap_data_sync | `services/stream-engine/internal/reports/sap13_body.sql:17,63,74,83,104,118,259,453`; `services/stream-engine/internal/reports/sap13_reasons_dim.sql:13-15`; exec `services/stream-engine/internal/reports/sap13.go:67` |
 | sync06 (SYNC06_REPORT_ENABLED), main pool | serving.data_sync, customer_reports.production_data_sync | customer_reports.production_data_sync (INSERT/UPDATE) | `services/stream-engine/internal/reports/sync06_body.sql:12,15,55,195,277` |
 | boxes adapter (BOXES13_REPORT_ENABLED) | config.label_formats, silver.equipment_values, core.equipments | customer_reports.boxes | `services/stream-engine/internal/reports/boxes_adapter.go:38,44,52,62,73,79,89` |
 | boxes bridge (BOXES_BRIDGE_ENABLED) | core.box_production_bridges, core.equipments, customer_reports.boxes | silver.equipment_values | `services/stream-engine/internal/reports/boxes_bridge.go:27,32,40,47,62,81` |
@@ -881,12 +881,10 @@ None found (searched: `redis`).
 | Var | Default | Staging |
 |---|---|---|
 | SHADOW_MIRROR_ENABLED | `false` (`services/analytics-sync/internal/config/config.go:53`) | `false` (`:3154`) |
-| AWS_REGION | `us-east-1` (`services/analytics-sync/internal/config/config.go:46`) | `us-east-1` (`:3155`) — **read but unused** |
-| PG_SECRET_ID | `packiot/staging/db` (`services/analytics-sync/internal/config/config.go:47`) | `packiot/staging/db` (`:3156`) — **read but never used**: only refs are `config.go:23⚠ambiguous[services/analytics-sync/internal/config/config.go|services/analytics-sync/internal/replicate/config.go|services/ingest-shim/internal/config/config.go|services/mirror-worker-go/internal/config/config.go|services/oeecloud-fanout/internal/config/config.go|services/sparkplug-decoder/internal/config/config.go|services/stream-engine/internal/config/config.go],47` (grep `PGSecretID`); code has `TODO Phase 2: fetch creds from AWS Secrets Manager` (`services/analytics-sync/cmd/shadow-mirror/main.go:52`) |
-| DB_HOST / DB_PORT | `postgres` / 5432 (`services/analytics-sync/cmd/shadow-mirror/main.go:56-57`) | `10.10.10.89` / `5432` (`:3163-3164`) — **direct, no pgbouncer** |
-| DB_USER / DB_PASSWORD | `postgres` / `""` → exit if empty (`services/analytics-sync/cmd/shadow-mirror/main.go:58-63`) | `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` (`:3167-3168`) |
-| PG_DB_NAME | `packiot` (`services/analytics-sync/internal/config/config.go:48`) | `packiot` (`:3169`) |
-| PG_ANALYTICS_DB_NAME | `packiot_analytics` (`services/analytics-sync/internal/config/config.go:49`) | `packiot_analytics` (`:3170`) |
+| DB_HOST / DB_PORT | `postgres` / 5432 (`services/analytics-sync/cmd/shadow-mirror/main.go` `dbCredsFromEnv`) | not set (idle: no DB connection) |
+| DB_USER / DB_PASSWORD | none / none → exit if either is empty when enabled (`dbCredsFromEnv`) | not set; no `env_file` (CI `check-db-least-priv.py` NO_DB) |
+| PG_DB_NAME | `packiot` (`services/analytics-sync/internal/config/config.go:48`) | not set (code default) |
+| PG_ANALYTICS_DB_NAME | `packiot_analytics` (`services/analytics-sync/internal/config/config.go:49`) | not set (code default) |
 | POLL_INTERVAL_MS / BATCH_SIZE / MAX_RETRIES | 2000 / 100 / 5 (`services/analytics-sync/internal/config/config.go:50-52`) | `2000`/`100`/`5` (`:3171-3173`) |
 | HEALTH_PORT | 9103 (`services/analytics-sync/internal/config/config.go:54`, `services/analytics-sync/cmd/shadow-mirror/main.go:157`) | `9103` (`:3174`) |
 | LOG_LEVEL | `info` (`services/analytics-sync/internal/config/config.go:55`) | `info` (`:3147`) |
@@ -1018,7 +1016,7 @@ DEST — WRITE:
 | HIST_GW_PASSWORD | none → hist pool nil → 503 (`services/read-api/cmd/refdata-api/historian.go:60`) | `${HIST_GW_SVC_PASSWORD:-}` (`:2932`) |
 | HEALTH_PORT (also the API port) | `9104` (`services/read-api/cmd/refdata-api/main.go:297,457`) | `9104` (`:2934`) |
 | OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TRACES_SAMPLER_ARG | off (`services/read-api/internal/tracing/tracing.go:39,91`) | `http://alloy:4317` (`:2940`) |
-| QUERY_API_KEYS | none (`services/read-api/cmd/refdata-api/main.go:312`) | `stg-cpack-key:3,…,stg-bispharma-key:5` (`:2944`) |
+| QUERY_API_KEYS | none (`services/read-api/cmd/refdata-api/main.go:312`) | `<cpack-read-key>:3,…,<bispharma-read-key>:5` (`:2944`) |
 | COGNITO_ISSUER | **`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt`** (`services/read-api/cmd/refdata-api/auth_cognito.go:64`; read `services/read-api/cmd/refdata-api/main.go:320`) | same (`:2955`) **AWS Cognito** |
 | COGNITO_CLIENT_ID | `2ckuoa0ov598rdpdn3uv039h6e` (`services/read-api/cmd/refdata-api/auth_cognito.go:65`; `services/read-api/cmd/refdata-api/main.go:321`) | same (`:2956`) |
 | COGNITO_JWKS_URL | "" → `<issuer>/.well-known/jwks.json` (`services/read-api/cmd/refdata-api/main.go:322`) | not set |
@@ -1088,13 +1086,13 @@ DEST — WRITE:
 | INCOPLAST_ENTERPRISE_ID | required int (`services/operator-gateway/cmd/operator-adapter/main.go:66`) | `4` (`:3085`) |
 | INCOPLAST_TOPIC_PREFIX | (`services/operator-gateway/cmd/operator-adapter/main.go:75`) | `INCOPLAST` (`:3086`) |
 | AWS_REGION / PG_SECRET_ID | `us-east-1` / `packiot/staging/db` (`services/operator-gateway/cmd/operator-adapter/main.go:86-87`) | same (`:3092-3093`) **AWS Secrets Manager** unless CREDS_SOURCE=env |
-| CREDS_SOURCE | Secrets Manager unless `env` (`services/operator-gateway/internal/secrets/secrets.go:102`) | `env` (`:3094`) → **SM bypassed on staging** |
+| CREDS_SOURCE | Secrets Manager unless `env` (`services/operator-gateway/internal/secrets/secrets.go:102`) | unset → Secrets Manager `${OPERATOR_GATEWAY_PG_SECRET_ID:-packiot/staging/operator-gateway-db-creds}` (role `operator_gateway`, `db/migrations/t-operator-gateway-role`); no `env_file`; dev keeps `env` with `DB_USER=operator_gateway` |
 | DB_HOST / DB_PORT / DB_NAME (env path) | `postgres` / 5432 / `packiot` (`secrets.go` fetchDBCredsFromEnv, `envOr("DB_HOST","postgres")`, `envOr("DB_NAME","packiot")`) | `10.10.10.89` / `5432` / `packiot_analytics` (`:3095-3099`) — **direct, not pgbouncer** (compose comment `:3091` and `services/operator-gateway/cmd/operator-adapter/main.go:80-83` comment say packiot/pgbouncer — stale) |
-| DB_USER / DB_PASSWORD | required (`services/operator-gateway/internal/secrets/secrets.go:176-177`) | `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` (`:3097-3098`) |
+| DB_USER / DB_PASSWORD | required (`services/operator-gateway/internal/secrets/secrets.go:176-177`) | staging/prod: from the secret (`operator_gateway`); dev: `operator_gateway` / `dev`. Admin `POSTGRES_*` forbidden by `scripts/ci/check-db-least-priv.py` |
 | TLS_CERT_FILE / TLS_KEY_FILE | required, refuse plaintext (`services/operator-gateway/cmd/operator-adapter/main.go:126-132`) | `/opt/packiot/operator-adapter/certs/tls.{crt,key}` (`:3109-3110`) |
 | OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TRACES_SAMPLER_ARG | (`services/operator-gateway/internal/tracing/tracing.go:39,91`) | `http://tempo:4317` (`:3083`) |
 
-**3. PostgreSQL**: pool `MaxConns=3` (`services/operator-gateway/internal/db/pool.go:30`), boot ping fatal (`services/operator-gateway/internal/db/pool.go:47-49`). READ only: `packml_register` ⋈ `equipments` ⋈ `areas` ⋈ `sites` by `packml_topic` + `s.id_enterprise` (`services/operator-gateway/internal/adapter/resolver.go:149-154`). No writes (searched INSERT/UPDATE/DELETE in `services/operator-gateway`). Unqualified names → search_path of the `POSTGRES_USER` role in `packiot_analytics` (UNPROVEN).
+**3. PostgreSQL**: pool `MaxConns=3` (`services/operator-gateway/internal/db/pool.go`), boot ping fatal. READ only, as role `operator_gateway` (NOBYPASSRLS, 10 SELECT columns): a READ ONLY tx stamps `app.tenant_id` then reads `core.topic_routing` ⋈ `core.equipments` ⋈ `core.areas` ⋈ `core.sites` by topic + `s.id_enterprise` (`services/operator-gateway/internal/adapter/resolver.go` `queryEquipment`). No writes. Names are schema-qualified. Proved by `resolver_role_golden_test.go` (`-tags golden`).
 
 **4–6. RabbitMQ / MQTT / Redis** — none.
 
@@ -1121,15 +1119,14 @@ DEST — WRITE:
 | Var | Default | Staging |
 |---|---|---|
 | HTTP_PORT | `8446` (`services/barcode-service/cmd/barcode-service/main.go:68`) | `8446` (`:3029`) |
-| DB_HOST/DB_PORT | `pgbouncer`/5432 (`services/barcode-service/cmd/barcode-service/main.go:69-70`) | `pgbouncer`/`5432` (`:3022-3023`) |
-| DB_USER/DB_PASSWORD | `postgres`/none (`services/barcode-service/cmd/barcode-service/main.go:71-72`) | `${POSTGRES_USER}`/`${POSTGRES_PASSWORD}` (`:3024-3025`) |
-| DB_NAME | `packiot_analytics` (`services/barcode-service/cmd/barcode-service/main.go:73`) | same (`:3028`) |
+| PG_SECRET_ID / AWS_REGION | none → boot error (`services/barcode-service/cmd/barcode-service/dbcreds.go` `loadDBCreds`) / `us-east-1` | `${BARCODE_SERVICE_PG_SECRET_ID:-packiot/staging/barcode-service-db-creds}` → `{host: pgbouncer, user: barcode_service, name: packiot_analytics}`; no `env_file` |
+| CREDS_SOURCE + DB_* | `env` → `DB_HOST` `postgres`, `DB_USER` `barcode_service`, `DB_PASSWORD` required, `DB_NAME` `packiot_analytics` | unset (dev: `env`, `barcode_service`/`dev`) |
 | FIREBASE_PROJECT_ID | **`fbpackiot`** (`services/barcode-service/cmd/barcode-service/main.go:74`, const `services/barcode-service/cmd/barcode-service/auth_firebase.go:41`) | `""` (`:3039`) — **BUT `getenv` treats empty as unset (`services/barcode-service/cmd/barcode-service/main.go:216-221`), so the Firebase verifier IS registered with `fbpackiot` (`services/barcode-service/cmd/barcode-service/auth.go:69-70`)**; compose comment `:3036-3038` ("empty disables Firebase") is wrong |
 | COGNITO_ISSUER | `""` → Cognito off (`services/barcode-service/cmd/barcode-service/main.go:75`) | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt` (`:3040`) **AWS Cognito** |
 | COGNITO_CLIENT_ID | `""` → aud check skipped (`services/barcode-service/cmd/barcode-service/main.go:76`) | `2ckuoa0ov598rdpdn3uv039h6e` (`:3041`) |
 | LOG_LEVEL | `info` (`services/barcode-service/cmd/barcode-service/main.go:77`) | `info` (`:3042`) |
 
-**3. PostgreSQL**: pgbouncer → `packiot_analytics` pool (`compose.staging.yml:132`), `MaxConns=5`, simple protocol (`services/barcode-service/cmd/barcode-service/main.go:108,114`). Unqualified table names (search_path UNPROVEN).
+**3. PostgreSQL**: pgbouncer → `packiot_analytics` pool, `MaxConns=5`, simple protocol (`services/barcode-service/cmd/barcode-service/dbcreds.go` `newPool`), as role `barcode_service` (`db/migrations/t-barcode-service-role`; NOBYPASSRLS; each scan tx stamps `app.tenant_id`). Schema-qualified names: `bronze.box_scans`, `gold.po_box_counter`, `core.production_orders`, `core.equipments`, `identity.users`.
 - READ: `box_scans` ⋈ `po_box_counter` (`services/barcode-service/cmd/barcode-service/scans.go:226-228`), `production_orders`, `equipments` (`services/barcode-service/cmd/barcode-service/scans.go:244-245,272-275`), `po_box_counter` (`services/barcode-service/cmd/barcode-service/scans.go:255`), `users` (Firebase uid → enterprise, `services/barcode-service/cmd/barcode-service/auth_firebase.go:47`).
 - WRITE: `INSERT INTO box_scans` (`services/barcode-service/cmd/barcode-service/scans.go:267`), `INSERT INTO po_box_counter … ON CONFLICT DO UPDATE` (`services/barcode-service/cmd/barcode-service/scans.go:289-291`).
 - `pg_advisory_xact_lock(id_production_order)` (`services/barcode-service/cmd/barcode-service/scans.go:204`).
@@ -1151,7 +1148,7 @@ DEST — WRITE:
 
 ## edge-session-broker  (Node.js, not Go — included for completeness)
 
-**1. Build**: compose `compose.staging.yml:711` (`context: ./services/edge-session-broker`). `services/edge-session-broker/Dockerfile:4` `node:18-bookworm-slim`, installs AWS `session-manager-plugin` .deb from `https://s3.amazonaws.com/session-manager-downloads/...` at **build time** (`Dockerfile:9-23`), `CMD node server.mjs` (`:32`).
+**1. Build**: compose `compose.staging.yml:711` (`context: ./services/edge-session-broker`). `services/edge-session-broker/Dockerfile:4` `node:22-bookworm-slim`, installs AWS `session-manager-plugin` .deb from `https://s3.amazonaws.com/session-manager-downloads/...` at **build time** (`Dockerfile:9-23`), `CMD node server.mjs` (`:32`).
 
 **2. Env vars** (`services/edge-session-broker/server.mjs`)
 
@@ -1159,7 +1156,7 @@ DEST — WRITE:
 |---|---|---|
 | BROKER_PORT | 8090 (`services/edge-session-broker/server.mjs:20`) | `8090` (`compose.staging.yml:717`) |
 | BROKER_HTTP_PORT | 8091 (`services/edge-session-broker/server.mjs:21`) | not set |
-| BROKER_TOKEN | `""` (`services/edge-session-broker/server.mjs:22`) → all WS rejected (`:195`) | `${EDGE_SESSION_BROKER_TOKEN:-esb-internal-staging}` (`:718`) |
+| BROKER_TOKEN | none — process exits unless ≥32 chars (`services/edge-session-broker/server.mjs` `requireToken`) | `${EDGE_SESSION_BROKER_TOKEN:?}` from Secrets Manager `packiot/staging/app.edge_session_broker_token` |
 | AWS_REGION | `us-east-1` (`services/edge-session-broker/server.mjs:23`) | `us-east-1` (`:716`) |
 | SSM_ENDPOINT | `https://ssm.<region>.amazonaws.com` (`services/edge-session-broker/server.mjs:24`) | not set **AWS SSM** |
 | BROKER_FORWARD_IDLE_MS | 600000 (`services/edge-session-broker/server.mjs:56`) | not set |

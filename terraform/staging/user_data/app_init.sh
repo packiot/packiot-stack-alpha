@@ -99,6 +99,9 @@ GRAFANA_DEV_USER_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_dev_user_pass // ""
 # CS-Admin edge-bundle dispatch token (ADR-0045 P5) — the edge-api
 # POST /api/edge-bundle/generate endpoint fires generate-client-bundle.yml.
 GITHUB_DISPATCH_TOKEN=$(echo "$APP_SECRET" | jq -r '.github_dispatch_token // ""')
+# edge-api <-> edge-session-broker shared secret (ADR-0057). No fallback: compose
+# fails closed (VAR:? form) without it; deploy-staging.yml re-mirrors it every deploy.
+EDGE_SESSION_BROKER_TOKEN=$(echo "$APP_SECRET" | jq -r '.edge_session_broker_token // ""')
 # Onboard-generate API key (ADR-0045 §generate) — bearer that edge-api uses to
 # call the edge-transformer onboard server (:9105). Durable so a fresh instance
 # does not lose it (it was hand-added to .env once; codified 2026-08-05).
@@ -115,6 +118,16 @@ ONBOARD_API_KEY=$(echo "$APP_SECRET" | jq -r '.onboard_api_key // ""')
 # (see ADR-0020 / production-recut-runbook). Empty default keeps the box booting
 # if the secret key is absent; operator writes stay 401 until it is populated.
 OPERATOR_EDGE_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_edge_api_key // ""')
+# read-api tenant key map + the operator apps' server-side read keys. SECRETS
+# (refdata.staging is public): never committed, only in packiot/staging/app.
+# compose.staging.yml interpolates them fail-closed (VAR:? form), so an absent key makes
+# `compose up` below fail loudly naming the variable — no service starts with
+# empty auth. deploy-staging.yml re-mirrors them on every deploy
+# (scripts/ops/materialize-readapi-keys.py); runbook docs/runbooks/rotate-readapi-keys.md.
+REFDATA_QUERY_API_KEYS=$(echo "$APP_SECRET" | jq -r '.query_api_keys // ""')
+OPERATOR_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_refdata_api_key // ""')
+OPERATOR_SBX_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_sbx_refdata_api_key // ""')
+OPERATOR_BISPHARMA_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_bispharma_refdata_api_key // ""')
 NR_USER=$(echo "$NR_AUTH" | jq -r '.username')
 NR_PASS=$(echo "$NR_AUTH" | jq -r '.password')
 # oauth2-proxy (Cognito) secrets — Authentik retired (ADR-0034 §C). Sourced from
@@ -257,6 +270,11 @@ ONBOARD_API_KEY=$ONBOARD_API_KEY
 # Operator SPA enterprise api_key (CPACK / enterprise 3) — nginx injects it on
 # proxied /api/* writes; consumed by the operator + operator-adapter services.
 OPERATOR_EDGE_API_KEY=$OPERATOR_EDGE_API_KEY
+# read-api keys (packiot/staging/app; rewritten every deploy by deploy-staging.yml)
+REFDATA_QUERY_API_KEYS=$REFDATA_QUERY_API_KEYS
+OPERATOR_REFDATA_API_KEY=$OPERATOR_REFDATA_API_KEY
+OPERATOR_SBX_REFDATA_API_KEY=$OPERATOR_SBX_REFDATA_API_KEY
+OPERATOR_BISPHARMA_REFDATA_API_KEY=$OPERATOR_BISPHARMA_REFDATA_API_KEY
 EDGE_API_URL=https://api.$STAGING_DOMAIN
 NODE_RED_CREDENTIAL_SECRET=$NR_SECRET
 # NODE_RED_ADMIN_USERNAME intentionally omitted: Authentik (via nginx forward
@@ -293,6 +311,9 @@ AGENT_INGEST_API_KEY=$AGENT_INGEST_API_KEY
 #   Kept as an explicit flag so the sandbox twin can be paused independently of
 #   the ent-3 replicator without editing compose.
 LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
+
+# edge-api <-> edge-session-broker shared secret (packiot/staging/app edge_session_broker_token)
+EDGE_SESSION_BROKER_TOKEN=$EDGE_SESSION_BROKER_TOKEN
 REPLICATE_SBX_ENABLED=true
 
 # Compose substitution helpers

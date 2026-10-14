@@ -84,7 +84,7 @@ func TestCloserNeverClobbersHumanEdits(t *testing.T) {
 // formatCloserSQL mirrors RunOnceClose's fmt.Sprintf argument order so the test
 // asserts the real executed string (index 3 unused; index 4 = row alias).
 func formatCloserSQL(evSchema, refSchema, alias string) string {
-	return fmt.Sprintf(closeStaleOpensSQL, evSchema, refSchema, "", alias)
+	return fmt.Sprintf(closeStaleOpensSQL, evSchema, refSchema, "", alias, "")
 }
 
 // TestRunOnceCloseDefaults asserts the inert-safe defaults applied when the

@@ -42,6 +42,12 @@ package replicate
 // the same overlap guard as sqlOpenWindow (no-op instead of an exclusion-constraint
 // error), so a PO whose neighbour still holds a stale open window is simply retried
 // on a later pass, after the neighbour's finish has closed it.
+//
+// Convergence (2026-10-09, reconcile_converge.go): the pass also fetches AVAILABLE
+// legacy POs (created/updated in the window) and every PO the twin holds in the
+// window, and moves a twin PO TO legacy when they disagree: a finished PO's start/end
+// (retime), a PO legacy holds as available (revert), and a settled PO's runtime
+// windows (exactly legacy's production_orders_runtime rows, overlap-guarded).
 import (
 	"context"
 	"database/sql"
@@ -92,8 +98,8 @@ func NewPOReconciler(legacy, dest *pgxpool.Pool, r *Resolver, cfg *Config, m Rec
 const sqlReconcileInsertPO = `INSERT INTO core.production_orders (
 		id_enterprise, id_site, id_area, id_equipment, id_order, status,
 		production_programmed, production_ordered, production_real, production_final,
-		ts_start, ts_end, nm_production_order, txt_production_order_notes, recalc_needed)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)
+		ts_start, ts_end, nm_production_order, txt_production_order_notes, recalc_needed, ts_creation)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,COALESCE($15, now()))
 	ON CONFLICT (id_enterprise, id_order) DO NOTHING`
 
 // Finishes a twin PO that legacy has finished/paused LATER than the twin knows:
@@ -162,6 +168,7 @@ func (rc *POReconciler) ensureWindow(ctx context.Context, ent int, idOrder int64
 }
 
 type legacyPO struct {
+	idProductionOrder    int64 // legacy surrogate (its runtime rows hang off it)
 	idOrder              int64
 	idEquipment          int
 	status               int
@@ -173,7 +180,29 @@ type legacyPO struct {
 	productionOrdered    sql.NullInt64
 	idOrderText          sql.NullString
 	notes                sql.NullString
+	tsCreation           sql.NullTime
 }
+
+// sqlReconcileLegacyFetch selects the legacy POs one pass looks at:
+//   - started or ended inside the window (the original set);
+//   - CREATED or UPDATED inside it (2026-10-09): an AVAILABLE PO has neither a start
+//     nor an end, so the original filter never saw one — 77 CPACK POs created by the
+//     ERP/import path (no user_log, so the replay never saw them either) were missing
+//     from the twin's operator list; and a legacy edit without a user_log (a PO put
+//     back to available, a time correction) changes only last_update;
+//   - every id_order the TWIN holds as started/ended inside the window ($3): the twin
+//     side can be in the window while legacy's row is not (895499: legacy ended
+//     08-22, the twin's zombie closed 09-30), and only then is it compared at all.
+const sqlReconcileLegacyFetch = `SELECT id_production_order, id_order, id_equipment, status, ts_start, ts_end,
+	        production_real, production_final, production_programmed, production_ordered,
+	        id_order_text, txt_production_order_notes, ts_creation
+	   FROM production_orders
+	  WHERE id_enterprise = $1
+	    AND (ts_start > $2 OR ts_end > $2 OR ts_creation > $2 OR last_update > $2
+	         OR id_order = ANY($3::bigint[]))`
+
+const sqlReconcileTwinIDs = `SELECT id_order FROM core.production_orders
+	 WHERE id_enterprise = $1 AND id_order IS NOT NULL AND (ts_start > $2 OR ts_end > $2)`
 
 // RunForever runs one pass at startup then on the configured interval. Returns
 // when ctx is cancelled. A pass failure is logged, not fatal — the next tick
@@ -208,13 +237,21 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 		return // sandbox hands-on session — the grace-period heal restores POs
 	}
 	since := time.Now().AddDate(0, 0, -rc.cfg.ReconcileWindowDays)
-	rows, err := rc.legacy.Query(ctx,
-		`SELECT id_order, id_equipment, status, ts_start, ts_end,
-		        production_real, production_final, production_programmed, production_ordered,
-		        id_order_text, txt_production_order_notes
-		   FROM production_orders
-		  WHERE id_enterprise = $1 AND (ts_start > $2 OR ts_end > $2)`,
-		rc.cfg.SrcEnterprise, since)
+	ent := rc.cfg.DstEnterprise
+	var twinIDs []int64
+	trows, err := rc.dest.Query(ctx, sqlReconcileTwinIDs, ent, since)
+	if err != nil {
+		rc.logger.Warn("PO reconcile: twin id fetch failed", slog.String("err", err.Error()))
+		return
+	}
+	for trows.Next() {
+		var id int64
+		if err := trows.Scan(&id); err == nil {
+			twinIDs = append(twinIDs, id)
+		}
+	}
+	trows.Close()
+	rows, err := rc.legacy.Query(ctx, sqlReconcileLegacyFetch, rc.cfg.SrcEnterprise, since, twinIDs)
 	if err != nil {
 		rc.logger.Warn("PO reconcile: legacy fetch failed", slog.String("err", err.Error()))
 		return
@@ -222,9 +259,9 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 	var pos []legacyPO
 	for rows.Next() {
 		var p legacyPO
-		if err := rows.Scan(&p.idOrder, &p.idEquipment, &p.status, &p.tsStart, &p.tsEnd,
+		if err := rows.Scan(&p.idProductionOrder, &p.idOrder, &p.idEquipment, &p.status, &p.tsStart, &p.tsEnd,
 			&p.productionReal, &p.productionFinal, &p.productionProgrammed, &p.productionOrdered,
-			&p.idOrderText, &p.notes); err != nil {
+			&p.idOrderText, &p.notes, &p.tsCreation); err != nil {
 			rc.logger.Warn("PO reconcile: scan failed", slog.String("err", err.Error()))
 			rows.Close()
 			return
@@ -237,8 +274,18 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 		return
 	}
 
+	legacyIDs := make([]int64, 0, len(pos))
+	for i := range pos {
+		legacyIDs = append(legacyIDs, pos[i].idProductionOrder)
+	}
+	lrts, err := rc.loadLegacyRuntimes(ctx, legacyIDs)
+	if err != nil {
+		rc.logger.Warn("PO reconcile: legacy runtime fetch failed", slog.String("err", err.Error()))
+		return
+	}
+
 	inserted, finished, unresolved, skippedRunning := 0, 0, 0, 0
-	ent := rc.cfg.DstEnterprise
+	var cs convergeStats
 	windowsOpened, windowsBlocked := 0, 0
 	window := func(idOrder int64) {
 		opened, missing := rc.ensureWindow(ctx, ent, idOrder)
@@ -280,7 +327,7 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 				nullIntArg(p.productionProgrammed), nullIntArg(p.productionOrdered),
 				nullIntArg(p.productionReal), nullIntArg(p.productionFinal),
 				nullTimeArg(p.tsStart), nullTimeArg(p.tsEnd),
-				nullStrArg(p.idOrderText), nullStrArg(p.notes))
+				nullStrArg(p.idOrderText), nullStrArg(p.notes), nullTimeArg(p.tsCreation))
 			if e != nil {
 				rc.logger.Warn("PO reconcile: insert failed",
 					slog.Int64("id_order", p.idOrder), slog.String("err", e.Error()))
@@ -323,7 +370,9 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 					rc.m.IncReconcileFinished()
 				}
 			}
-			// After fill-start / finish, so the window uses the header's final bounds.
+			// Then converge header + windows on legacy (retime / revert / windows).
+			rc.converge(ctx, ent, p, lrts[p.idProductionOrder], since, &cs)
+			// After fill-start / finish / converge, so the window uses the header's final bounds.
 			window(p.idOrder)
 		}
 	}
@@ -334,7 +383,13 @@ func (rc *POReconciler) runOnce(ctx context.Context) {
 		slog.Int("unresolved", unresolved),
 		slog.Int("skipped_running_conflict", skippedRunning),
 		slog.Int("windows_opened", windowsOpened),
-		slog.Int("windows_blocked_overlap", windowsBlocked))
+		slog.Int("windows_blocked_overlap", windowsBlocked),
+		slog.Int("headers_retimed", cs.retimed),
+		slog.Int("reverted_available", cs.reverted),
+		slog.Int("revert_skipped_legacy_moved", cs.revertSkipped),
+		slog.Int("windows_converged", cs.windowsConverged),
+		slog.Int("windows_converge_blocked", cs.windowsBlocked),
+		slog.Int("windows_differ_not_converged", cs.windowsSkipped))
 
 	if rc.cfg.ReconcileEnrichEnabled {
 		rc.runEnrich(ctx)

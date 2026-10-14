@@ -140,6 +140,22 @@ the invariant battery (C6 shift = Σ hour, V3 increments backed by counters) cov
   values. After any PO repair, check the values changed, not just the flags.
 - **Never reuse an old template.** The engine changes weekly (the boundary-hour fix #1545 changed
   the shift line-lead pass the day after the 10-01 repair). Re-render every time.
+- **A day that holds the locks for more than ~2 minutes: check the ideal-speed LOCF first.** The
+  hour `speed` step and the shift `values` step look up the last non-null
+  `ideal_production_speed` per minute (hour) / per hour bucket (shift), bounded by
+  `now() - (horizon + 7) days`. Compressed chunks have no partial index, so each lookup probes every
+  compressed chunk in that range. On 2026-10-09 (CPACK gap backfill, 20 lines, one day) the
+  speed step alone ran > 10 min at horizon 75 and at horizon 30, stalling the live hour rollup for
+  every tenant until cancelled. Two levers:
+  - render with the smallest valid `-horizon-days` (30; the renderer refuses less);
+  - if `SELECT count(*) FROM silver.equipment_values WHERE ideal_production_speed IS NOT NULL AND
+    ts_value >= <oldest day - 8 d> AND ts_value < <newest day + 1 d>` is **0** (no tenant reports it;
+    true on staging through 2026-10), the lookup always returns NULL, so appending `AND false` to
+    both `AND ev.ideal_production_speed IS NOT NULL` lines is exactly equivalent. That brought the
+    day to ~2 min. Re-prove the count every time; never carry the patch to a window where a tenant
+    reports ideal speed.
+- Run one enterprise per transaction (copy the scope SQL per enterprise) and pause between days, so
+  the live rollup catches up between lock holds.
 - The day pass is not bounded to the window: it also drains any other flagged day inside the
   horizon. Same math as the engine, so this is harmless, but it can make `n_day_elig` larger
   than the days you asked for.

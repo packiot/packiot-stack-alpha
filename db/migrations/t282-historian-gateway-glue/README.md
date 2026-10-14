@@ -10,7 +10,7 @@ reversible**.
 | File | Target DB | Items |
 |------|-----------|-------|
 | `02-analytics-histgw-ro.sql` | `packiot_analytics` (10.10.10.89) | R9 — mint least-privilege `histgw_ro` remote FDW role (SELECT on the 2 silver facts only) |
-| `01-gateway.sql` | hist-gateway `postgres` | R2 (cold id-space provenance), R5 (`hist_meta` stamp table), R6 (year/month prune-contract COMMENTs), R8 (pin `live.equipment_events` to 12 cols), R9 (repoint `cloudbeaver_histro` mapping → `histgw_ro`) |
+| `01-gateway.sql` | hist-gateway `packiot_historian` | R2 (cold id-space provenance), R5 (`hist_meta` stamp table), R6 (year/month prune-contract COMMENTs), R8 (pin `live.equipment_events` to 12 cols), R9 (repoint `cloudbeaver_histro` mapping → `histgw_ro`) |
 | `rollback-01-gateway.sql` / `rollback-02-analytics-histgw-ro.sql` | resp. | reverse |
 
 R4 (staleness monitor) + R7 (EE hot-coverage reconciliation) ship as scheduled checks,
@@ -21,13 +21,17 @@ append post-run hook (`scripts/stamp-hist-meta.sql`, wired in `historian-staging
 
 ## Apply order (staging)
 
+> The gateway database is `packiot_historian` since #274 (#1271, 2026-09-14), which renamed
+> it from the default `postgres`. This migration was first applied before that rename, so
+> its original run used `-d postgres`; any re-run targets `packiot_historian`.
+
 ```sh
 # 1) analytics side first — mint the remote role (secret via -v, never in git)
 PW='<histgw_ro secret>'
 psql -h 10.10.10.89 -U postgres -d packiot_analytics -v histgw_ro_pass="$PW" \
      -f 02-analytics-histgw-ro.sql
 # 2) gateway side — same secret repoints the browser mapping
-docker exec -i hist-gateway psql -U postgres -d postgres -v histgw_ro_pass="$PW" \
+docker exec -i hist-gateway psql -U postgres -d packiot_historian -v histgw_ro_pass="$PW" \
      -f - < 01-gateway.sql
 ```
 
@@ -39,6 +43,6 @@ clean volume — keep the two in sync.
 
 ```sh
 # gateway first (repoints mapping off histgw_ro), then analytics (drops the role)
-docker exec -i hist-gateway psql -U postgres -d postgres -v fdw_pass="$FDW_PASS" -f - < rollback-01-gateway.sql
+docker exec -i hist-gateway psql -U postgres -d packiot_historian -v fdw_pass="$FDW_PASS" -f - < rollback-01-gateway.sql
 psql -h 10.10.10.89 -U postgres -d packiot_analytics -f rollback-02-analytics-histgw-ro.sql
 ```

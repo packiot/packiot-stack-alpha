@@ -4,7 +4,7 @@ Deferred **R10** of the t282 gateway sweep ("same for the historian"), now appro
 
 ## What
 
-On the **hist-gateway** Postgres instance (`docker exec hist-gateway`, db `postgres`),
+On the **hist-gateway** Postgres instance (`docker exec hist-gateway`, db `packiot_historian`),
 give the historian COLD-store + hot∪cold union + boundary objects their own **`cold`**
 schema, symmetric with the hot **`live`** FDW schema. Before t287 they sat in `public`
 alongside the pg_duckdb / postgres_fdw extension objects.
@@ -43,11 +43,15 @@ view recreate** and independent of order.
 
 ## Apply / rollback
 
+> The gateway database is `packiot_historian` since #274 (#1271, 2026-09-14), which renamed
+> it from the default `postgres`. This migration was first applied before that rename, so
+> its original run used `-d postgres`; any re-run targets `packiot_historian`.
+
 ```sh
 # apply (on the app box that has `docker exec hist-gateway`)
-docker exec -i hist-gateway psql -U postgres -d postgres -v ON_ERROR_STOP=1 -f - < 01-cold-schema.sql
+docker exec -i hist-gateway psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < 01-cold-schema.sql
 # rollback (moves everything back to public, RESETs search_path, drops empty cold)
-docker exec -i hist-gateway psql -U postgres -d postgres -v ON_ERROR_STOP=1 -f - < rollback-01-cold-schema.sql
+docker exec -i hist-gateway psql -U postgres -d packiot_historian -v ON_ERROR_STOP=1 -f - < rollback-01-cold-schema.sql
 ```
 
 ## Hardproof (staging, 2026-09-14)

@@ -14,6 +14,7 @@ import (
 	"context"
 	"math"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -303,10 +304,17 @@ func TestGoldenGrains(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, st := range HourStatementsForParity("golden", "golden") {
-		if _, err := tx.Exec(ctx, st.SQL, []int{}, []int{}); err != nil {
-			if _, e2 := tx.Exec(ctx, st.SQL); e2 != nil {
-				t.Fatalf("hour %s: %v / %v", st.Name, err, e2)
-			}
+		// Only the eligible statement takes ($1, $2). The others run without
+		// arguments, i.e. over the simple protocol, as the engine runs them — the
+		// speed pass is two statements in one string (ADR-0063 A2), which the
+		// extended protocol rejects.
+		var args []any
+		if strings.Contains(st.SQL, "$1") {
+			args = []any{[]int{}, []int{}}
+		}
+		if _, err := tx.Exec(ctx, st.SQL, args...); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("hour %s: %v", st.Name, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -128,7 +128,7 @@ resource "aws_backup_selection" "app_ec2" {
   }
 }
 
-# ── Selection: the DB EC2 (2026-09-30 backup audit; NOT YET APPLIED) ─────────
+# ── Selection: the DB EC2 (2026-09-30 backup audit; applied, checked 2026-10-13) ─
 # The "revisit past 64G" condition above is met (DB EBS 128 GB since 2026-09-24)
 # and the audit found the DB box had NO AWS Backup recovery point at all: a lost
 # DB volume meant rebuilding the host AND replaying pg_dumps. A daily
