@@ -1,6 +1,9 @@
 package replicate
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -53,5 +56,38 @@ func TestBaseEventWritersShareGuard(t *testing.T) {
 	}
 	if !strings.Contains(sqlBaseLegacyFetch, "forced_creation_system IS NOT TRUE") {
 		t.Errorf("legacy fetch must skip operator-created rows:\n%s", sqlBaseLegacyFetch)
+	}
+}
+
+// PRODT-164 AC-02: with SANDBOX_HOLD_BASE_EVENTS a hands-on session no longer stops
+// PLC stops reaching the sandbox; a heal still pauses the pass; the default keeps the
+// old behaviour (session pauses too).
+func TestBaseReconcileRunsDuringSessionHoldWhenEnabled(t *testing.T) {
+	cases := []struct {
+		mode    string
+		allowed bool
+		want    int
+	}{
+		{HoldNone, false, 1},
+		{HoldSession, true, 1},
+		{HoldSession, false, 0},
+		{HoldHealing, true, 0},
+		{HoldHealing, false, 0},
+	}
+	for _, c := range cases {
+		h, _ := testHold(time.Hour, c.mode)
+		calls := 0
+		br := &BaseReconciler{
+			cfg:    &Config{Hold: h, SandboxHoldBaseEvents: c.allowed, ReconcileBaseEventsLookbackHours: 1},
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			passOverride: func(context.Context, time.Time) error {
+				calls++
+				return nil
+			},
+		}
+		br.runOnce(context.Background())
+		if calls != c.want {
+			t.Errorf("mode=%s flag=%v: pass ran %d times, want %d", c.mode, c.allowed, calls, c.want)
+		}
 	}
 }

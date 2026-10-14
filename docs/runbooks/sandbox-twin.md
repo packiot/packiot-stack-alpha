@@ -67,3 +67,45 @@ workstation with AWS access):
 - The mutating E2E suite (`npm run test:sandbox`) heals first. While someone holds the
   sandbox, that heal refuses and the suite stops rather than wiping their session. After
   an E2E run, `heal-now` releases the hold instead of waiting 4 h.
+
+## Running PO without a runtime window, and live stops during a session (PRODT-164)
+
+Two guards keep the sandbox usable for write-flow tests (spec `docs/specs/PRODT-157-operator-app.md`,
+card-local AC-01 to AC-04):
+
+- **Every Running PO has an open runtime window** (AC-01, AC-03). The reflect copies CPACK staging's
+  POs as they are, including its known invariant violation "status 2, no open window", which leaves
+  the Operator showing no PO while create-and-start refuses. After each reflect the heal calls
+  `ops.sandbox_fix_running_without_runtime(2000003)` (migration `db/migrations/t-sandbox-running-po-runtime`):
+  it opens a window from the line's last runtime end when the line is free, otherwise pauses the PO.
+  It refuses any enterprise below 1,000,000, so CPACK (ent 3) is never touched (AC-04).
+- **New stops keep arriving during a hands-on session** (AC-02). With
+  `SANDBOX_HOLD_BASE_EVENTS=true` in `/opt/packiot/.env`, `legacy-replicator-sbx` keeps inserting
+  PLC stops (insert-only, never overwriting a tester's justification or split) while the sandbox is
+  held; a heal still pauses it. Off by default.
+
+### One-time enablement (needs approval; nothing here runs on deploy)
+
+All steps target the staging analytics DB (`packiot_analytics`) and touch the sandbox only.
+
+```bash
+# 0. Before: Running sandbox POs without an open window (2026-10-14 ~14:00 UTC: 0).
+psql -d packiot_analytics -f db/migrations/t-sandbox-running-po-runtime/verify.sql   # read-only
+
+# 1. Create the function (changes no data).
+psql -d packiot_analytics -v ON_ERROR_STOP=1 -f db/migrations/t-sandbox-running-po-runtime/01-up.sql
+
+# 2. One-time cleanup of the current sandbox (idempotent; prints opened=N paused=M).
+psql -d packiot_analytics -v ON_ERROR_STOP=1 -c "SELECT ops.sandbox_fix_running_without_runtime(2000003);"
+
+# 3. After: expect sandbox_running_without_open_window = 0 and the refusal NOTICE for ent 3.
+psql -d packiot_analytics -f db/migrations/t-sandbox-running-po-runtime/verify.sql
+
+# 4. Live stops during sessions: add the flag and recreate the sandbox replicator.
+echo 'SANDBOX_HOLD_BASE_EVENTS=true' | sudo tee -a /opt/packiot/.env
+docker compose -p stack -f compose.staging.yml up -d --no-deps legacy-replicator-sbx
+```
+
+From then on every heal (grace timer, nightly, `heal-now`) runs step 2 by itself.
+Rollback: `db/migrations/t-sandbox-running-po-runtime/rollback.sql`; remove the `.env` line and
+recreate the container.
