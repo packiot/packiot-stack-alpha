@@ -38,6 +38,14 @@ func withPOExclusions(sql string, engaged bool, configSchema string) string {
 
 // poExclJoin — per-PO excluded seconds within [lo, hi). Planned intervals reuse
 // the availability predicate (%[6]s over alias ee) on ev_src, like x.planned.
+//
+// nx (the next event's start) only matters when the event has no ts_end of its own
+// — COALESCE(ee.ts_end, nx.ts_next, now()) — so the lookup is gated on
+// `ee.ts_end IS NULL`: an outer-only qual, which the planner turns into a one-time
+// filter that skips the scan. Ungated it probed every chunk of equipment_events once
+// per planned event; on staging (2026-10-14) 6 of 2,119 planned events were open and
+// the lookups were 17 of 19 s of a 40-PO pass (whole availability snapshot >60 s →
+// 2.4 s, byte-identical result in one snapshot).
 const poExclJoin = `
 	      CROSS JOIN LATERAL (
 	          SELECT (SELECT COALESCE(sum(extract(epoch FROM upper(r) - lower(r))), 0) FROM unnest((m.oos + m.nd) - m.pl) r) AS excl,
@@ -52,7 +60,8 @@ const poExclJoin = `
 	                            FROM %[3]s.equipment_events ee
 	                            LEFT JOIN LATERAL (SELECT min(n.ts_event) AS ts_next FROM %[3]s.equipment_events n
 	                                                WHERE n.id_equipment = ee.id_equipment AND n.ts_event > ee.ts_event
-	                                                  AND n.ts_event < el.hi + interval '60 days') nx ON true
+	                                                  AND n.ts_event < el.hi + interval '60 days'
+	                                                  AND ee.ts_end IS NULL) nx ON true
 	                           WHERE ee.id_equipment = el.nd_src AND ee.status = 20
 	                             AND ee.ts_event < el.hi AND ee.ts_event >= el.lo - interval '60 days'
 	                             AND COALESCE(ee.ts_end, nx.ts_next, now()) > el.lo),
@@ -61,7 +70,8 @@ const poExclJoin = `
 	                            FROM %[3]s.equipment_events ee
 	                            LEFT JOIN LATERAL (SELECT min(n.ts_event) AS ts_next FROM %[3]s.equipment_events n
 	                                                WHERE n.id_equipment = ee.id_equipment AND n.ts_event > ee.ts_event
-	                                                  AND n.ts_event < el.hi + interval '60 days') nx ON true
+	                                                  AND n.ts_event < el.hi + interval '60 days'
+	                                                  AND ee.ts_end IS NULL) nx ON true
 	                           WHERE ee.id_equipment = el.ev_src AND %[6]s
 	                             AND ee.ts_event < el.hi AND ee.ts_event >= el.lo - interval '60 days'
 	                             AND COALESCE(ee.ts_end, nx.ts_next, now()) > el.lo),
