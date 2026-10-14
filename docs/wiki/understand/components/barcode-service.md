@@ -39,7 +39,7 @@ serialization feature (ADR-0040): GS1 parsing, EPCIS, e-signatures and genealogy
 | Container (staging) | `barcode-service`, IP `172.18.0.36`, no host publish |
 | Port | `8446` (API, SSE, `/healthz`, `/metrics`, `/openapi.json`) |
 | Public route (staging) | nginx `scan.conf`: `/v1/scans`, `/v1/scans/stream`, `/healthz` only; no SSO gate (the service is its own auth); CORS for front4, csadmin and the operator hosts; `client_max_body_size 128k` |
-| DB | pgbouncer → `packiot_analytics`, pool of 5, simple protocol |
+| DB | pgbouncer → `packiot_analytics`, pool of 5, simple protocol, as the least-privilege `barcode_service` role (NOBYPASSRLS, column grants only; migration `t-barcode-service-role`), creds from Secrets Manager |
 | Auth | Cognito ID token; tenant from the signed `custom:id_enterprise` claim. Firebase verification disabled (`FIREBASE_PROJECT_ID=""`, #159) |
 | Depends on | pgbouncer, Cognito JWKS |
 | Depended on by | direct API clients of `scan.`; the staging API portal (spec) |
@@ -55,8 +55,8 @@ serialization feature (ADR-0040): GS1 parsing, EPCIS, e-signatures and genealogy
 | `GET /metrics` | none | Phase-0 placeholder text (`barcode_scans_served_total`, `barcode_scans_failed_total`) |
 | `GET /openapi.json` | none | OpenAPI 3.1 document (in-network; nginx does not route it on `scan.`, the API portal proxies it) |
 
-Tables (moved out of the old `barcode` schema by migration `t241-barcode-fold`, resolved by
-bare name through the DB `search_path`):
+Tables (moved out of the old `barcode` schema by migration `t241-barcode-fold`; the code names
+them schema-qualified):
 
 | Table | Role |
 |---|---|
@@ -72,8 +72,9 @@ bare name through the DB `search_path`):
 (validate only).
 
 ```sql
-BEGIN;
+BEGIN;                                                    -- as role barcode_service
   SELECT pg_advisory_xact_lock(<id_production_order>);   -- serialise writers for this PO
+  SELECT set_config('app.tenant_id', <JWT tenant>, true); -- RLS on core.production_orders/equipments
   -- 1. scan_uuid seen before?
   --      owned by the caller's enterprise → return the original row (replayed=true, 200)
   --      owned by another enterprise      → 409 scan_uuid_conflict (#1688), reveals nothing
@@ -99,9 +100,8 @@ Before 2026-10-13 (#1688) a `scan_uuid` that belonged to another tenant was "rep
 | Variable | Default | Staging | Effect |
 |---|---|---|---|
 | `HTTP_PORT` | `8446` | `8446` | |
-| `DB_HOST` / `DB_PORT` | `pgbouncer` / `5432` | same | |
-| `DB_USER` / `DB_PASSWORD` | `postgres` / — | `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` | Missing password → unhealthy, not a crash |
-| `DB_NAME` | `packiot_analytics` | same | |
+| `PG_SECRET_ID`, `AWS_REGION` | —, `us-east-1` | `${BARCODE_SERVICE_PG_SECRET_ID:-packiot/staging/barcode-service-db-creds}`, `us-east-1` | DB login `{host: pgbouncer, port, user: barcode_service, password, name: packiot_analytics}` from Secrets Manager; empty → boot error. No `env_file`; never the admin `POSTGRES_*` (CI `check-db-least-priv.py`). [Provisioning](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/barcode-service/README.md#provisioning-the-db-role) |
+| `CREDS_SOURCE` | Secrets Manager | unset (dev: `env`) | `env` → `DB_HOST` (`postgres`) / `DB_PORT` / `DB_USER` (`barcode_service`) / `DB_PASSWORD` (required) / `DB_NAME` |
 | `FIREBASE_PROJECT_ID` | `fbpackiot` when unset | `""` (explicitly empty = off) | Firebase path |
 | `COGNITO_ISSUER` | — | staging pool issuer | `""` disables Cognito |
 | `COGNITO_CLIENT_ID` | — | staging app client | Audience check (`""` skips it) |

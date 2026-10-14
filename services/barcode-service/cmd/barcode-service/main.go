@@ -13,7 +13,7 @@
 // look for `// PHASE-2:` markers where those hooks slot in.
 //
 // It is modelled on services/refdata-api: one lean binary, config from env,
-// pgx over pgbouncer (simple-protocol for transaction pooling), structured
+// DB login = the least-privilege barcode_service role (dbcreds.go), pgx over pgbouncer (simple-protocol for transaction pooling), structured
 // slog, an issuer-agnostic dual Firebase/Cognito JWT verifier that derives the
 // tenant (id_enterprise) SERVER-SIDE and fails closed. The client never names a
 // tenant — same single-injection-authority discipline as refdata's ADR-0027.
@@ -41,21 +41,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// config is the full runtime configuration, all from env. No secret has a
-// default; a missing DB password simply yields an unhealthy pool (fail-closed
-// at /healthz) rather than a silent misconnect.
+// config is the runtime configuration, all from env. The DB login is not here:
+// dbcreds.go loads it (Secrets Manager, or DB_* env in dev) and fails closed.
 type config struct {
 	httpPort string
-
-	dbHost     string
-	dbPort     string
-	dbUser     string
-	dbPassword string
-	dbName     string
 
 	firebaseProject string // Firebase project id (aud + iss suffix). "" ⇒ Firebase path off.
 	cognitoIssuer   string // https://cognito-idp.<region>.amazonaws.com/<poolId>. "" ⇒ Cognito path off.
@@ -67,11 +59,6 @@ type config struct {
 func loadConfig() config {
 	return config{
 		httpPort:        getenv("HTTP_PORT", "8446"),
-		dbHost:          getenv("DB_HOST", "pgbouncer"),
-		dbPort:          getenv("DB_PORT", "5432"),
-		dbUser:          getenv("DB_USER", "postgres"),
-		dbPassword:      os.Getenv("DB_PASSWORD"),
-		dbName:          getenv("DB_NAME", "packiot_analytics"),
 		firebaseProject: lookupenv("FIREBASE_PROJECT_ID", defaultFirebaseProject), // "" ⇒ off (#159); see lookupenv
 		cognitoIssuer:   os.Getenv("COGNITO_ISSUER"),
 		cognitoAudience: os.Getenv("COGNITO_CLIENT_ID"), // aud on Cognito ID tokens; same var refdata-api uses
@@ -99,21 +86,17 @@ func main() {
 		os.Exit(runHealthcheck(cfg.httpPort))
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s",
-		cfg.dbHost, cfg.dbPort, cfg.dbUser, cfg.dbPassword, cfg.dbName)
-	pc, err := pgxpool.ParseConfig(dsn)
+	creds, err := loadDBCreds(context.Background(), awsSecret)
 	if err != nil {
-		logger.Error("parse dsn", slog.String("err", err.Error()))
+		logger.Error("db creds", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
-	pc.MaxConns = 5
-	// pgbouncer transaction pooling breaks pgx's implicit prepared statements —
-	// simple protocol is the stack-wide fix (see refdata-api/main.go). It is
-	// ALSO what makes pg_advisory_xact_lock safe here: transaction pooling pins
-	// one server backend for the life of a tx, so an xact-scoped advisory lock
-	// is held for exactly our BEGIN…COMMIT and released on return.
-	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	pool, err := pgxpool.NewWithConfig(context.Background(), pc)
+	logger.Info("db creds loaded", slog.String("dsn", creds.Redacted("barcode-service")))
+	if creds.User != dbRole {
+		logger.Warn("not logged in as the least-privilege role", slog.String("user", creds.User),
+			slog.String("want", dbRole))
+	}
+	pool, err := newPool(context.Background(), creds)
 	if err != nil {
 		logger.Error("pool", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -150,7 +133,7 @@ func main() {
 	go func() {
 		logger.Info("barcode-service listening",
 			slog.String("port", cfg.httpPort),
-			slog.String("db_name", cfg.dbName),
+			slog.String("db_name", creds.Database),
 			slog.Bool("firebase", cfg.firebaseProject != ""),
 			slog.Bool("cognito", cfg.cognitoIssuer != ""))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -175,11 +175,11 @@ is the same with `packiot/production/*` and its own hosts. No password is ever p
    must match its label; `I1` is `f` (no password yet).
 2. **Copy the provisioning script to the app host** (instance tag `packiot-staging-app`; the host has
    no checkout of an unmerged branch): on your laptop
-   `base64 -w0 scripts/ops/provision-operator-gateway-db-role.py`, then on the host
+   `base64 -w0 scripts/ops/provision-db-role.py`, then on the host
    (`aws ssm start-session --target <app instance>`, `sudo -i`)
-   `echo '<paste>' | base64 -d > /root/provision-operator-gateway-db-role.py`.
+   `echo '<paste>' | base64 -d > /root/provision-db-role.py`.
 3. **Create the secret and set the role password** on the app host:
-   `python3 /root/provision-operator-gateway-db-role.py`. It checks the role (step 1 done), generates a
+   `python3 /root/provision-db-role.py --service operator-gateway`. It checks the role (step 1 done), generates a
    256-bit password and creates `packiot/staging/operator-gateway-db-creds` =
    `{host: 10.10.10.89, port: 5432, user: operator_gateway, password, name: packiot_analytics}` (the app
    instance role may create `packiot/staging/*`), sets the role password as a SCRAM verifier (the plaintext
@@ -200,12 +200,12 @@ is the same with `packiot/production/*` and its own hosts. No password is ever p
    `docker inspect operator-gateway --format '{{json .Config.Env}}' | grep -c POSTGRES_` → `0`, and the
    `pg_stat_activity` query above returns no `postgres` row for `operator-gateway`.
 
-**Rotate:** `python3 provision-operator-gateway-db-role.py --rotate`, then
+**Rotate:** `python3 provision-db-role.py --service operator-gateway --rotate`, then
 `docker compose -f compose.staging.yml -p stack up -d --force-recreate operator-gateway` and step 6
 (open connections keep the old password until the recreate). `--check` verifies without changing
 anything. **Roll back:** revert the compose change and redeploy (the service goes back to the admin
 login), then, if the role should go, `rollback.sql` on the DB host. Production: the role is a cluster
-object, so apply the migration and run the script there too (`--env production --db-host <host>`).
+object, so apply the migration and run the script there too (`--env production --db-host <host> --admin-host <host>`).
 
 ## Operating it
 

@@ -1121,15 +1121,14 @@ DEST — WRITE:
 | Var | Default | Staging |
 |---|---|---|
 | HTTP_PORT | `8446` (`services/barcode-service/cmd/barcode-service/main.go:68`) | `8446` (`:3029`) |
-| DB_HOST/DB_PORT | `pgbouncer`/5432 (`services/barcode-service/cmd/barcode-service/main.go:69-70`) | `pgbouncer`/`5432` (`:3022-3023`) |
-| DB_USER/DB_PASSWORD | `postgres`/none (`services/barcode-service/cmd/barcode-service/main.go:71-72`) | `${POSTGRES_USER}`/`${POSTGRES_PASSWORD}` (`:3024-3025`) |
-| DB_NAME | `packiot_analytics` (`services/barcode-service/cmd/barcode-service/main.go:73`) | same (`:3028`) |
+| PG_SECRET_ID / AWS_REGION | none → boot error (`services/barcode-service/cmd/barcode-service/dbcreds.go` `loadDBCreds`) / `us-east-1` | `${BARCODE_SERVICE_PG_SECRET_ID:-packiot/staging/barcode-service-db-creds}` → `{host: pgbouncer, user: barcode_service, name: packiot_analytics}`; no `env_file` |
+| CREDS_SOURCE + DB_* | `env` → `DB_HOST` `postgres`, `DB_USER` `barcode_service`, `DB_PASSWORD` required, `DB_NAME` `packiot_analytics` | unset (dev: `env`, `barcode_service`/`dev`) |
 | FIREBASE_PROJECT_ID | **`fbpackiot`** (`services/barcode-service/cmd/barcode-service/main.go:74`, const `services/barcode-service/cmd/barcode-service/auth_firebase.go:41`) | `""` (`:3039`) — **BUT `getenv` treats empty as unset (`services/barcode-service/cmd/barcode-service/main.go:216-221`), so the Firebase verifier IS registered with `fbpackiot` (`services/barcode-service/cmd/barcode-service/auth.go:69-70`)**; compose comment `:3036-3038` ("empty disables Firebase") is wrong |
 | COGNITO_ISSUER | `""` → Cognito off (`services/barcode-service/cmd/barcode-service/main.go:75`) | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt` (`:3040`) **AWS Cognito** |
 | COGNITO_CLIENT_ID | `""` → aud check skipped (`services/barcode-service/cmd/barcode-service/main.go:76`) | `2ckuoa0ov598rdpdn3uv039h6e` (`:3041`) |
 | LOG_LEVEL | `info` (`services/barcode-service/cmd/barcode-service/main.go:77`) | `info` (`:3042`) |
 
-**3. PostgreSQL**: pgbouncer → `packiot_analytics` pool (`compose.staging.yml:132`), `MaxConns=5`, simple protocol (`services/barcode-service/cmd/barcode-service/main.go:108,114`). Unqualified table names (search_path UNPROVEN).
+**3. PostgreSQL**: pgbouncer → `packiot_analytics` pool, `MaxConns=5`, simple protocol (`services/barcode-service/cmd/barcode-service/dbcreds.go` `newPool`), as role `barcode_service` (`db/migrations/t-barcode-service-role`; NOBYPASSRLS; each scan tx stamps `app.tenant_id`). Schema-qualified names: `bronze.box_scans`, `gold.po_box_counter`, `core.production_orders`, `core.equipments`, `identity.users`.
 - READ: `box_scans` ⋈ `po_box_counter` (`services/barcode-service/cmd/barcode-service/scans.go:226-228`), `production_orders`, `equipments` (`services/barcode-service/cmd/barcode-service/scans.go:244-245,272-275`), `po_box_counter` (`services/barcode-service/cmd/barcode-service/scans.go:255`), `users` (Firebase uid → enterprise, `services/barcode-service/cmd/barcode-service/auth_firebase.go:47`).
 - WRITE: `INSERT INTO box_scans` (`services/barcode-service/cmd/barcode-service/scans.go:267`), `INSERT INTO po_box_counter … ON CONFLICT DO UPDATE` (`services/barcode-service/cmd/barcode-service/scans.go:289-291`).
 - `pg_advisory_xact_lock(id_production_order)` (`services/barcode-service/cmd/barcode-service/scans.go:204`).

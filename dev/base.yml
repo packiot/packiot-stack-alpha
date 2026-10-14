@@ -32,10 +32,11 @@ services:
       # :latest (compose does not re-pull a tag it already has) or a pinned dated tag. Idempotent (only ever moves a
       # sequence forward to max(id)), so on a new image it is a no-op. Remove once no pre-10-09 seed is in use.
       - ./seed/sync-sequences.sql:/docker-entrypoint-initdb.d/60-devseed-sequences.sql:ro
-      # operator-gateway's least-privilege login (db/migrations/t-operator-gateway-role, password "dev") for seeds
-      # built before staging had the role. Fresh volume only (make dev-reset). Remove once the seed carries it.
-      - ./seed/70-operator-gateway-role.sh:/docker-entrypoint-initdb.d/70-operator-gateway-role.sh:ro
+      # The Go services' least-privilege logins (db/migrations/t-<service>-role, password "dev") for seeds built
+      # before staging had them. Fresh volume only (make dev-reset). Remove once the seed carries them.
+      - ./seed/70-service-roles.sh:/docker-entrypoint-initdb.d/70-service-roles.sh:ro
       - ../db/migrations/t-operator-gateway-role:/devseed-migrations/t-operator-gateway-role:ro
+      - ../db/migrations/t-barcode-service-role:/devseed-migrations/t-barcode-service-role:ro
     shm_size: 256m
     healthcheck:
       # -h 127.0.0.1: over TCP, not the socket. During first-start init the entrypoint runs a temporary

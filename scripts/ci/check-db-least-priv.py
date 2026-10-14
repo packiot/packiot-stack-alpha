@@ -39,6 +39,7 @@ COMPOSE_FILES = {
 # service → (its DB role, the compose files it must appear in)
 SERVICES = {
     "operator-gateway": ("operator_gateway", list(COMPOSE_FILES)),
+    "barcode-service": ("barcode_service", ["compose.staging.yml", "dev/compose.yml"]),  # not in production yet
 }
 
 # Secrets Manager ids that hold the admin login (or the legacy DB's).
