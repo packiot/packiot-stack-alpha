@@ -79,7 +79,7 @@ func expectStream(t *testing.T, got []evRow, base time.Time, want []tr) {
 func runLink(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for i := 0; i < 2; i++ { // idempotent: a second pass changes nothing
-		if _, _, err := RunOnceCPAC(context.Background(), dest(pool), linkCfg); err != nil {
+		if _, _, _, err := RunOnceCPAC(context.Background(), dest(pool), linkCfg); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -201,7 +201,7 @@ func TestCPACLinkNetOnlyLeadStillLinkAware(t *testing.T) {
 	cfg := linkCfg
 	cfg.LeadActivity = true
 	for i := 0; i < 2; i++ {
-		if _, _, err := RunOnceCPAC(context.Background(), dest(pool), cfg); err != nil {
+		if _, _, _, err := RunOnceCPAC(context.Background(), dest(pool), cfg); err != nil {
 			t.Fatal(err)
 		}
 	}

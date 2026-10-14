@@ -204,7 +204,7 @@ func TestGoldenCPACCaggReadIsPlannedAsSelect(t *testing.T) {
 	rec.stmt = nil
 	rec.mu.Unlock()
 	start := time.Now()
-	if _, _, err := RunOnceCPAC(ctx, d, goldenCPACCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, d, goldenCPACCfg); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("RunOnceCPAC (%d equipments): %s", goldenCPACEquipments(), time.Since(start))
@@ -302,7 +302,7 @@ func TestGoldenCPACSnapshotMatchesInlineDerivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t0 = time.Now()
-	del, ups, err := runCPACTx(ctx, tx, d, goldenCPACCfg, DefaultCPACTargetTable, 300)
+	del, ups, _, err := runCPACTx(ctx, tx, d, goldenCPACCfg, DefaultCPACTargetTable, 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,4 +342,255 @@ func TestGoldenCPACSnapshotMatchesInlineDerivation(t *testing.T) {
 		}
 	}
 	t.Error("the human-justified row must survive")
+}
+
+// applyCPACWith is runCPACTx with a caller-chosen upsert half, so a test can run
+// the pre-guard DO UPDATE against the same snapshot.
+func applyCPACWith(ctx context.Context, tx pgx.Tx, d Dest, cfg CPACConfig, upsertApply string) (del, ups, cls int64, err error) {
+	var snap string
+	if err = tx.QueryRow(ctx, fmtCPACFull(cpacReadSQL, d.EvSchema, d.RefSchema, cfg.TargetTable, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth),
+		cfg.Enterprises, cfg.ThresholdDefSec).Scan(&snap); err != nil {
+		return
+	}
+	for i, st := range []struct {
+		apply string
+		args  []any
+		param string
+	}{{cpacCorrectApply, []any{cfg.Enterprises, snap}, "$2"}, {upsertApply, []any{snap}, "$1"}, {cpacCloseApply, []any{snap}, "$1"}} {
+		tag, e := tx.Exec(ctx, cpacApplySQL(st.apply, d.EvSchema, d.RefSchema, cfg.TargetTable, "ev", d.SilverSchema, st.param), st.args...)
+		if e != nil {
+			return 0, 0, 0, e
+		}
+		switch i {
+		case 0:
+			del = tag.RowsAffected()
+		case 1:
+			ups = tag.RowsAffected()
+		default:
+			cls = tag.RowsAffected()
+		}
+	}
+	return
+}
+
+// unguardedUpsertApply is cpacUpsertApply before 2026-10-14 (no no-op guard).
+func unguardedUpsertApply(t *testing.T) string {
+	t.Helper()
+	s := strings.Replace(cpacUpsertApply, cpacNoopGuard, "", 1)
+	if s == cpacUpsertApply {
+		t.Fatal("cpacNoopGuard not found in cpacUpsertApply")
+	}
+	return s
+}
+
+// goldenCPACXactWrites reads this transaction's own row-write counters for the
+// target (pg_stat_xact_* sees them before commit).
+func goldenCPACXactWrites(t *testing.T, ctx context.Context, tx pgx.Tx) (ins, upd, del int64) {
+	t.Helper()
+	if err := tx.QueryRow(ctx, `SELECT n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_xact_user_tables
+	                             WHERE relid = '`+goldenCPACSchema+`.equipment_events_cpac_shadow'::regclass`).Scan(&ins, &upd, &del); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// TestGoldenCPACNoopGuardKeepsResults: with the no-op guard the table ends up
+// row-for-row identical to the pre-guard DO UPDATE, on the same edited fixture
+// (stale delete, wrong ts_end refresh, human span, human row) and the same
+// now(); only the number of rewritten rows drops.
+func TestGoldenCPACNoopGuardKeepsResults(t *testing.T) {
+	pool := goldenCPACPool(t, nil)
+	setupGoldenCPAC(t, pool)
+	ctx := context.Background()
+	d := goldenCPACDest(pool)
+	s := goldenCPACSchema
+	if _, _, _, err := RunOnceCPAC(ctx, d, goldenCPACCfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO ` + s + `.equipment_events_cpac_shadow (id_equipment, ts_event, status, id_enterprise, duration, forced_creation_system)
+		 VALUES (1001, date_trunc('minute', now()) - interval '5 hours' + interval '17 seconds', 10, 999, 1, false)`,
+		`UPDATE ` + s + `.equipment_events_cpac_shadow SET ts_end = ts_event + interval '1 second', duration = 1
+		  WHERE (id_equipment, ts_event) IN (SELECT id_equipment, ts_event FROM ` + s + `.equipment_events_cpac_shadow
+		                                      WHERE id_equipment = 1002 AND ts_end IS NOT NULL ORDER BY ts_event DESC LIMIT 3)`,
+		`UPDATE ` + s + `.equipment_events_cpac_shadow SET status = 6
+		  WHERE (id_equipment, ts_event) = (SELECT id_equipment, ts_event FROM ` + s + `.equipment_events_cpac_shadow
+		                                     WHERE id_equipment = 1005 AND status = 10 ORDER BY ts_event DESC LIMIT 1)`,
+		`INSERT INTO ` + s + `.equipment_events_cpac_shadow (id_equipment, ts_event, ts_end, status, id_enterprise, duration, forced_creation_system, cd_category)
+		 VALUES (1003, date_trunc('minute', now()) - interval '10 hours' + interval '30 seconds',
+		               date_trunc('minute', now()) - interval '6 hours', 10, 999, 14370, false, 'JUSTIFIED')`,
+		`UPDATE ` + s + `.equipment_events_cpac_shadow SET planned_downtime = true, duration = 7
+		  WHERE (id_equipment, ts_event) = (SELECT id_equipment, ts_event FROM ` + s + `.equipment_events_cpac_shadow
+		                                     WHERE id_equipment = 1004 AND status = 10 ORDER BY ts_event DESC LIMIT 1)`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatalf("edit %q: %v", q, err)
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, "SAVEPOINT old"); err != nil {
+		t.Fatal(err)
+	}
+	_, upsOld, _, err := applyCPACWith(ctx, tx, d, goldenCPACCfg, unguardedUpsertApply(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := goldenCPACDump(t, ctx, tx)
+	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT old"); err != nil {
+		t.Fatal(err)
+	}
+	_, upsNew, _, err := runCPACTx(ctx, tx, d, goldenCPACCfg, DefaultCPACTargetTable, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := goldenCPACDump(t, ctx, tx)
+	t.Logf("rows written by the upsert: unguarded %d, guarded %d (table %d rows)", upsOld, upsNew, len(got))
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("guarded upsert result differs from the unguarded one (%d vs %d rows)", len(got), len(want))
+	}
+	// the 3 + 1 corrupted rows, the open tail rows and re-minted rows must still be written
+	if upsNew < 4 {
+		t.Errorf("guarded upsert wrote %d rows; the fixture's 4 changed rows must still be rewritten", upsNew)
+	}
+	if upsNew >= upsOld {
+		t.Errorf("guard saved nothing: guarded %d vs unguarded %d", upsNew, upsOld)
+	}
+}
+
+// TestGoldenCPACUnchangedTickWritesNothing: a tick whose derivation matches the
+// table writes 0 rows (pg_stat n_tup_upd/ins/del unchanged), and a changed row
+// is still rewritten, exactly once. Both ticks run in ONE transaction, so now()
+// and therefore the open tail's duration are identical.
+func TestGoldenCPACUnchangedTickWritesNothing(t *testing.T) {
+	pool := goldenCPACPool(t, nil)
+	setupGoldenCPAC(t, pool)
+	ctx := context.Background()
+	d := goldenCPACDest(pool)
+	s := goldenCPACSchema
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, ups, _, err := runCPACTx(ctx, tx, d, goldenCPACCfg, DefaultCPACTargetTable, 300); err != nil || ups == 0 {
+		t.Fatalf("first tick: ups %d err %v", ups, err)
+	}
+	first := goldenCPACDump(t, ctx, tx)
+	i0, u0, d0 := goldenCPACXactWrites(t, ctx, tx)
+
+	del, ups, cls, err := runCPACTx(ctx, tx, d, goldenCPACCfg, DefaultCPACTargetTable, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i1, u1, d1 := goldenCPACXactWrites(t, ctx, tx)
+	if del != 0 || ups != 0 || cls != 0 || i1 != i0 || u1 != u0 || d1 != d0 {
+		t.Errorf("unchanged tick wrote rows: affected del=%d ups=%d cls=%d; n_tup ins %d→%d upd %d→%d del %d→%d",
+			del, ups, cls, i0, i1, u0, u1, d0, d1)
+	}
+	if !reflect.DeepEqual(goldenCPACDump(t, ctx, tx), first) {
+		t.Error("unchanged tick changed the table")
+	}
+
+	// contrast: the pre-guard upsert rewrites every derived row on the same tick
+	if _, err := tx.Exec(ctx, "SAVEPOINT old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, upsOld, _, err := applyCPACWith(ctx, tx, d, goldenCPACCfg, unguardedUpsertApply(t)); err != nil || upsOld < int64(len(first))/2 {
+		t.Errorf("unguarded control: ups %d of %d rows, err %v (expected it to rewrite the window)", upsOld, len(first), err)
+	}
+	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT old"); err != nil {
+		t.Fatal(err)
+	}
+
+	// one changed row is still rewritten, and only it
+	if _, err := tx.Exec(ctx, `UPDATE `+s+`.equipment_events_cpac_shadow SET ts_end = ts_end + interval '1 second', duration = duration + 1
+	   WHERE (id_equipment, ts_event) = (SELECT id_equipment, ts_event FROM `+s+`.equipment_events_cpac_shadow
+	                                      WHERE id_equipment = 1002 AND ts_end IS NOT NULL ORDER BY ts_event DESC LIMIT 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_, u2, _ := goldenCPACXactWrites(t, ctx, tx)
+	_, ups, _, err = runCPACTx(ctx, tx, d, goldenCPACCfg, DefaultCPACTargetTable, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, u3, _ := goldenCPACXactWrites(t, ctx, tx)
+	if ups != 1 || u3-u2 != 1 {
+		t.Errorf("changed row: upsert affected %d rows, n_tup_upd +%d (want 1, 1)", ups, u3-u2)
+	}
+	if !reflect.DeepEqual(goldenCPACDump(t, ctx, tx), first) {
+		t.Error("the changed row was not restored to the derived values")
+	}
+}
+
+// TestGoldenCPACClosesRowLeftOpenBeforeWindow: a row that left the 25 h window
+// while open (a stop longer than the window) ends where the next row begins once
+// the machine changes state. Only the newest pre-window row per equipment is
+// considered; a human-touched row and an already-closed row are never changed;
+// a second tick closes nothing. Gross-only (CPACK shadow) and LeadActivity
+// (the live instance's apply is the same SQL) both.
+func TestGoldenCPACClosesRowLeftOpenBeforeWindow(t *testing.T) {
+	for _, cfg := range []CPACConfig{goldenCPACCfg, {Enterprises: []int{999}, ThresholdDefSec: 300, TargetTable: DefaultCPACTargetTable, LeadActivity: true}} {
+		t.Run("lead="+strconv.FormatBool(cfg.LeadActivity), func(t *testing.T) {
+			pool := goldenCPACPool(t, nil)
+			setupGoldenCPAC(t, pool)
+			ctx := context.Background()
+			d := goldenCPACDest(pool)
+			s := goldenCPACSchema
+			for _, q := range []string{
+				// 1001: an older open row (backlog: not the newest pre-window row → left to the one-time repair)
+				// and the newest pre-window row, an open stop → closed at 1001's first in-window row
+				`INSERT INTO ` + s + `.equipment_events_cpac_shadow (id_equipment, ts_event, status, id_enterprise, duration, forced_creation_system)
+				 VALUES (1001, date_trunc('minute', now()) - interval '40 hours', 6, 999, 60, false),
+				        (1001, date_trunc('minute', now()) - interval '30 hours' + interval '1 second', 10, 999, 60, false)`,
+				// 1002: open but human-justified → never changed
+				`INSERT INTO ` + s + `.equipment_events_cpac_shadow (id_equipment, ts_event, status, id_enterprise, duration, forced_creation_system, cd_category)
+				 VALUES (1002, date_trunc('minute', now()) - interval '30 hours' + interval '1 second', 10, 999, 60, false, 'JUSTIFIED')`,
+				// 1004: already closed → never changed
+				`INSERT INTO ` + s + `.equipment_events_cpac_shadow (id_equipment, ts_event, ts_end, status, id_enterprise, duration, forced_creation_system)
+				 VALUES (1004, date_trunc('minute', now()) - interval '30 hours' + interval '1 second',
+				               date_trunc('minute', now()) - interval '29 hours', 10, 999, 3599, false)`,
+			} {
+				if _, err := pool.Exec(ctx, q); err != nil {
+					t.Fatalf("seed %q: %v", q, err)
+				}
+			}
+			_, _, cls, err := RunOnceCPAC(ctx, d, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cls != 1 {
+				t.Errorf("closed %d rows, want 1 (1001's newest pre-window stop)", cls)
+			}
+			var okEnd, okDur bool
+			if err := pool.QueryRow(ctx, `SELECT ev.ts_end = (SELECT min(n.ts_event) FROM `+s+`.equipment_events_cpac_shadow n
+			                                                  WHERE n.id_equipment = 1001 AND n.ts_event > ev.ts_event),
+			                                     ev.duration = extract(epoch FROM ev.ts_end - ev.ts_event)::int
+			                                FROM `+s+`.equipment_events_cpac_shadow ev
+			                               WHERE ev.id_equipment = 1001 AND ev.ts_event = date_trunc('minute', now()) - interval '30 hours' + interval '1 second'`).Scan(&okEnd, &okDur); err != nil {
+				t.Fatal(err)
+			}
+			if !okEnd || !okDur {
+				t.Errorf("1001's stop must end at its successor (ts_end ok=%v, duration ok=%v)", okEnd, okDur)
+			}
+			var stillOpen40, human, closed1004 bool
+			if err := pool.QueryRow(ctx, `SELECT
+			      (SELECT ts_end IS NULL FROM `+s+`.equipment_events_cpac_shadow WHERE id_equipment = 1001 AND ts_event = date_trunc('minute', now()) - interval '40 hours'),
+			      (SELECT ts_end IS NULL AND duration = 60 FROM `+s+`.equipment_events_cpac_shadow WHERE id_equipment = 1002 AND cd_category = 'JUSTIFIED'),
+			      (SELECT ts_end = date_trunc('minute', now()) - interval '29 hours' AND duration = 3599 FROM `+s+`.equipment_events_cpac_shadow
+			        WHERE id_equipment = 1004 AND ts_event = date_trunc('minute', now()) - interval '30 hours' + interval '1 second')`).Scan(&stillOpen40, &human, &closed1004); err != nil {
+				t.Fatal(err)
+			}
+			if !stillOpen40 || !human || !closed1004 {
+				t.Errorf("rows the close pass must not touch changed: older backlog open=%v, human untouched=%v, closed untouched=%v",
+					stillOpen40, human, closed1004)
+			}
+			if _, _, cls, err := RunOnceCPAC(ctx, d, cfg); err != nil || cls != 0 {
+				t.Errorf("second tick closed %d rows (err %v), want 0", cls, err)
+			}
+		})
+	}
 }

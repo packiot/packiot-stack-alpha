@@ -280,7 +280,7 @@ no-data time is not. The PO grain gets the same treatment when `PO_AVAILABILITY_
 |---|---|---|---|
 | Ingest mint | `status_type = 4`, non-empty `source_type` | each `StateCurrent` sample | open row per sample in `equipment_events` |
 | `events-deriver` | `status_type = 4` (+ wide-row enterprises' machines) | `ca_discrete_changes_1s`, last 25 h | gaps-and-islands transitions; upsert `(id_equipment, ts_event)`; deletes non-transition rows of the last day unless `forced_creation_system` |
-| `cpac-events-deriver` | `status_type = 0`, `tp_equipment IN (1,3)`, listed enterprises | productive minutes in `equipment_categorical_1min`, last 25 h | status 6 at session start, status 10 at last count + threshold (`stop_threshold_time`, else `CPAC_STOP_THRESHOLD_DEFAULT_SEC`); never overwrites or deletes a row an operator touched |
+| `cpac-events-deriver` | `status_type = 0`, `tp_equipment IN (1,3)`, listed enterprises | productive minutes in `equipment_categorical_1min`, last 25 h | status 6 at session start, status 10 at last count + threshold (`stop_threshold_time`, else `CPAC_STOP_THRESHOLD_DEFAULT_SEC`); never overwrites or deletes a row an operator touched; rewrites a row only when its `ts_end`/`status`/`duration` changed; a state that outlasted the 25 h window ends at the next row once the machine changes state |
 | `cpac-events-deriver` live extras | as above | lead's gross **or** net/scrap (lines with `downtime_from_lead_machine`); `silver.plc_link_minutes` | a PLC-link gap longer than the threshold becomes status **20 (no data)** instead of a stop; a resume without production opens a stop. Link events only for equipment the deriver saw produce in 7 days (#1663) |
 | `events-close-stale` | listed enterprises | open events | see below |
 

@@ -142,11 +142,17 @@ func TestCPACHumanCoverProbeIsTimeBounded(t *testing.T) {
 //
 // Reverting just those two edits textually must reproduce the old SHA-256; the
 // new SHA-256 is pinned so any further change to CPACK's SQL is deliberate.
+//
+// Re-pinned 2026-10-14 (upsert only): the DO UPDATE gained cpacNoopGuard, which
+// skips conflict rows whose ts_end/status/duration already match (the shadow
+// table's 8.6 M no-op updates). The revert strips that guard too, so the old
+// SHA-256 still proves nothing else moved; the correct pass is unchanged.
 func TestCPACGrossOnlySQLPinned(t *testing.T) {
 	const lookback = `       -- LOOK-BACK`
 	const window = `       AND m.ts_value > now() - interval '25 hours'
 `
 	revert := func(sql string) string {
+		sql = strings.Replace(sql, strings.ReplaceAll(cpacNoopGuard, "%[4]s", "ev"), "", 1)
 		for _, c := range []string{"forced_creation_system", "planned_downtime", "change_over"} {
 			sql = strings.ReplaceAll(sql, c+" IS TRUE", c)
 		}
@@ -163,7 +169,7 @@ func TestCPACGrossOnlySQLPinned(t *testing.T) {
 			"25a8189f17814e8396600edae1f1971d0758f2a95b86c86403bad40800d6879a"},
 		"upsert": {cpacUpsertSQL,
 			"45e8d7246109a9a3f4326550cc0e5bf7ed458709e31a637f286e3b3296e6f394",
-			"89ef41c0564c7885a203b3192796691ea6bc384911b7da150b6f82c82c60a151"},
+			"105d2ac98ba7cb87442e8a4cb119c02b74277b880332356a06c6d9aefdc48b44"},
 	} {
 		for _, got := range []string{
 			fmtCPAC(c.tmpl, "silver", "core", "equipment_events_cpac_shadow", "ev", "silver"),
@@ -241,5 +247,61 @@ func TestCPACLeadActivityNetOnlyLeadSQL(t *testing.T) {
 		if strings.Index(got, "), leads AS (") > strings.Index(got, "), counts AS (") {
 			t.Errorf("%s: leads CTE must precede counts", name)
 		}
+	}
+}
+
+// TestCPACUpsertSkipsNoopUpdates: the DO UPDATE must skip a conflict row whose
+// written columns already hold the derived values, over EXACTLY the SET columns
+// (a SET column missing from the guard would leave a real change unwritten),
+// NULL-safe (the open tail has ts_end NULL).
+func TestCPACUpsertSkipsNoopUpdates(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		up := fmtCPACFull(cpacUpsertSQL, "silver", "core", "t", "ev", "silver", live, live)
+		tail := up[strings.LastIndex(up, "DO UPDATE"):]
+		if !strings.Contains(tail, "SET ts_end = EXCLUDED.ts_end, status = EXCLUDED.status, duration = EXCLUDED.duration") {
+			t.Fatal("SET list changed: update cpacNoopGuard to cover exactly the SET columns")
+		}
+		if !strings.Contains(tail, "AND (ev.ts_end, ev.status, ev.duration)\n       IS DISTINCT FROM (EXCLUDED.ts_end, EXCLUDED.status, EXCLUDED.duration)") {
+			t.Errorf("live=%v: DO UPDATE must skip rows whose (ts_end, status, duration) are unchanged", live)
+		}
+		// the human guard still comes first: the no-op guard narrows, never widens
+		if strings.Index(tail, "WHERE NOT (ev.forced_creation_system") > strings.Index(tail, "IS DISTINCT FROM") {
+			t.Errorf("live=%v: no-op guard must be ANDed after the human guard", live)
+		}
+	}
+}
+
+// TestCPACCloseApplyShape: the close pass only ever sets ts_end/duration on an
+// OPEN, non-human row before the window, at the next row's ts_event, with
+// constant chunk-exclusion bounds on every probe of the target.
+func TestCPACCloseApplyShape(t *testing.T) {
+	got := cpacApplySQL(cpacCloseApply, "silver", "core", "equipment_events", "ev", "silver", "$1")
+	if strings.Contains(got, "%!") || strings.Contains(got, "%[") {
+		t.Fatalf("unformatted verb in close SQL:\n%s", got)
+	}
+	for _, m := range []string{
+		"jsonb_to_recordset($1::jsonb)",     // the same snapshot as the other passes
+		"UPDATE silver.equipment_events ev", // target table
+		"SET ts_end = c.ts_next",            // ends where the next row begins
+		"duration = extract(epoch FROM (c.ts_next - ev.ts_event))::int",
+		"WHERE pv.ts_end IS NULL",  // only an OPEN newest pre-window row is a candidate
+		", cand AS MATERIALIZED (", // candidates first, then a key-only UPDATE (hypertable plan)
+		"FROM cand c",
+		"AND ev.ts_event = c.ts_event",
+		"FROM (SELECT DISTINCT f.id_equipment FROM final f) s",             // only equipment the deriver derives
+		"p.ts_event < now() - interval '25 hours' + interval '10 seconds'", // newest row BEFORE the window
+		"ORDER BY p.ts_event DESC LIMIT 1",
+		"n.ts_event >= now() - interval '25 hours' + interval '10 seconds'", // successor searched in-window only
+		"ev.ts_event >= now() - interval '60 days'",
+		"AND ev.ts_end IS NULL",                      // never moves an existing end
+		"AND nx.ts_next IS NOT NULL",                 // no successor ⇒ still in that state ⇒ stays open
+		"AND NOT (ev.forced_creation_system IS TRUE", // never a human-touched row
+	} {
+		if !strings.Contains(got, m) {
+			t.Errorf("close SQL missing %q", m)
+		}
+	}
+	if strings.Contains(got, "equipment_categorical_1min") {
+		t.Error("close pass must not read the cagg (the snapshot carries the derivation)")
 	}
 }

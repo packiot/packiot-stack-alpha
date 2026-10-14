@@ -136,7 +136,7 @@ func TestCPACDetectsStopAndIsIdempotent(t *testing.T) {
 	setupSchema(t, pool)
 	ctx := context.Background()
 
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 		t.Fatalf("run 1: %v", err)
 	}
 	after1 := dump(t, pool)
@@ -162,7 +162,7 @@ func TestCPACDetectsStopAndIsIdempotent(t *testing.T) {
 	}
 
 	// Idempotency: re-run on the SAME data must produce an identical row set.
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 		t.Fatalf("run 2: %v", err)
 	}
 	after2 := dump(t, pool)
@@ -201,7 +201,7 @@ func TestCPACNeverClobbersJustifiedEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestCPACLeadActivityNetOnlyLead(t *testing.T) {
 	ctx := context.Background()
 
 	// Gross-only (the CPACK shadow / pre-fix behaviour): reproduces the bug.
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 		t.Fatalf("gross-only run: %v", err)
 	}
 	off := byEq(dump(t, pool))
@@ -308,7 +308,7 @@ func TestCPACLeadActivityNetOnlyLead(t *testing.T) {
 	// Lead-activity mode (the live counters-only instance).
 	cfg := itCfg
 	cfg.LeadActivity = true
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
 		t.Fatalf("lead-activity run: %v", err)
 	}
 	onRows := dump(t, pool)
@@ -347,7 +347,7 @@ func TestCPACLeadActivityNetOnlyLead(t *testing.T) {
 	}
 
 	// Idempotent in lead mode too.
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
 		t.Fatalf("lead-activity run 2: %v", err)
 	}
 	again := dump(t, pool)
@@ -397,7 +397,7 @@ func TestCPACWindowEdgeNoPhantomRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	for tick := 0; tick < 3; tick++ {
-		if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+		if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
 		if _, err := pool.Exec(ctx,
@@ -422,7 +422,7 @@ func TestCPACCorrectPassRemovesSupersededStop(t *testing.T) {
 	defer pool.Close()
 	setupSchema(t, pool)
 	ctx := context.Background()
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 		t.Fatal(err)
 	}
 	if n := countStatus(t, pool, 1000, 10); n < 1 {
@@ -437,7 +437,7 @@ func TestCPACCorrectPassRemovesSupersededStop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
 		t.Fatal(err)
 	}
 	var closedStops, runs int

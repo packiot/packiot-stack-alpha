@@ -366,7 +366,24 @@ SELECT f.ts_event, f.ts_end, f.id_equipment, f.status, f.id_enterprise, f.durati
            AND f.ts_event < COALESCE(h.ts_end, now()))
 ON CONFLICT (id_equipment, ts_event) DO UPDATE
    SET ts_end = EXCLUDED.ts_end, status = EXCLUDED.status, duration = EXCLUDED.duration
- WHERE NOT ` + humanTouchedPred
+ WHERE NOT ` + humanTouchedPred + cpacNoopGuard
+
+// cpacNoopGuard (appended to the DO UPDATE WHERE) skips a conflict row whose
+// values already equal the derived ones, over exactly the columns the SET writes.
+//
+// WHY (2026-10-14, staging): every tick re-derives the whole 25 h window, so the
+// upsert hit ~400–600 conflict rows per tick and rewrote each one although only
+// the open tail had changed. Postgres writes a new row version for every UPDATE,
+// changed or not: silver.equipment_events_cpac_shadow reached 8.6 M updates and a
+// 92 MB heap for 27 k live rows. Neither table has a trigger and nothing keys on
+// row versions (no last_update/ingested_at write here, no publication), so a
+// skipped no-op changes no result; it only stops the WAL, dead tuples and
+// vacuum work. The open tail row still updates every tick: its duration runs to
+// now(). RowsAffected now counts real inserts and changes only.
+// IS DISTINCT FROM, not <>: ts_end is NULL on the open tail.
+const cpacNoopGuard = `
+   AND (%[4]s.ts_end, %[4]s.status, %[4]s.duration)
+       IS DISTINCT FROM (EXCLUDED.ts_end, EXCLUDED.status, EXCLUDED.duration)`
 
 // humanCoverPred (aliased `h` = %[4]s at format time) — a human-protected event
 // used by the append-only NOT EXISTS. Same touched-columns as humanTouchedPred.
@@ -406,6 +423,56 @@ DELETE FROM %[1]s.%[3]s ev
           AND ev.ts_event >= h.ts_event
           AND ev.ts_event < COALESCE(h.ts_end, now()))
    )`
+
+// cpacCloseApply closes the open row the window left behind. It runs after the
+// upsert, against the same snapshot.
+//
+// WHY (2026-10-14, staging): `final` chains ts_end = lead(ts_event) only INSIDE
+// the 25 h window. A stop (or run) that lasts longer than the window leaves it
+// while still open, which is correct while it lasts. But when the machine
+// changes state again, the new transition is in the window and the old row is
+// not, so no pass ever set its ts_end: 73 CPACK shadow stops since 09-29 stayed
+// open although a RUNNING row follows each one 1 to 13 days later. (The 11.9 k
+// older open rows are the NULL-unsafe-guard era before #1486, when DO UPDATE
+// never ran; scripts/ops/repair-cpac-shadow-stale-open.sql closes those once.)
+//
+// Per equipment in the snapshot: the newest row BEFORE the window, if it is
+// still open and a later row now exists, ends where that row begins (the same
+// rule as lead() inside the window and as closer.go's non-latest close).
+// Bounded: one backward index probe per equipment, and the successor is looked
+// up inside the window only (the newest pre-window row's successor can only be
+// there). The candidates are a MATERIALIZED CTE and the UPDATE joins them by key:
+// on the live ent-5 hypertable a plain UPDATE … FROM planned a hash join over
+// every 60-day chunk (614 ms planning, seq scans); this shape plans in 156 ms
+// and, with no candidate (nearly every tick), never touches a chunk. A
+// human-touched row is never changed; a row with no successor stays open (the
+// machine is still in that state).
+const cpacCloseApply = `
+, cand AS MATERIALIZED (
+    SELECT s.id_equipment, pv.ts_event, nx.ts_next
+      FROM (SELECT DISTINCT f.id_equipment FROM final f) s
+     CROSS JOIN LATERAL (
+           SELECT p.ts_event, p.ts_end FROM %[1]s.%[3]s p
+            WHERE p.id_equipment = s.id_equipment
+              AND p.ts_event < now() - interval '25 hours' + interval '10 seconds'
+              AND p.ts_event >= now() - interval '60 days'
+            ORDER BY p.ts_event DESC LIMIT 1) pv
+     CROSS JOIN LATERAL (
+           SELECT min(n.ts_event) AS ts_next FROM %[1]s.%[3]s n
+            WHERE n.id_equipment = s.id_equipment
+              AND n.ts_event >= now() - interval '25 hours' + interval '10 seconds') nx
+     WHERE pv.ts_end IS NULL
+       AND nx.ts_next IS NOT NULL
+)
+UPDATE %[1]s.%[3]s ev
+   SET ts_end = c.ts_next,
+       duration = extract(epoch FROM (c.ts_next - ev.ts_event))::int
+  FROM cand c
+ WHERE ev.id_equipment = c.id_equipment
+   AND ev.ts_event = c.ts_event
+   AND ev.ts_event >= now() - interval '60 days'
+   AND ev.ts_end IS NULL
+   AND NOT ` + humanTouchedPred
 
 // fmtCPAC formats a CPAC SQL template with the positional args the templates
 // use: %[1]s EvSchema (the DARK shadow table's home + ca_discrete residue),
@@ -487,13 +554,13 @@ func cpacApplySQL(apply, evSchema, refSchema, table, rowAlias, silverSchema, jso
 // row always has a co-scoped cleaner (never an orphan open row — the
 // int-overflow class from the EventMint↔deriver scope-mismatch bug).
 //
-// One transaction, three statements: the derivation is read ONCE as a SELECT
-// (cpacReadSQL), then the unchanged correct and upsert DML apply that snapshot.
+// One transaction, four statements: the derivation is read ONCE as a SELECT
+// (cpacReadSQL), then the correct, upsert and close DML apply that snapshot.
 // now() is the transaction's start time, so both passes see one `final` at one
 // instant. The old code computed it twice, ~20 s apart. The DML reads only the
 // target table, so its row locks are held for milliseconds, not for the
 // derivation.
-func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted int64, err error) {
+func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted, closed int64, err error) {
 	table := cfg.TargetTable
 	if table == "" {
 		table = DefaultCPACTargetTable
@@ -504,36 +571,40 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 	}
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("cpac begin: %w", err)
+		return 0, 0, 0, fmt.Errorf("cpac begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
-	if deleted, upserted, err = runCPACTx(ctx, tx, d, cfg, table, thr); err != nil {
-		return 0, 0, err
+	if deleted, upserted, closed, err = runCPACTx(ctx, tx, d, cfg, table, thr); err != nil {
+		return 0, 0, 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("cpac commit: %w", err)
+		return 0, 0, 0, fmt.Errorf("cpac commit: %w", err)
 	}
-	return deleted, upserted, nil
+	return deleted, upserted, closed, nil
 }
 
 // runCPACTx is RunOnceCPAC's body inside a caller-owned transaction (the golden
 // test runs it and the old two-statement path in ONE transaction, so both see
 // the same now()).
-func runCPACTx(ctx context.Context, tx pgx.Tx, d Dest, cfg CPACConfig, table string, thr int) (deleted, upserted int64, err error) {
+func runCPACTx(ctx context.Context, tx pgx.Tx, d Dest, cfg CPACConfig, table string, thr int) (deleted, upserted, closed int64, err error) {
 	var snapshot string
 	if err := tx.QueryRow(ctx, fmtCPACFull(cpacReadSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth),
 		cfg.Enterprises, thr).Scan(&snapshot); err != nil {
-		return 0, 0, fmt.Errorf("cpac derive: %w", err)
+		return 0, 0, 0, fmt.Errorf("cpac derive: %w", err)
 	}
 	del, err := tx.Exec(ctx, cpacApplySQL(cpacCorrectApply, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, "$2"), cfg.Enterprises, snapshot)
 	if err != nil {
-		return 0, 0, fmt.Errorf("cpac correct pass: %w", err)
+		return 0, 0, 0, fmt.Errorf("cpac correct pass: %w", err)
 	}
 	ups, err := tx.Exec(ctx, cpacApplySQL(cpacUpsertApply, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, "$1"), snapshot)
 	if err != nil {
-		return 0, 0, fmt.Errorf("cpac upsert pass: %w", err)
+		return 0, 0, 0, fmt.Errorf("cpac upsert pass: %w", err)
 	}
-	return del.RowsAffected(), ups.RowsAffected(), nil
+	cls, err := tx.Exec(ctx, cpacApplySQL(cpacCloseApply, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, "$1"), snapshot)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("cpac close pass: %w", err)
+	}
+	return del.RowsAffected(), ups.RowsAffected(), cls.RowsAffected(), nil
 }
 
 // LoopCPAC runs the CPAC derivation on a fixed cadence for every destination.
@@ -546,7 +617,7 @@ func LoopCPAC(ctx context.Context, dests []Dest, cfg CPACConfig, every time.Dura
 	jobs.Loop(ctx, jobs.Job{Name: "cpac-events-deriver", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			del, ups, err := RunOnceCPAC(ctx, d, cfg)
+			del, ups, cls, err := RunOnceCPAC(ctx, d, cfg)
 			if err != nil {
 				logger.Warn("cpac deriver pass failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
@@ -554,9 +625,9 @@ func LoopCPAC(ctx context.Context, dests []Dest, cfg CPACConfig, every time.Dura
 				}
 				continue
 			}
-			if del+ups > 0 {
+			if del+ups+cls > 0 {
 				logger.Info("cpac events derived", slog.String("dest", d.Name),
-					slog.Int64("upserted", ups), slog.Int64("corrected", del))
+					slog.Int64("upserted", ups), slog.Int64("corrected", del), slog.Int64("closed", cls))
 			}
 		}
 		return firstErr
