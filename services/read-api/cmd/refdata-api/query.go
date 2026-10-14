@@ -191,7 +191,7 @@ func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 			}
 			// task #70: the caller's id_user_role — server-derived, set only on
 			// the verified-JWT path (userRoleFromContext). The X-Api-Key operator
-			// path leaves it unset; the two role datasets then fail closed
+			// path leaves it unset; the per-user-role datasets then fail closed
 			// (errRoleDatasetNeedsUser → 403 below). NEVER from the request body.
 			roleID, roleOK := userRoleFromContext(r.Context())
 			sql, args, err = compileDataset(dq, cid, callerRole{id: roleID, present: roleOK})

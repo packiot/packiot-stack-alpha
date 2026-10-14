@@ -49,7 +49,7 @@ import (
 var errRoleDatasetNeedsUser = errors.New("dataset requires user context (front4 Firebase JWT); not available via X-Api-Key")
 
 // callerRole is the server-derived per-user axis threaded into compileDataset
-// for the two role bootstrap datasets. It comes from userRoleFromContext (set
+// for the per-user-role datasets (entities, menu, user-roles). It comes from userRoleFromContext (set
 // only on the verified-JWT path), NEVER from the request body. present=false ⇒
 // no user identity ⇒ the role datasets fail closed with errRoleDatasetNeedsUser.
 type callerRole struct {
@@ -752,11 +752,23 @@ var datasets = map[string]dataset{
 			FROM users WHERE id_enterprise = $1 AND active IS NOT FALSE`,
 		params: []dsParam{pEnt},
 	},
+	// user-roles is the CALLER's role only (2026-10-13 fix). It used to return
+	// every role of the tenant (no ORDER BY, no caller filter) and front4's
+	// bootstrap took `[0]` as the session's permissions — latent while each
+	// tenant had one role, wrong (arbitrary role's screen/line/Settings/write
+	// grants) the moment a tenant has two. Now it binds the same server-derived
+	// two-axis scope as entities/menu-per-user-role: tenant at $1 AND the
+	// caller's id_user_role at $2 (users.user_roles via the verified JWT; the
+	// target tenant's enterprise-wide role under a verified super-admin switch).
+	// No user axis (X-Api-Key, role-less user) ⇒ errRoleDatasetNeedsUser (403):
+	// fail closed, never a tenant-wide role list. The tenant-wide role list for
+	// the Settings "Users and Permissions" admin screen is edge-api's
+	// GET /api/user-roles (permission-gated), not this dataset.
 	"user-roles": {
-		group: "enterprise-config", doc: "Role definitions and permissions (user_roles)",
+		group: "enterprise-config", doc: "The caller's own role definition and permissions (user_roles), scoped to the caller's role",
 		sql: `SELECT id_user_role, nm_user_role, id_enterprise, permissions, super_user
-			FROM user_roles WHERE id_enterprise = $1`,
-		params: []dsParam{pEnt},
+			FROM user_roles WHERE id_enterprise = $1 AND id_user_role = $2`,
+		params: []dsParam{pEnt, pRole},
 	},
 
 	// ── variables-context (front4 GET_VARIABLES_CONTEXT bootstrap) ───────
