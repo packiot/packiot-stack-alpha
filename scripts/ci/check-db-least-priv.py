@@ -43,13 +43,15 @@ COMPOSE_FILES = {
 # service → (its DB role, the compose files it must appear in and is checked in)
 SERVICES = {
     "operator-gateway": ("operator_gateway", list(COMPOSE_FILES)),
-    "barcode-service": ("barcode_service", ["compose.staging.yml", "dev/compose.yml"]),  # not in production yet
-    # production still runs the pre-split `public` layout as packiot/production/db; its role comes with the
-    # production promotion (services/stream-engine/README.md § Database role)
-    "stream-engine": ("stream_engine", ["compose.staging.yml", "dev/compose.yml"]),
-    # one role, two instances (CPACK ent 3 + the sandbox twin); the DEST login only — the LEGACY source login
-    # (LEGACY_DB_*) is a different database and out of scope. Not in dev (no legacy stand-in) or production yet.
-    "legacy-replicator": ("legacy_replicator", ["compose.staging.yml"]),
+    # not in production compose (release 2 scope); add compose.production.yml when the service is promoted
+    "barcode-service": ("barcode_service", ["compose.staging.yml", "dev/compose.yml"]),
+    # production uses the role since the 2026-10 promotion (packiot/production/stream-engine-db-creds,
+    # services/stream-engine/README.md § Database role)
+    "stream-engine": ("stream_engine", list(COMPOSE_FILES)),
+    # one role, two instances on staging (CPACK ent 3 + the sandbox twin), one on production; the DEST login
+    # only — the LEGACY source login (LEGACY_DB_*) is a different database and out of scope. Not in dev (no
+    # legacy stand-in). The sandbox twin instance is staging-only.
+    "legacy-replicator": ("legacy_replicator", ["compose.staging.yml", "compose.production.yml"]),
     "legacy-replicator-sbx": ("legacy_replicator", ["compose.staging.yml"]),
 }
 
