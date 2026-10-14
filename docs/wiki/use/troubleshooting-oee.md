@@ -167,6 +167,14 @@ More detail for engineers: [Comparing with legacy](../understand/architecture/do
 
 ---
 
+## A page shows nothing or an error
+
+| What you see | What it usually means | What to do |
+|---|---|---|
+| **Reports**: "Couldn't load this report" | the report service could not let front4 in (not a problem with the client's data) | Try again in a minute. If it stays, call the platform team and send a screenshot |
+| **Home** shows 0 production and 0 % OEE on every card, but the OEE page has numbers | the home summary is behind the other pages | Wait 5 minutes and reload. If it stays at 0, call the platform team |
+| **Settings** says "Unauthorized!" | this user's role is not allowed to open Settings | Normal for operator roles. Ask CS Admin to change the role if the person needs Settings |
+
 ## Who to call, and what to send
 
 | Situation | Who | Send |
