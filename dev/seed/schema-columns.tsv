@@ -3273,14 +3273,6 @@ silver	ca_discrete_changes_1s	cagg	id_team	integer
 silver	ca_discrete_changes_1s	cagg	id_shift_hour	integer
 silver	ca_discrete_changes_1s	cagg	sub_mode	character varying
 silver	ca_discrete_changes_1s	cagg	ideal_production_speed	integer
-silver	ca_equipment_boxes_1s	cagg	ts_value	timestamp with time zone
-silver	ca_equipment_boxes_1s	cagg	id_order	text
-silver	ca_equipment_boxes_1s	cagg	id_equipment	integer
-silver	ca_equipment_boxes_1s	cagg	id_area	integer
-silver	ca_equipment_boxes_1s	cagg	id_site	integer
-silver	ca_equipment_boxes_1s	cagg	id_enterprise	integer
-silver	ca_equipment_boxes_1s	cagg	net_production	double precision
-silver	ca_equipment_boxes_1s	cagg	qty	bigint
 silver	data_quality_event	table	id	bigint
 silver	data_quality_event	table	id_enterprise	integer
 silver	data_quality_event	table	id_equipment	integer

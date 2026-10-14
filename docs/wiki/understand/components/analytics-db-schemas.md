@@ -2,7 +2,7 @@
 title: Analytics DB schemas
 layer: 3
 owner_area: analytics-db
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 ---
 # Analytics DB schemas
 
@@ -83,7 +83,6 @@ are in [Timescale jobs & retention](timescale-jobs-and-retention.md#continuous-a
 | `silver.agg_equipment_values_1min` | 1 min | `silver.equipment_values` | wide legacy-shaped layout | read-api composer (1-min windows capped at 7 days), legacy-shaped consumers |
 | `silver.agg_equipment_values_1hour` | 1 h | `silver.equipment_values` | wide; carries integer `id_production_order`, no `state` | legacy-shaped consumers |
 | `silver.ca_discrete_changes_1s` | 1 s | `silver.equipment_values` | per-second categorical values | status-4 events deriver (transition detection) |
-| `silver.ca_equipment_boxes_1s` | 1 s | `silver.equipment_values` (`analogs->'Label'`) | per-second box counts by PO | box/PO counting surface |
 
 The caggs that carry counter totals keep their float4-derived `*_val` columns marked DEPRECATED
 (2026-10-07, not rebuilt); all OEE math uses the summed increments, and exact totalizers are read

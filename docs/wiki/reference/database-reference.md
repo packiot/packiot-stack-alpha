@@ -2,7 +2,7 @@
 title: Database reference
 layer: 4
 owner_area: analytics-db
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 ---
 # Database reference
 
@@ -40,7 +40,6 @@ Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 | `silver.agg_equipment_values_1min` | cagg | 1 min, wide | Timescale 1003 | RA composer | 90 d |
 | `silver.agg_equipment_values_1hour` | cagg | 1 h, wide | Timescale 1005 | legacy-shaped reads | 13 mo |
 | `silver.ca_discrete_changes_1s` | cagg | 1 s | Timescale 1013 | CPAC deriver | 90 d |
-| `silver.ca_equipment_boxes_1s` | cagg | 1 s × PO | Timescale 1014 | box counting | 90 d |
 | `silver.plc_link_minutes` | hypertable (7 d chunks), RLS | `(id_enterprise, endpoint, ts_minute)` | SA (`internal/agent/linkhealth`) | SE (PLC link → "no data" status, availability exclusions), invariants | not in catalog |
 | `silver.plc_endpoint_equipment` | view | reader endpoint → equipment | — | SE `events/cpac_deriver.go`, invariants | — |
 | `silver.machine_state` | lookup table | PackML state code → label, running/stopped | migration | `silver.equipment_values_labeled`, `silver.equipment_events_labeled` (views) | ∞ |
@@ -117,7 +116,6 @@ Abbreviations: **SE** = `stream-engine`, **EA** = `edge-api`,
 | `agg_equipment_values_1min` | 10 d | 7 d | 90 d | 1 min / 30 min |
 | `agg_equipment_values_1hour` | 10 d | 7 d | 13 mo | 30 min / 3 d |
 | `ca_discrete_changes_1s` | 10 d | 7 d | 90 d | 15 min / 30 min |
-| `ca_equipment_boxes_1s` | 10 d | — | 90 d | 15 min / 6 h |
 | `equipment_metrics_1min` | 10 d | — | 90 d | 1 min / 3 h |
 | `equipment_categorical_1min` | 10 d | — | 90 d | 2 min / 3 h |
 | `equipment_categorical_1hour` | 10 d | — | 13 mo | 30 min / 1 d |

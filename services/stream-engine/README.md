@@ -93,7 +93,7 @@ admin. NOSUPERUSER, NOBYPASSRLS, NOINHERIT, owns nothing.
 
 | What the engine does | Privilege |
 |---|---|
-| reads dimensions and caggs: `core.{enterprises,sites,areas,shifts,shift_hours,shifts_exception_period,client_descriptors,box_production_bridges,downtime_reason,equipment_downtime_reason,equipment_validation_shift,po_number_corrections}`, `config.{label_formats,production_targets,equipment_out_of_service}`, `silver.{equipment_categorical_1min/1hour,agg_equipment_values_1min/1hour,ca_discrete_changes_1s,ca_equipment_boxes_1s,plc_endpoint_equipment,plc_link_minutes}` | SELECT |
+| reads dimensions and caggs: `core.{enterprises,sites,areas,shifts,shift_hours,shifts_exception_period,client_descriptors,box_production_bridges,downtime_reason,equipment_downtime_reason,equipment_validation_shift,po_number_corrections}`, `config.{label_formats,production_targets,equipment_out_of_service}`, `silver.{equipment_categorical_1min/1hour,agg_equipment_values_1min/1hour,ca_discrete_changes_1s,plc_endpoint_equipment,plc_link_minutes}` | SELECT |
 | inferspeed (`core.equipments`), 30700 topology (`core.packml_register` view → `core.topic_routing`) | SELECT, UPDATE |
 | PO control 30800–30805 (`core.production_orders`, `products`, `product_families`, `clients`) | SELECT, INSERT, UPDATE |
 | ingest + live tables (`silver.equipment_values`, `equipment_events_man`, `data_quality_event`, `equipment_live_*`, `area_live_*`) | SELECT, INSERT, UPDATE |

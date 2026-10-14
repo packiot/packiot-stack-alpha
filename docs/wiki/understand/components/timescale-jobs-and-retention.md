@@ -2,7 +2,7 @@
 title: Timescale jobs and retention
 layer: 3
 owner_area: analytics-db
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 ---
 # Timescale jobs and retention
 
@@ -71,7 +71,7 @@ table keeps growing by one row per tenant × PLC endpoint × minute.
 
 ### Continuous aggregates
 
-All seven are real-time (`materialized_only = false`). Materialization hypertables use
+All six are real-time (the seventh, `silver.ca_equipment_boxes_1s`, was dropped by `t-drop-ca-equipment-boxes-1s`, ADR-0063 Phase A1) (`materialized_only = false`). Materialization hypertables use
 10-day chunks. Refresh and compression settings match `scripts/promotion/transplant/10-policies.sql`,
 which copies staging's.
 
@@ -80,7 +80,6 @@ which copies staging's.
 | `silver.agg_equipment_values_1min` | 1 min | `silver.equipment_values` | 12 | 1003: 1 min, `[now-30 min, now-1 min]` | 1036: after 7 d | 1048: 90 d | 600 MB |
 | `silver.agg_equipment_values_1hour` | 1 h | `silver.equipment_values` | 14 | 1005: 30 min, `[now-3 d, now-1 h]` | 1038: after 7 d | 1090: 13 months | 42 MB |
 | `silver.ca_discrete_changes_1s` | 1 s | `silver.equipment_values` | 22 | 1013: 15 min, `[now-30 min, now-1 min]` | 1034: after 7 d | 1046: 90 d | 3.5 GB |
-| `silver.ca_equipment_boxes_1s` | 1 s | `silver.equipment_values` | 23 | 1014: 15 min, `[now-6 h, now-1 min]` | none | 1091: 90 d | 56 kB |
 | `silver.equipment_metrics_1min` | 1 min (`bucket`) | `silver.equipment_values` | 53 | 1057: 1 min, `[now-3 h, now-1 min]` | none | 1095: 90 d | 1.19 GB |
 | `silver.equipment_categorical_1min` | 1 min | `silver.equipment_values` | 60 | 1064: 2 min, `[now-3 h, now-2 min]` | none | 1093: 90 d | 2.4 GB |
 | `silver.equipment_categorical_1hour` | 1 h | `silver.equipment_categorical_1min` (hierarchical) | 64 | 1068: 30 min, `[now-1 d, now-1 h]` | none | 1092: 13 months | 70 MB |
@@ -107,7 +106,6 @@ transplant) assigns its own IDs; look jobs up by `proc_name` and `hypertable_nam
 | 1003 | cagg refresh | `agg_equipment_values_1min` | 1 min | start 30 min, end 1 min |
 | 1005 | cagg refresh | `agg_equipment_values_1hour` | 30 min | start 3 days, end 1 h |
 | 1013 | cagg refresh | `ca_discrete_changes_1s` | 15 min | start 30 min, end 1 min |
-| 1014 | cagg refresh | `ca_equipment_boxes_1s` | 15 min | start 6 h, end 1 min |
 | 1057 | cagg refresh | `equipment_metrics_1min` | 1 min | start 3 h, end 1 min |
 | 1064 | cagg refresh | `equipment_categorical_1min` | 2 min | start 3 h, end 2 min |
 | 1068 | cagg refresh | `equipment_categorical_1hour` | 30 min | start 1 day, end 1 h |
@@ -124,7 +122,6 @@ transplant) assigns its own IDs; look jobs up by `proc_name` and `hypertable_nam
 | 1088 | retention | `bronze.equipment_events_raw` | 1 day | 90 days |
 | 1089 | retention | `bronze.equipment_values_raw` | 1 day | 90 days |
 | 1090 | retention | `agg_equipment_values_1hour` | 1 day | 1 year 1 month |
-| 1091 | retention | `ca_equipment_boxes_1s` | 1 day | 90 days |
 | 1092 | retention | `equipment_categorical_1hour` | 1 day | 1 year 1 month |
 | 1093 | retention | `equipment_categorical_1min` | 1 day | 90 days |
 | 1094 | retention | `silver.equipment_events` | 1 day | 5 years |
@@ -167,7 +164,7 @@ live on staging):
 | hot_raw | `silver.equipment_values` | hypertable | 90 days | historian `equipment_values` |
 | hot_raw | `bronze.equipment_values_raw`, `bronze.equipment_events_raw` | hypertable | 90 days | — |
 | hot_raw | `silver.plc_link_minutes` (`t-plc-link-minutes-retention`) | hypertable | 90 days | — (NO DATA spans persist in `silver.equipment_events`) |
-| hot_raw | `ca_discrete_changes_1s`, `ca_equipment_boxes_1s`, `agg_equipment_values_1min`, `equipment_metrics_1min`, `equipment_categorical_1min` | cagg | 90 days | derivable |
+| hot_raw | `ca_discrete_changes_1s`, `agg_equipment_values_1min`, `equipment_metrics_1min`, `equipment_categorical_1min` | cagg | 90 days | derivable |
 | hot_agg | `agg_equipment_values_1hour`, `equipment_categorical_1hour` | cagg | 13 months | — |
 | hot_agg | `gold.equipment_oee_hourly` | plain (purge job) | 13 months | — |
 | hot_agg | `gold.equipment_oee_{shift,daily,weekly,monthly,shift_weekly,shift_monthly}`, `gold.area_oee_{shift,daily}`, `gold.site_oee_shift` | plain | forever | historian `equipment_oee_shift` (shift) |
@@ -217,7 +214,7 @@ The server flags (`shared_preload_libraries`, `max_connections=200`, `pg_stat_st
 | Signal | Where |
 |---|---|
 | job status | `SELECT * FROM timescaledb_information.job_stats` (`last_run_status`, `total_failures`) and `timescaledb_information.job_errors`; alert `AnalyticsTimescaleJobFailing` (last run failed and the job has run at least once) |
-| cagg lag | `_timescaledb_functions.to_timestamp(_timescaledb_functions.cagg_watermark(mat_hypertable_id))` from `_timescaledb_catalog.continuous_agg`; alert `AnalyticsCaggRefreshLag` when time since the last successful refresh exceeds `clamp_min(2 × schedule, 900 s)`. `ca_equipment_boxes_1s` had a `-infinity` watermark on 2026-09-28 (no source row carries `analogs->'Label'`): empty, not stalled |
+| cagg lag | `_timescaledb_functions.to_timestamp(_timescaledb_functions.cagg_watermark(mat_hypertable_id))` from `_timescaledb_catalog.continuous_agg`; alert `AnalyticsCaggRefreshLag` when time since the last successful refresh exceeds `clamp_min(2 × schedule, 900 s)`. `ca_equipment_boxes_1s` had a `-infinity` watermark on 2026-09-28 (no source row carries `analogs->'Label'`): empty, not stalled; dropped 2026-10-14 (`t-drop-ca-equipment-boxes-1s`) |
 | retention | alerts `RetentionPolicyDrift` (drift rows) and `RetentionPurgeErrors` (errors in `ops.retention_run`), from the `pg_retention_*` exporter queries |
 | data invariants | `ops.data_invariant_latest`; alerts `DataInvariantCritical`, `DataInvariantWarn`, `DataInvariantsStale` (no completed run for > 90 min), `DataInvariantsSlow` (battery averaging > 400 s of its 600 s budget) |
 | disk | `HostDiskHigh` at 80 % on the DB host |
@@ -234,7 +231,7 @@ The server flags (`shared_preload_libraries`, `max_connections=200`, `pg_stat_st
 | Refresh over dropped raw | aggregated history disappears | `refresh_continuous_aggregate(..., NULL, NULL)` or a wide window after retention | refresh only inside the raw horizon |
 | Cagg DDL blocks | `DROP MATERIALIZED VIEW` of a cagg times out even with policies paused | ingest's invalidation trigger on the source hypertable holds the lock | quiesce `stream-engine` (RabbitMQ buffers), then DDL |
 | Whole-history aggregate crashes the cluster (2026-09-24) | kernel OOM kill, all sessions reset | chunk-wise partial aggregation builds thousands of hash nodes (1,599 chunks) | merge chunks; `SET timescaledb.enable_chunkwise_aggregation = off` and narrow windows |
-| Cagg that never materializes (found 2026-10-14) | job 1014 refreshes `ca_equipment_boxes_1s` every 15 min for ~108 s (≈ 12 % of one vCPU); the cagg holds 0 rows | its watermark is −infinity, so every refresh and every real-time read works over raw rows and finds nothing (root cause of the 108 s **unverified**) | ADR-0063 Phase A: prove the readers get nothing, then drop the policy or the cagg |
+| Cagg that never materializes (found 2026-10-14, fixed by `t-drop-ca-equipment-boxes-1s`) | job 1014 refreshed `ca_equipment_boxes_1s` every 15 min for ~108 s (≈ 12 % of one vCPU); the cagg held 0 rows, watermark −infinity | the refresh policy splits its window into one-bucket batches (1 s × 6 h = 21,540 candidates) and tests each against every row of the cagg's invalidation log; 40,109 stale 1-second ranges from late writes **outside** the 6 h window are never consumed, so each run did ~8.6 × 10⁸ range checks for nothing (reproduced on 2.27.0: 42 s with 39,703 ranges, 7 ms with none) | dropped (no source rows, no flagged equipment, readers stubbed with identical output). Watch the same pattern on any 1-second cagg: `ca_discrete_changes_1s` has 48,906 such ranges (job 1013, ~27 s) |
 | Real-time cagg read inside DML (2026-10-14, #1770) | an upsert that read `equipment_categorical_1min` went from 1.3 s to 14 s, all CPU | Timescale constifies the real-time watermark only when planning a `SELECT`; inside `INSERT`/`DELETE` the planner prices the raw tail at every chunk | read the cagg in a separate `SELECT`, then write (`events/cpac_deriver.go`) |
 
 ## Is TimescaleDB still needed?
