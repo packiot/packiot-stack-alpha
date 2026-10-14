@@ -27,7 +27,7 @@ current.
 
 | | |
 |---|---|
-| Engine | PostgreSQL 15.17 + TimescaleDB 2.27.0 (observed 2026-09-28; container `timescaledb`, image built from `db/Dockerfile` on the unpinned `timescale/timescaledb:latest-pg15`) |
+| Engine | PostgreSQL 15.17 + TimescaleDB 2.27.0 (observed 2026-09-28; container `timescaledb`, image built from `db/Dockerfile` on `timescale/timescaledb:2.27.0-pg15`, pinned by digest since 2026-10-14; `latest-pg15` had moved to 2.28.3) |
 | Database | `packiot_analytics`, 14 GB on 2026-09-28 |
 | Host (staging) | DB EC2 `i-064bb36d1c454d861`, 10.10.10.89:5432 |
 | Extensions | `timescaledb`, `pg_stat_statements`, `btree_gist`, `dblink`, `plpgsql` |

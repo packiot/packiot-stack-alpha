@@ -2,7 +2,7 @@
 title: Analytics DB
 layer: 2
 owner_area: analytics-db
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 ---
 # Analytics DB
 
@@ -60,7 +60,7 @@ across databases.
 
 | Component | What it does | Runtime | Layer-3 page |
 |---|---|---|---|
-| `timescaledb` container | PostgreSQL 15 + TimescaleDB (image `packiot-postgres:local`, built from `db/Dockerfile` on `timescale/timescaledb:latest-pg15`, arm64). The dev seed pins the same versions as staging: PG 15.17 / TimescaleDB 2.27.0 | DB host `packiot-staging-db`, port 5432 (started by `terraform/staging/user_data/db_init.sh`) | [Schemas](../components/analytics-db-schemas.md) |
+| `timescaledb` container | PostgreSQL 15 + TimescaleDB (image `packiot-postgres:local`, built from `db/Dockerfile` on `timescale/timescaledb:2.27.0-pg15`, pinned by digest since 2026-10-14, arm64). The dev seed and the CI golden fixtures use the same pinned image: PG 15.17 / TimescaleDB 2.27.0 | DB host `packiot-staging-db`, port 5432 (started by `terraform/staging/user_data/db_init.sh`) | [Schemas](../components/analytics-db-schemas.md) |
 | Timescale background jobs | cagg refresh, compression, retention, the catalog-driven purge, `serving.downtime_events_resolved` refresh, the data-invariant battery | inside Postgres | [Timescale jobs & retention](../components/timescale-jobs-and-retention.md) |
 | `pgbouncer` | transaction-mode pooler for stateless clients | app host, `edoburu/pgbouncer:1.22.1-p0` | this page, [Interfaces](#interfaces) |
 | `bi` schema + `superset_ro` | curated, RLS-fenced views for Superset | inside Postgres + Superset | [Superset](../components/superset.md) |

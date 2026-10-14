@@ -1,6 +1,15 @@
+# Base image PINNED (ADR-0063 Phase A4, 2026-10-14) to the exact image staging runs:
+# timescale/timescaledb:2.27.0-pg15 (PostgreSQL 15.17, Alpine 3.22). The digest is the
+# multi-arch index that `docker images --digests` shows for the base on the staging DB
+# host (built 2026-05-18 from `latest-pg15`, which then pointed here). `latest-pg15` has
+# since moved to TimescaleDB 2.28.3 / PostgreSQL 15.18, so an unpinned rebuild would
+# have upgraded the extension silently. Change this only together with an
+# `ALTER EXTENSION timescaledb UPDATE` plan (ADR-0063 "Version alignment").
+ARG TIMESCALE_IMAGE=timescale/timescaledb:2.27.0-pg15@sha256:3f77046809de51aacf70719c3662f05e0bf9d29c0c7f9d8bda6bb57a0c6fe400
+
 # Stage 1 — compile pg_cron from source against the timescale image headers.
-# timescale/timescaledb:latest-pg15 is Alpine-based (no apk pg_cron package).
-FROM timescale/timescaledb:latest-pg15 AS builder
+# The timescale image is Alpine-based (no apk pg_cron package).
+FROM ${TIMESCALE_IMAGE} AS builder
 
 RUN apk add --no-cache \
         build-base \
@@ -24,7 +33,7 @@ RUN chmod +x /usr/local/bin/clang-19 \
     && make && make install
 
 # Stage 2 — clean runtime image with pg_cron extension copied in.
-FROM timescale/timescaledb:latest-pg15
+FROM ${TIMESCALE_IMAGE}
 
 COPY --from=builder \
     /usr/local/lib/postgresql/pg_cron.so \
