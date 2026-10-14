@@ -185,6 +185,10 @@ check the `historian-integrity-monitor` systemd unit.
   (gold tables use `id_equipment = ANY (ARRAY(SELECT … FROM equipments WHERE id_enterprise = …))`).
   Keep the helpers wrapped in `(SELECT …)` so they run once per query; a correlated
   `EXISTS` per row made one endpoint 61 s for `readapi_ro` vs 1.9 s as superuser (2026-09-24).
+- The helpers must stay `STABLE PARALLEL SAFE LEAKPROOF`. A `CREATE OR REPLACE FUNCTION` without
+  those clauses resets them to `PARALLEL UNSAFE`, and then every query a NOBYPASSRLS role
+  (`stream_engine`, `readapi_ro`, `bi_owner`, …) runs over an RLS table loses its parallel plan
+  (`t-rls-helpers-parallel-safe`, 2026-10-14). Its `verify.sql` V1–V4 check this.
 - Under RLS, only **leakproof** operators can be index conditions. B-tree comparisons on one
   type are leakproof; range operators (`<@`, `&&`) and cross-type comparisons (a `date`
   column against a `timestamptz` bound) are not. Add a redundant, same-typed "twin"

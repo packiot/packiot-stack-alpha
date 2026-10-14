@@ -163,6 +163,9 @@ These tables have `ENABLE` + `FORCE ROW LEVEL SECURITY` and a policy named `tena
 With the GUC unset, `current_tenant()` is NULL and every policy denies (fail-closed); `-1` is
 the all-tenant sentinel. The `(SELECT fn())` wrapping makes the helpers InitPlans, evaluated
 once per query instead of once per row (`t-rls-initplan-policies`, 2026-09-24).
+Both helpers are `STABLE PARALLEL SAFE LEAKPROOF` (`t-rls-helpers-parallel-safe`, 2026-10-14):
+while they were `PARALLEL UNSAFE` (the `CREATE FUNCTION` default), no query a NOBYPASSRLS role ran
+over an RLS table could get a parallel plan.
 
 | Role | Superuser | BYPASSRLS | Fence |
 |---|---|---|---|
