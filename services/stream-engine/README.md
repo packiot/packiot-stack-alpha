@@ -82,8 +82,54 @@ when `PO_CONTROL_ENABLED`, and `silver.data_quality_event`. Jobs read the caggs
 (`silver.equipment_categorical_1min/_1hour`, `silver.ca_discrete_changes_1s`) and write
 `gold.equipment_oee_{hourly,daily,weekly,monthly,shift}`, `gold.area_oee_*`, `gold.site_oee_shift`,
 `silver.equipment_live_*`, `silver.area_live_*` and `customer_reports.*`. Reads `packml_register`,
-`areas`, `equipments`, `sites`, `shift_hours`, `client_descriptors` (line-lead profile). At boot it calls
-`_timescaledb_functions.start_background_workers()`.
+`areas`, `equipments`, `sites`, `shift_hours`, `client_descriptors` (line-lead profile). At boot it starts
+the TimescaleDB scheduler (`_timescaledb_functions.start_background_workers()`, through the wrapper below).
+
+#### Database role
+
+Staging logs in as the least-privilege **`stream_engine`** role
+([`db/migrations/t-stream-engine-role/`](../../db/migrations/t-stream-engine-role/)), never the Postgres
+admin. NOSUPERUSER, NOBYPASSRLS, NOINHERIT, owns nothing.
+
+| What the engine does | Privilege |
+|---|---|
+| reads dimensions and caggs: `core.{enterprises,sites,areas,shifts,shift_hours,shifts_exception_period,client_descriptors,box_production_bridges,downtime_reason,equipment_downtime_reason,equipment_validation_shift,po_number_corrections}`, `config.{label_formats,production_targets,equipment_out_of_service}`, `silver.{equipment_categorical_1min/1hour,agg_equipment_values_1min/1hour,ca_discrete_changes_1s,ca_equipment_boxes_1s,plc_endpoint_equipment,plc_link_minutes}` | SELECT |
+| inferspeed (`core.equipments`), 30700 topology (`core.packml_register` view → `core.topic_routing`) | SELECT, UPDATE |
+| PO control 30800–30805 (`core.production_orders`, `products`, `product_families`, `clients`) | SELECT, INSERT, UPDATE |
+| ingest + live tables (`silver.equipment_values`, `equipment_events_man`, `data_quality_event`, `equipment_live_*`, `area_live_*`) | SELECT, INSERT, UPDATE |
+| event deriver / CPAC deriver rewrite windows (`silver.equipment_events`, `equipment_events_cpac_shadow`) | SELECT, INSERT, UPDATE, DELETE |
+| gold grains + `gold.production_orders_runtime` (provision + rollups) | SELECT, INSERT, UPDATE |
+| bronze raw append, `identity.user_logs` | INSERT |
+| customer reports (`production_data_sync`, `sap_data_sync`, `boxes`; `shift` is delete-and-reinsert) | SELECT, INSERT, UPDATE / SELECT, INSERT, DELETE |
+| sequences behind serial INSERT targets (9, incl. `core.production_orders_internal_id_order_seq` used by the PO-number trigger) | USAGE |
+| rollup temp tables (`ON COMMIT DROP`, indexed, `ANALYZE`d) | TEMPORARY on the database |
+| INVOKER engine functions: `public.piot_get_*` (6), `public.piot_create_*` (11), `serving.data_sync`, `serving.report_shift`, `core.try_int4/8`, the RLS helpers | EXECUTE |
+| the one superuser-only call, `_timescaledb_functions.start_background_workers()` | EXECUTE on the SECURITY DEFINER wrapper `public.ensure_timescaledb_workers()` (no args, pinned `search_path`, does only that, granted to `stream_engine` alone) |
+
+Not granted: DDL, TRUNCATE, REFERENCES, TRIGGER, COPY, `identity.users`, anything in `ops`. None of
+the engine's SQL needs them (no cagg refresh, compress/decompress, jobs API, `SET ROLE` or
+`session_replication_role` in the shipped binary). `SET LOCAL
+timescaledb.max_tuples_decompressed_per_dml_transaction`, `SET statement_timeout` and `SET search_path` are
+user-settable, and DML on compressed chunks needs only the hypertable's grants.
+
+**RLS.** The engine is cross-tenant by design: every loop walks all enterprises and ingest writes any
+tenant. Instead of BYPASSRLS, the role is NOBYPASSRLS with a role-level default
+`app.tenant_id = '-1'`, the all-tenant sentinel (`is_all_tenant()`), as `histgw_ro` already uses. The
+reach is the same, but every policy is still evaluated, so a future policy without the sentinel fails
+closed for the engine instead of being skipped.
+
+**Proof.** `verify.sql` pins the exact grant set (V4: 69 table and sequence grants, missing/extra/wrong
+= 0|0|0). The real binary ran as the role on the dev seed with every loop staging enables, plus the
+report jobs, CPAC (shadow + live), boxes, widerow events and legacy ingest:
+- Every job tick was `ok` (`provisional-speed-inference` fails the same way as the admin login, on
+  a seed column it does not have).
+- Ingest wrote silver and bronze rows.
+- Published PO-control parameters ran: 30805, 30800, 30801, 30810–30814, 30820, 30861, 30862 and 30880.
+  30700 failed on a seed data NOT NULL, the same as the admin login.
+
+That run found two grants the static inventory missed: the PO-number trigger's sequence and its
+`core.po_number_corrections` lookup, both now granted. In CI, the dev-slices "pipeline" slice runs the
+engine as the role.
 
 ## Configuration
 
@@ -94,9 +140,9 @@ Booleans are on only when exactly `true`. Staging values are in `compose.staging
 
 | Name | Default | Effect |
 |---|---|---|
-| `CREDS_SOURCE` | unset | `env` = `DB_*` / `RABBITMQ_USER`/`RABBITMQ_PASSWORD` from env (staging uses this for the DB: `DB_HOST` = DB EC2, `DB_NAME=packiot_analytics`) |
-| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | `postgres`, `5432`, `packiot`, –, – | DB in env mode (user/password required) |
-| `AWS_REGION`, `PG_SECRET_ID`, `RABBITMQ_SECRET_ID` | `us-east-1`, `packiot/staging/db`, `packiot/staging/rabbitmq-stream-engine-creds` | Secrets Manager ids |
+| `CREDS_SOURCE` | unset | `env` = `DB_*` / `RABBITMQ_USER`/`RABBITMQ_PASSWORD` from env (dev only; staging leaves it unset) |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | `postgres`, `5432`, `packiot`, –, – | DB in env mode (user/password required; dev: `stream_engine` / `dev`) |
+| `AWS_REGION`, `PG_SECRET_ID`, `RABBITMQ_SECRET_ID` | `us-east-1`, **none** (empty = boot error, never the admin `packiot/staging/db`), `packiot/staging/rabbitmq-stream-engine-creds` | Secrets Manager ids. Staging `PG_SECRET_ID` = `${STREAM_ENGINE_PG_SECRET_ID:-packiot/staging/stream-engine-db-creds}` (`stream_engine` role) |
 | `RABBITMQ_HOST`, `RABBITMQ_PORT` | `rabbitmq`, `5672` | broker |
 | `POSTGRES_ANALYTICS_DB_NAME` | empty | analytics pool DB; empty = `refactored` routes to the main pool |
 | `POSTGRES_MAX_CONNS`, `POSTGRES_ANALYTICS_MAX_CONNS` | `5`, `15` | pool sizes |
@@ -167,6 +213,49 @@ fixtures" in `.github/workflows/go-services.yml`); a test failing because you "f
 is working as intended — change the port and its golden together. `dev/e2e/replay-parity.sql` checks
 replayed gross against the seed. `cmd/port-parity` renders legacy-vs-Go diff SQL; `cmd/recompute-render`
 renders the history-recompute SQL from the current code (see the runbook below).
+
+## Provisioning the DB role
+
+Once per environment, **before** the compose change that points the engine at the role is deployed (a
+deploy without the secret exits at boot: `fetch db secret failed`). This is the OEE engine for every
+tenant, so do it in a quiet window and watch step 6. Staging commands; no password leaves a host.
+
+1. **Apply the migration** on the DB host (`packiot-staging-db`), as in
+   [Add a migration, steps 8–9](../../docs/wiki/build/develop/add-a-migration.md#8-dry-run-on-staging):
+   - Dry-run `01-up.sql` with `COMMIT` changed to `ROLLBACK`, then apply it.
+   - Run `verify.sql`. Every `V` line matches its label, and `I1` is `f`.
+   - V10 runs as the role inside `BEGIN … ROLLBACK`: a cross-tenant read through FORCE RLS, the
+     wrapper, and the TRUNCATE/DDL/DELETE denials.
+2. **Copy `scripts/ops/provision-db-role.py`** to the app host (`base64 -w0`, as in the barcode-service
+   README), unless it is already there.
+3. **Create the secret and set the password:** `python3 /root/provision-db-role.py --service stream-engine`.
+   - It creates `packiot/staging/stream-engine-db-creds` =
+     `{host: 10.10.10.89, port: 5432, user: stream_engine, password, name: packiot_analytics}` (direct, like
+     today).
+   - It sets the SCRAM verifier, then logs in as the role.
+   - Expect `4. login OK as stream_engine via 10.10.10.89/packiot_analytics (app.tenant_id=-1; …)`.
+4. **Re-run `verify.sql`**: `I1` is now `t`.
+5. **Merge and deploy.** "Deploy to Staging" recreates `stream-engine` with no `.env`. Its own tuning keys
+   from `.env` (`CPAC_EVENT_*` and the rest) still arrive through the explicit pass-through block.
+6. **Verify, in the first 15 minutes:**
+   - `docker logs stream-engine 2>&1 | grep -E 'secrets fetched|background workers'` shows
+     `postgres://stream_engine:***@10.10.10.89…` and `ensured … background workers are running`.
+   - `docker logs --since 15m stream-engine 2>&1 | grep -c 'permission denied'` returns `0`.
+   - `oeecloud_worker_job_ticks_total{outcome="error"}` stays flat, and `EngineJobErrorStreak` and
+     `WritePathDry` stay quiet.
+   - Fresh `silver.equipment_values` rows arrive per tenant.
+   - On the DB host, `SELECT usename, count(*) FROM pg_stat_activity WHERE application_name LIKE 'oeecloud-worker%' GROUP BY 1;`
+     lists only `stream_engine`.
+   - `docker inspect stream-engine --format '{{json .Config.Env}}' | grep -c -E 'POSTGRES_(USER|PASSWORD)|RABBITMQ_(USER|PASSWORD)'`
+     returns `0`.
+
+**Emergency rollback (no redeploy):** set `STREAM_ENGINE_PG_SECRET_ID=packiot/staging/db` in
+`/opt/packiot/.env`, then run `docker compose -f compose.staging.yml -p stack up -d --force-recreate stream-engine`.
+The engine is back on the admin login. Fix the grant, then remove the override. **Full rollback:** revert the
+compose change and redeploy, then run `rollback.sql`. **Rotate:** `provision-db-role.py --service stream-engine
+--rotate`, then recreate the container. **Production** still runs the pre-split `public` layout as
+`packiot/production/db` and is unchanged here. Its role belongs to the production promotion: the transplant
+makes it the analytics layout, and this migration applies there as-is.
 
 ## Operating it
 

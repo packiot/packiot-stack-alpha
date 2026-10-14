@@ -40,7 +40,7 @@ Checkout: `origin/staging @ 28356ccc` (branch `docs/p0-dev-contracts`). All path
 
 | Dependency | Services | Configurable by env? |
 |---|---|---|
-| AWS Secrets Manager (`GetSecretValue`) | sparkplug-decoder, ingest-shim, oeecloud-fanout, mirror-worker-go (used); stream-engine, operator-gateway (bypassed by `CREDS_SOURCE=env` on staging) | yes — `CREDS_SOURCE=env` + `RABBITMQ_USER/PASSWORD` / `DB_*` |
+| AWS Secrets Manager (`GetSecretValue`) | sparkplug-decoder, ingest-shim, oeecloud-fanout, mirror-worker-go, stream-engine, operator-gateway, barcode-service (DB logins: their own least-privilege roles) | yes — `CREDS_SOURCE=env` + `DB_*` (dev) |
 | AWS Cognito JWKS (`us-east-1_0T9t1sTwt`) | read-api, barcode-service | read-api: `COGNITO_ISSUER` + `COGNITO_JWKS_URL`; barcode-service: `COGNITO_ISSUER` only (JWKS = issuer + `/.well-known/jwks.json`) |
 | Google securetoken x509 (Firebase) | barcode-service (active: `FIREBASE_PROJECT_ID=""` falls back to `fbpackiot`) | URL hard-coded; project id only overridable to non-empty |
 | Legacy CPACK prod Postgres `18.220.223.110:5432/packiot40` | legacy-replicator(-sbx); mirror-worker-go (host via secret `databaseCredentials`) | yes — `LEGACY_DB_*` |
@@ -502,11 +502,11 @@ All of these are read in `services/stream-engine/internal/config/config.go:427-5
 | Var | Default (file:line) | Staging (CS line) |
 |---|---|---|
 | AWS_REGION | us-east-1 (:429) | us-east-1 (1883) — **AWS** |
-| PG_SECRET_ID | packiot/staging/db (:430) | same (1884) — **AWS SM**. Ignored when CREDS_SOURCE=env |
+| PG_SECRET_ID | none → boot error (`internal/config/config.go`, `internal/secrets/secrets.go` `FetchDBCreds`) | `${STREAM_ENGINE_PG_SECRET_ID:-packiot/staging/stream-engine-db-creds}` — **AWS SM**, the least-privilege `stream_engine` role (`db/migrations/t-stream-engine-role`) |
 | RABBITMQ_SECRET_ID | packiot/staging/rabbitmq-stream-engine-creds (:431) | same (1920) — **AWS SM**. Ignored when CREDS_SOURCE=env |
-| CREDS_SOURCE | unset (`services/stream-engine/internal/secrets/secrets.go:122,170`) | `env` (1885). Skips Secrets Manager for **both** DB and AMQP |
-| DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME | postgres / 5432 / required / required / packiot (`services/stream-engine/internal/secrets/secrets.go:242-249`) | 10.10.10.89 / 5432 / ${POSTGRES_USER} / ${POSTGRES_PASSWORD} / packiot_analytics (1904-1908) |
-| RABBITMQ_USER / RABBITMQ_PASSWORD | required when CREDS_SOURCE=env (`services/stream-engine/internal/secrets/secrets.go:267-271`) | **not in the compose env block**, so they must come from `.env` (UNPROVEN) |
+| CREDS_SOURCE | unset (`services/stream-engine/internal/secrets/secrets.go`) | unset (dev: `env`). `AMQP_CREDS_SOURCE=aws` pins AMQP to Secrets Manager |
+| DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME | postgres / 5432 / required / required / packiot (`services/stream-engine/internal/secrets/secrets.go` env mode) | not set; the secret holds 10.10.10.89 / 5432 / `stream_engine` / — / packiot_analytics. No `env_file`; engine keys from `.env` passed through as `${KEY:-}` |
+| RABBITMQ_USER / RABBITMQ_PASSWORD | required when the AMQP source is env (`services/stream-engine/internal/secrets/secrets.go`) | not set (no `env_file`; `AMQP_CREDS_SOURCE=aws`) |
 | RABBITMQ_HOST / RABBITMQ_PORT | rabbitmq / 5672 (:432-433; `services/stream-engine/internal/secrets/secrets.go:272-275`) | rabbitmq / 5672 (1921-1922) |
 | SOURCE_EXCHANGE | oee (:434) | oee (1923) |
 | WORKER_QUEUE | stream-engine-q (:435) | stream-engine-q (1924) |
@@ -561,7 +561,7 @@ All of these are read in `services/stream-engine/internal/config/config.go:427-5
 Stale compose vars that the code does not read: COUNTERS_ONLY_* vars are all read, but none of the SPEED33_*, REFSYNC_*, or SHADOW_GO_PORT_ENABLED vars are (compose comments CS:1976, 2018-2022 say they were removed, and grep of config.go finds none).
 
 ### 3. PostgreSQL
-- **Connection.** Two pgx pools, both direct to `10.10.10.89:5432`, which bypasses pgbouncer by design (CS:1886-1904). The role is `${POSTGRES_USER}` (CS:1906). The DSN is built with `sslmode=disable` (`services/stream-engine/internal/secrets/secrets.go:216-228`).
+- **Connection.** Two pgx pools, both direct to `10.10.10.89:5432`, which bypasses pgbouncer by design. The role is the least-privilege `stream_engine` (NOBYPASSRLS, role default `app.tenant_id=-1`; `db/migrations/t-stream-engine-role`), from Secrets Manager. The DSN is built with `sslmode=disable` (`services/stream-engine/internal/secrets/secrets.go`).
   - Main pool: `db.New`, DB = `DB_NAME` = **packiot_analytics** on staging (CS:1908; `services/stream-engine/cmd/oeecloud-worker/main.go:118`).
   - Analytics pool: `db.NewForDatabase(..., POSTGRES_ANALYTICS_DB_NAME="packiot_analytics", app "oeecloud-worker-analytics")` (`services/stream-engine/cmd/oeecloud-worker/main.go:131-132`). On staging, therefore, **both pools point at packiot_analytics**.
   - The analytics pool sets `statement_timeout = 0` per connection (`services/stream-engine/internal/db/pool.go:91`) and uses simple protocol (`services/stream-engine/internal/db/pool.go:67`).

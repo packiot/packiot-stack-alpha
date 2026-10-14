@@ -160,9 +160,9 @@ start-up and are **added** to the env lists below (env is the floor).
 | Variable | Staging | Default | Meaning |
 |---|---|---|---|
 | `LOG_LEVEL` | `info` | `info` | log verbosity |
-| `AWS_REGION`, `PG_SECRET_ID`, `CREDS_SOURCE` | `us-east-1`, `packiot/staging/db`, `env` | `us-east-1`, `packiot/staging/db`, — | take DB creds from env (not Secrets Manager) |
+| `AWS_REGION`, `PG_SECRET_ID`, `CREDS_SOURCE` | `us-east-1`, `${STREAM_ENGINE_PG_SECRET_ID:-packiot/staging/stream-engine-db-creds}`, — | `us-east-1`, none (boot error), — | DB login as the least-privilege `stream_engine` role from Secrets Manager; no `env_file` (engine keys from `.env` passed through explicitly). [Provisioning](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/stream-engine/README.md#provisioning-the-db-role) |
 | `AMQP_CREDS_SOURCE` | `aws` | follows `CREDS_SOURCE` | AMQP creds from `RABBITMQ_SECRET_ID` (least-privilege `stream-engine`), not the admin in `.env` |
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `10.10.10.89`, `5432`, from `.env`, from `.env`, `packiot_analytics` | `postgres`, `5432`, —, —, `packiot` | direct DB connection (not pgbouncer) |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | not set (in the secret: `10.10.10.89`, `5432`, `stream_engine`, —, `packiot_analytics`) | `postgres`, `5432`, —, —, `packiot` | direct DB connection (not pgbouncer); never the admin `POSTGRES_*` (CI `check-db-least-priv.py`) |
 | `POSTGRES_ANALYTICS_DB_NAME` | `packiot_analytics` | empty | analytics DB name |
 | `POSTGRES_MAX_CONNS`, `POSTGRES_ANALYTICS_MAX_CONNS` | `5`, `15` | same | pool sizes |
 | `RABBITMQ_SECRET_ID`, `RABBITMQ_HOST`, `RABBITMQ_PORT` | `…/rabbitmq-stream-engine-creds`, `rabbitmq`, `5672` | same | broker |

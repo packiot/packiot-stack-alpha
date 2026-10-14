@@ -375,20 +375,20 @@ transaction mode would break.
 
 Defaults are from `internal/config/config.go` (plus `internal/secrets/` and `internal/tracing/`);
 booleans are on only when exactly `true`. Staging values are from `compose.staging.yml`; "—" means
-not set there (code default, unless the host `/opt/packiot/.env`, read through `env_file`,
-overrides it; that file is not in git).
+not set there (code default, unless the host `/opt/packiot/.env` sets it; compose passes those keys
+through explicitly with `${KEY:-}` since `env_file` was removed; that file is not in git).
 
 ### Connectivity and ingest
 
 | Variable | Default | Staging | Effect |
 |---|---|---|---|
 | `AWS_REGION` | `us-east-1` | `us-east-1` | |
-| `PG_SECRET_ID` | `packiot/staging/db` | same | DB credentials in Secrets Manager (unused with `CREDS_SOURCE=env`) |
+| `PG_SECRET_ID` | none (empty = boot error) | `${STREAM_ENGINE_PG_SECRET_ID:-packiot/staging/stream-engine-db-creds}` | DB login: the least-privilege `stream_engine` role (`db/migrations/t-stream-engine-role`; NOBYPASSRLS, role default `app.tenant_id=-1`). [Provisioning](https://github.com/packiot/packiot-stack-alpha/blob/staging/services/stream-engine/README.md#provisioning-the-db-role) |
 | `RABBITMQ_SECRET_ID` | `packiot/staging/rabbitmq-stream-engine-creds` | same | AMQP credentials (unused when the AMQP source is `env`) |
-| `CREDS_SOURCE` | unset | `env` | take DB creds from `DB_*` (and, unless `AMQP_CREDS_SOURCE` says otherwise, AMQP creds from `RABBITMQ_USER/PASSWORD`) instead of Secrets Manager |
+| `CREDS_SOURCE` | unset | unset (dev: `env`) | take DB creds from `DB_*` (and, unless `AMQP_CREDS_SOURCE` says otherwise, AMQP creds from `RABBITMQ_USER/PASSWORD`) instead of Secrets Manager |
 | `AMQP_CREDS_SOURCE` | unset (follows `CREDS_SOURCE`) | `aws` | AMQP creds only: `env` = `RABBITMQ_USER/PASSWORD`, anything else = `RABBITMQ_SECRET_ID` |
-| `DB_HOST`, `DB_PORT`, `DB_NAME` | `postgres`, 5432, `packiot` | `10.10.10.89`, 5432, `packiot_analytics` | with `CREDS_SOURCE=env` |
-| `DB_USER`, `DB_PASSWORD` | – (required) | `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}` from `.env` | |
+| `DB_HOST`, `DB_PORT`, `DB_NAME` | `postgres`, 5432, `packiot` | not set (the secret: `10.10.10.89`, 5432, `packiot_analytics`) | with `CREDS_SOURCE=env` |
+| `DB_USER`, `DB_PASSWORD` | – (required) | not set (the secret: `stream_engine`); never the admin `POSTGRES_*` (CI `check-db-least-priv.py`) | dev: `stream_engine` / `dev` |
 | `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | – (required in env mode) | unused (`AMQP_CREDS_SOURCE=aws`) | see the note below |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `rabbitmq` / 5672 | same | |
 | `SOURCE_EXCHANGE` | `oee` | `oee` | |
@@ -424,8 +424,7 @@ overrides it; that file is not in git).
 | `OEECLOUD_WORKER_REPLICAS` (compose) | 1 | — | replicas; > 1 needs SAC queues and no static IP/name |
 
 !!! note "Which RabbitMQ user staging uses"
-    Staging sets `CREDS_SOURCE=env` for the database, and `AMQP_CREDS_SOURCE=aws` so the AMQP
-    creds still come from `RABBITMQ_SECRET_ID`: the least-privilege `stream-engine` user, whose
+    Staging pins `AMQP_CREDS_SOURCE=aws`, so the AMQP creds come from `RABBITMQ_SECRET_ID`: the least-privilege `stream-engine` user, whose
     permissions are in `monitoring/rabbitmq/definitions.template.json`. Without that override the
     worker would read `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from the host `.env`, which is the
     broker's `RABBITMQ_DEFAULT_USER` (the administrator). `scripts/ci/check-amqp-least-priv.py`
