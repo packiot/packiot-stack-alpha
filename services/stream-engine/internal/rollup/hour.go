@@ -7,8 +7,9 @@
 //   - Phase V (ca_agg sums → gross/net/scrap): always-FOUND class →
 //     eligible LEFT JOIN zero-fill. CRUCIALLY sets recalc_needed=TRUE
 //     (verbatim!) — only the events phase clears the flag.
-//   - Cascades verbatim: flags the equipment's DAY row (tvp-keyed via
-//     day-begin fn) and the area's HOUR row.
+//   - Cascades: flags the equipment's DAY row — the day the hour row is
+//     LABELLED with (hourLabelledDayExpr; legacy keyed it off the bucket
+//     start, wrong for a day beginning off the hour). Area HOUR retired.
 //   - Speed pass from the 1min tier (flows: native ca_agg_1min):
 //     avg speed + ideal — also always-FOUND (no GROUP BY) →
 //     always-update zero-fill. Ideal per 1min row: bucket value,
@@ -90,11 +91,24 @@ const hourValuesSQL = `
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value
 	   AND e.ts_value >= now() - interval '65 minutes'`
 
+// hourLabelledDayExpr — the production day an hour_elig bucket is summed into: the
+// hour row's own stored label (the day rollup joins hr.ts_value_production =
+// day.ts_value, so that is the day whose sum changed), falling back to the
+// provisioning rule (the day containing bucket + 59 min, provisionHourlySQL) when
+// the row has none. Until 2026-10-13 the cascade used the day of the bucket START,
+// which for a day beginning off the hour (23:10) named the PREVIOUS day for the
+// boundary bucket while the bucket is labelled — and summed into — the new one: the
+// new day was never re-flagged by that hour and the old day was flagged for nothing.
+const hourLabelledDayExpr = `COALESCE(
+	       (SELECT hl.ts_value_production FROM %[4]s.equipment_oee_hourly hl
+	         WHERE hl.id_equipment = el.id_equipment AND hl.ts_value = el.ts_value),
+	       (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value + interval '59 minutes') LIMIT 1))`
+
 const hourCascadeDaySQL = `
 	UPDATE %[4]s.equipment_oee_daily d SET recalc_needed = true
 	  FROM hour_elig el
 	 WHERE d.id_equipment = el.id_equipment
-	   AND d.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)`
+	   AND d.ts_value = ` + hourLabelledDayExpr
 
 // hourCascadeDayLiveSQL — the LIVE hour path's cascade (P12 deadlock fix, see
 // hourReflagSQL): skip daily rows another tx holds and rows already flagged. Safe ONLY
@@ -106,7 +120,7 @@ const hourCascadeDayLiveSQL = `
 	UPDATE %[4]s.equipment_oee_daily d SET recalc_needed = true
 	  FROM (SELECT d2.id_equipment, d2.ts_value FROM %[4]s.equipment_oee_daily d2
 	          JOIN hour_elig el ON d2.id_equipment = el.id_equipment
-	           AND d2.ts_value = (SELECT ts_value_production FROM piot_get_day_begin_by_equipment(el.id_equipment, el.ts_value) LIMIT 1)
+	           AND d2.ts_value = ` + hourLabelledDayExpr + `
 	         WHERE d2.recalc_needed IS NOT TRUE
 	         FOR UPDATE OF d2 SKIP LOCKED) r
 	 WHERE d.id_equipment = r.id_equipment AND d.ts_value = r.ts_value`
@@ -126,7 +140,22 @@ const hourCascadeDayLiveSQL = `
 // speed verbatim — and, verbatim, only for EXISTING 1min rows: an
 // empty hour avgs to NULL → zero-fill (prod writes 0 there, never
 // production_speed — aggregate-INTO is always FOUND).
+//
+// READ/APPLY SPLIT (ADR-0063 Phase A2, 2026-10-14). The speed pass reads the
+// real-time 1-minute cagg. TimescaleDB constifies a real-time cagg's watermark
+// only when it plans a SELECT (a CREATE TABLE AS counts); inside an UPDATE the
+// watermark stays a runtime cagg_watermark() call and the planner priced the
+// raw tail at every equipment_values chunk (staging plan: 458 M rows, cost
+// 2.5e8). The same read as a SELECT runs in 107 ms on staging; the UPDATE
+// averaged 6–9 s per tick and was the largest statement on the DB (10 % of
+// statement time in a 7-minute window on 2026-10-14). So the pass is two
+// statements in one string (simple protocol, as every caller runs it): a CREATE
+// TEMP TABLE … AS computes sp, then the UPDATE reads only that temp table.
+// The golden test (hour_speed_split_golden_test.go) rebuilds the old single
+// statement from this text and compares the two row for row.
 const hourSpeedSQL = `
+	DROP TABLE IF EXISTS pg_temp.hour_sp;
+	CREATE TEMP TABLE hour_sp ON COMMIT DROP AS
 	WITH sp AS (
 	    SELECT el.id_equipment, el.ts_value,
 	           avg(CASE WHEN m.id_equipment IS NOT NULL THEN COALESCE(
@@ -167,10 +196,11 @@ const hourSpeedSQL = `
 	      LEFT JOIN %[2]s.equipments q ON q.id_equipment = el.id_equipment
 	     GROUP BY el.id_equipment, el.ts_value
 	)
+	SELECT * FROM sp;
 	UPDATE %[4]s.equipment_oee_hourly e SET
 	       speed       = COALESCE(sp.speed, 0),
 	       ideal_speed = COALESCE(sp.ideal_speed, 0)
-	  FROM sp
+	  FROM hour_sp sp
 	 WHERE e.id_equipment = sp.id_equipment AND e.ts_value = sp.ts_value`
 
 // Phase E: CONDITIONAL; the ONLY flag clear. ideal_speed read from

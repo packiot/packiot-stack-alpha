@@ -1,67 +1,45 @@
 ---
-title: Start here
-layer: guide
+title: Packiot docs
+layer: 0
 owner_area: platform
-last_verified: 2026-09-29
+last_verified: 2026-10-13
 ---
-# Start here
+# Packiot docs
 
-> For the **automation team** and **Customer Success**. No programming knowledge needed.
-> Engineers: the technical pages are under [For engineers](for-engineers.md).
+Packiot is an **industrial IoT / OEE platform**. A small box in each factory reads counters
+and machine states from the PLCs, the cloud turns them into **OEE** (Availability ×
+Performance × Quality), and three apps put the result in front of people: dashboards for
+plant managers, a tablet app for machine operators, and admin tools for our Customer
+Success team.
 
-## What Packiot does, in five sentences
+## Start where you are
 
-1. A factory has **machines** grouped into **production lines**, and each machine has a
-   small computer called a **PLC** that counts what goes in and what comes out.
-2. A **factory box** (a small computer we install at the client) reads those counts from the
-   PLCs every few seconds and sends them to the Packiot cloud.
-3. The cloud turns the counts into **OEE**, one number that says how well the factory is
-   running: **Availability × Performance × Quality**.
-4. Plant managers see OEE and its details on dashboards, and operators on the factory floor
-   use a tablet app to start production orders and say why a machine stopped.
-5. Our team sets up each new client once, and then adjusts the numbers to fit how that
-   factory works.
-
-## OEE in one example
-
-OEE answers: "Of the time we planned to produce, how much did we turn into good parts at full
-speed?" It is three percentages multiplied together.
-
-A line works one **8-hour shift** (480 minutes). Its rated speed is **100 parts per minute**.
-
-| Factor | Question it answers | In this shift | Result |
-|---|---|---|---|
-| **Availability** | Was the line running? | Stopped for 60 min, so it ran 420 of 480 min | 420 ÷ 480 = **87.5 %** |
-| **Performance** | When running, was it at full speed? | In 420 min at 100/min it could make 42,000. It made 37,800 | 37,800 ÷ 42,000 = **90 %** |
-| **Quality** | Were the parts good? | Of 37,800 parts, 36,288 were good (1,512 scrap) | 36,288 ÷ 37,800 = **96 %** |
-| **OEE** | All together | 0.875 × 0.90 × 0.96 | **75.6 %** |
-
-Check: at full speed for the whole shift the line could make 48,000 good parts. It made
-36,288. 36,288 ÷ 48,000 = 75.6 %. Same answer.
-
-!!! tip "If a number looks too high"
-    If Performance shows more than 100 %, the rated speed configured for that line is lower
-    than what the line really does. Packiot shows the real number instead of hiding it at
-    100 %, so you can fix the setting.
-
-## Who uses which app
-
-| App | Who uses it | What for |
+| I am… | Start here | Then |
 |---|---|---|
-| **front4** (the dashboards) | Client managers, and our team to check a client | OEE by line, shift, day; downtimes; production; reports |
-| **Operator app** | Machine operators, on a tablet next to the line | Start and finish production orders, give the reason for each stop |
-| **CS Admin** | Customer Success | Set up a new client: factory structure, shifts, PLC connections, the factory box, go live. See [Setting up a new client](guide/setting-up-a-client.md) |
-| **Customize** | The automation team | Adjust a client that is already set up: calculations, Node-RED flows, OEE settings. See [Customizing a client](guide/customize/index.md) |
+| **Customer Success or the automation team** | [Use Packiot — start here](use/index.md) | [Set up a client](use/setting-up-a-client.md) · [Customize a client](use/customize/index.md) · [Troubleshoot OEE](use/troubleshooting-oee.md) |
+| **An engineer, new to Packiot** | [Your first week](learn/first-week.md) | [Understand Packiot](understand/index.md) · [Develop](build/index.md#develop) |
+| **QA / testing** | [Sandbox for testing](use/sandbox-for-testing.md) | [Operator app](understand/components/operator-app.md) · [Barcode app](understand/components/barcode-app.md) |
+| **Product or management** | [Test environments, explained](learn/test-environments.md) | [Sandbox for testing](use/sandbox-for-testing.md#the-reset-rule) |
+| **On call, something is broken** | [Runbooks](build/operate/runbooks.md) | [Environments](understand/architecture/environments.md) · [Observability](understand/components/observability.md) |
+| **Integrating with an API** | [API reference](reference/api/index.md) | [Service catalog](reference/service-catalog.md) · [Tenancy & security](understand/architecture/tenancy-and-security.md) |
 
-There is also a **barcode app** for factories that scan the boxes they pack.
+## How these docs are organised
 
-## Where to go next
+The site is split by **what you are trying to do**, not by team:
 
-| I want to… | Read |
-|---|---|
-| Set up a new client from zero | [Setting up a new client](guide/setting-up-a-client.md) |
-| Make a new value from counters (scrap, line totals) | [Calculations](guide/customize/calculations.md) |
-| Add logic on the factory box (alerts, extra processing) | [Node-RED flows](guide/customize/node-red-flows.md) |
-| Send production data to an ERP, a database or another system | [Connecting to an ERP / other systems](guide/customize/connecting-other-systems.md) |
-| Understand a word | [Glossary](glossary.md) |
-| See how the system is built | [For engineers](for-engineers.md) |
+| Section | It answers | Style |
+|---|---|---|
+| [**1 · Learn**](learn/index.md) | "Teach me, step by step" | Guided tutorials you follow from start to finish |
+| [**2 · Use Packiot**](use/index.md) | "How do I do this in the product?" | Plain-language how-tos for Customer Success and the automation team |
+| [**3 · Build & operate**](build/index.md) | "How do I change or run the platform?" | Engineering how-tos and runbooks |
+| [**4 · Understand**](understand/index.md) | "How does it work, and why?" | Architecture → subsystems → components, with the decisions behind them |
+| [**5 · Reference**](reference/index.md) | "Look it up" | APIs (generated from the code), service catalog, database, configuration, glossary, ADRs |
+
+!!! info "Where else to look"
+    - **Interactive API docs:** the read-only Swagger portal at
+      [api.staging.packiot.app/docs](https://api.staging.packiot.app/docs/) (SSO). The
+      [API reference](reference/api/index.md) here is generated from the same specs.
+    - **Each repository's README** explains how to run and change that one service; the
+      [service catalog](reference/service-catalog.md) links every README, wiki page, API spec
+      and dashboard together.
+    - **Decisions** live in the [ADR index](reference/adr-index.md).

@@ -196,8 +196,16 @@ func entityStatements(sp entitySpec, evSchema, refSchema string) []struct{ Name,
 	UPDATE ` + evSchema + `.area_oee_daily t SET recalc_needed = true
 	  FROM ` + evSchema + `.equipment_oee_daily ed
 	  JOIN ` + refSchema + `.equipments q ON q.id_equipment = ed.id_equipment AND q.tp_equipment = 3
-	 WHERE ed.recalc_needed = false AND ed.ts_value >= now() - interval '1 month'
+	 WHERE ed.ts_value >= now() - interval '1 month'
 	   AND t.id_area = q.id_area AND t.ts_value = ed.ts_value
+	   -- NO "ed.recalc_needed = false" (removed 2026-10-13). RunDay's tail re-flags the
+	   -- CURRENT production day of every line right after computing it, so between ticks
+	   -- the line's current-day row is ALWAYS recalc_needed = true: that predicate meant
+	   -- the area's current day was never flagged while the day was running — it was
+	   -- computed once at provision (zeros) and only after the day closed, so
+	   -- area_live_day → serving.home showed Production 0 / OEE 0 % all day. The
+	   -- computed_at guard below is the real change signal (a flagged line row keeps its
+	   -- last computed numbers; summing them is exactly the live value).
 	   -- CHANGE-DRIVEN (2026-10-01): only when a line day was recomputed AFTER the area
 	   -- day. Without it every computed line day re-flagged its area day on EVERY tick,
 	   -- so the whole last month of area days (~400 rows) was recomputed every minute

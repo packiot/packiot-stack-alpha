@@ -66,7 +66,6 @@
 1	services/analytics-sync/internal/replicate/manual_reconcile.go
 10	services/analytics-sync/internal/replicate/resolver.go
 7	services/analytics-sync/scripts/backfill-event-fcs-from-legacy.sh
-8	services/edge-transformer/internal/agent/agentcfg/register_cpack_full_test.go
 1	services/ingest-shim/cmd/ingest-shim/main.go
 4	services/mirror-worker-go/internal/db/prod.go
 1	services/mirror-worker-go/internal/db/prod_test.go
@@ -82,7 +81,7 @@
 6	services/operator-gateway/internal/adapter/mapping.go
 4	services/operator-gateway/internal/adapter/po_lifecycle.go
 17	services/operator-gateway/internal/adapter/po_lifecycle_test.go
-15	services/operator-gateway/internal/adapter/resolver.go
+12	services/operator-gateway/internal/adapter/resolver.go
 12	services/operator-gateway/internal/adapter/server.go
 19	services/operator-gateway/internal/adapter/server_test.go
 2	services/operator-gateway/internal/adapter/split.go
@@ -104,7 +103,6 @@
 1	services/read-api/cmd/refdata-api/testdata/external/montebello/data-sync.golden.json
 1	services/read-api/cmd/refdata-api/testdata/external/montebello/get-shift-validation.golden.json
 1	services/read-api/cmd/refdata-api/testdata/external/montebello/job_data_integration.golden.json
-5	services/read-api/refdata-api
 4	services/read-api/scripts/refdata-f3-parity-check.sh
 3	services/sparkplug-decoder/cmd/bispharma-twin/main.go
 1	services/sparkplug-decoder/cmd/edge-transformer/birthbind_wiring.go

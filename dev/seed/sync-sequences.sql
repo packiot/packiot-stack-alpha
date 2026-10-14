@@ -5,9 +5,10 @@
 -- tables already held ids: the first INSERT that takes a default id collided (2026-10-08: edge-api's knex
 -- migration failed on `knex_migrations_pkey (id)=(1) already exists`).
 --
--- Mounted into the postgres container as /docker-entrypoint-initdb.d/60-devseed-sequences.sql (dev/base.yml), so
--- it runs once on a fresh volume, right after the seed loader (50-devseed.sh). Idempotent: it only ever sets a
--- sequence to max(id) of the columns that draw from it, so re-running it is safe.
+-- Baked into the seed image (/seed/sync-sequences.sql) and run by load.sh right after load.sql, so the published
+-- image is correct for any consumer. dev/base.yml also mounts it as an initdb hook (60-devseed-sequences.sql), a
+-- backstop for seed images built before 2026-10-09. Idempotent: it only ever moves a sequence forward to max(id)
+-- of the columns that draw from it, so re-running it is a no-op (the seed build's boot test relies on that).
 --
 -- A sequence "feeds" a column when the column's DEFAULT calls nextval() on it (pg_attrdef → pg_depend) or the
 -- column is an identity/serial column that owns it. A sequence shared by several columns goes past the max of all.

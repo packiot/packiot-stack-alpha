@@ -1,4 +1,4 @@
-# schema	table	kind	column	data_type  — snapshot of packiot_analytics (staging) 2026-10-06; names/types only, no data
+# schema	table	kind	column	data_type  — inventory of packiot_analytics (staging) 2026-10-09, regenerated read-only with dev/seed/extract.sh step 1's query (replaces the 2026-10-06 snapshot + its 10-09 hand patch); names/types only, no data
 bi	downtimes	view	id_enterprise	integer
 bi	downtimes	view	id_downtime	bigint
 bi	downtimes	view	id_equipment	integer
@@ -52,6 +52,9 @@ bi	live_status	view	scrap_val	real
 bi	live_status	view	equipment_label	text
 bi	live_status	view	id_order_label	text
 bi	live_status	view	state_label	text
+bi	live_status	view	net_production_total	double precision
+bi	live_status	view	gross_production_total	double precision
+bi	live_status	view	scrap_total	double precision
 bi	oee_hourly	view	id_enterprise	integer
 bi	oee_hourly	view	id_equipment	integer
 bi	oee_hourly	view	nm_equipment	character varying
@@ -266,6 +269,10 @@ bronze	equipment_values_raw	hypertable	ideal_production_speed	integer
 bronze	equipment_values_raw	hypertable	check_number	bigint
 bronze	equipment_values_raw	hypertable	ingested_at	timestamp with time zone
 bronze	equipment_values_raw	hypertable	source_seq	bigint
+bronze	equipment_values_raw	hypertable	gross_production_total	double precision
+bronze	equipment_values_raw	hypertable	net_production_total	double precision
+bronze	equipment_values_raw	hypertable	scrap_total	double precision
+bronze	equipment_values_raw	hypertable	process_scrap_total	double precision
 bronze	sample_boxes	table	id_box	bigint
 bronze	sample_boxes	table	box_order_number	integer
 bronze	sample_boxes	table	should_increment	boolean
@@ -561,6 +568,11 @@ core	packml_register	view	id_unit	integer
 core	packml_register	view	line_unit_seq	character varying
 core	packml_register	view	device_nm	character varying
 core	packml_register	view	device_key	text
+core	po_number_corrections	table	id_production_order	bigint
+core	po_number_corrections	table	from_text	character varying
+core	po_number_corrections	table	to_text	character varying
+core	po_number_corrections	table	reason	text
+core	po_number_corrections	table	created_at	timestamp with time zone
 core	product_families	table	id_product_family	bigint
 core	product_families	table	nm_product_family	character varying
 core	product_families	table	id_enterprise	integer
@@ -611,6 +623,7 @@ core	production_orders	table	id_label	bigint
 core	production_orders	table	oee_q	double precision
 core	production_orders	table	oee_a	double precision
 core	production_orders	table	oee_p	double precision
+core	production_orders	table	po_uuid	uuid
 core	products	table	id_product	bigint
 core	products	table	nm_product	character varying
 core	products	table	id_product_family	integer
@@ -1349,6 +1362,35 @@ ops	_bkp_bis_twin_silver_20261001	table	ideal_production_speed	integer
 ops	_bkp_bis_twin_silver_20261001	table	check_number	bigint
 ops	_bkp_bis_twin_silver_20261001	table	ingested_at	timestamp with time zone
 ops	_bkp_bis_twin_silver_20261001	table	source_seq	bigint
+ops	_bkp_cpac_shadow_open_20261014	table	id_equipment	integer
+ops	_bkp_cpac_shadow_open_20261014	table	ts_event	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	status	integer
+ops	_bkp_cpac_shadow_open_20261014	table	id_equipment_event	bigint
+ops	_bkp_cpac_shadow_open_20261014	table	txt_downtime_notes	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	idle	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	idle_processed	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	forced_creation_system	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	fault	integer
+ops	_bkp_cpac_shadow_open_20261014	table	fault_processed	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	cd_machine	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	cd_category	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	cd_subcategory	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	change_over	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	planned_downtime	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	ts_end	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	duration	integer
+ops	_bkp_cpac_shadow_open_20261014	table	id_enterprise	integer
+ops	_bkp_cpac_shadow_open_20261014	table	desc_category	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	desc_subcategory	character varying
+ops	_bkp_cpac_shadow_open_20261014	table	cd_category_client	integer
+ops	_bkp_cpac_shadow_open_20261014	table	cd_subcategory_client	integer
+ops	_bkp_cpac_shadow_open_20261014	table	last_update	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	ignore_cost	boolean
+ops	_bkp_cpac_shadow_open_20261014	table	ingested_at	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	source_seq	bigint
+ops	_bkp_cpac_shadow_open_20261014	table	new_ts_end	timestamp with time zone
+ops	_bkp_cpac_shadow_open_20261014	table	new_duration	integer
+ops	_bkp_cpac_shadow_open_20261014	table	backed_up_at	timestamp with time zone
 ops	_bkp_cpack_reason_catalog_dr	table	id	bigint
 ops	_bkp_cpack_reason_catalog_dr	table	id_enterprise	integer
 ops	_bkp_cpack_reason_catalog_dr	table	code	character varying
@@ -2164,6 +2206,59 @@ ops	_ev_reconcile_leg	table	status	integer
 ops	_ev_reconcile_leg	table	duration	integer
 ops	_ev_reconcile_leg	table	fcs	boolean
 ops	_ev_reconcile_leg	table	id_equipment	integer
+ops	_fix_line_scrap_20261009	table	id_enterprise	integer
+ops	_fix_line_scrap_20261009	table	id_equipment	integer
+ops	_fix_line_scrap_20261009	table	ts_value	timestamp with time zone
+ops	_fix_line_scrap_20261009	table	kind	text
+ops	_fix_line_scrap_20261009	table	old_gross	real
+ops	_fix_line_scrap_20261009	table	old_net	real
+ops	_fix_line_scrap_20261009	table	old_scrap	real
+ops	_fix_line_scrap_20261009	table	new_gross	real
+ops	_fix_line_scrap_20261009	table	new_net	real
+ops	_fix_line_scrap_20261009	table	new_scrap	real
+ops	_fix_line_scrap_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_line_scrap_20261009	table	applied_at	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	id_equipment	integer
+ops	_fix_link_phantoms_20261009	table	ts_event	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	status	integer
+ops	_fix_link_phantoms_20261009	table	id_equipment_event	bigint
+ops	_fix_link_phantoms_20261009	table	txt_downtime_notes	character varying
+ops	_fix_link_phantoms_20261009	table	idle	character varying
+ops	_fix_link_phantoms_20261009	table	idle_processed	boolean
+ops	_fix_link_phantoms_20261009	table	forced_creation_system	boolean
+ops	_fix_link_phantoms_20261009	table	fault	integer
+ops	_fix_link_phantoms_20261009	table	fault_processed	boolean
+ops	_fix_link_phantoms_20261009	table	cd_machine	character varying
+ops	_fix_link_phantoms_20261009	table	cd_category	character varying
+ops	_fix_link_phantoms_20261009	table	cd_subcategory	character varying
+ops	_fix_link_phantoms_20261009	table	change_over	boolean
+ops	_fix_link_phantoms_20261009	table	planned_downtime	boolean
+ops	_fix_link_phantoms_20261009	table	ts_end	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	duration	integer
+ops	_fix_link_phantoms_20261009	table	id_enterprise	integer
+ops	_fix_link_phantoms_20261009	table	desc_category	character varying
+ops	_fix_link_phantoms_20261009	table	desc_subcategory	character varying
+ops	_fix_link_phantoms_20261009	table	cd_category_client	integer
+ops	_fix_link_phantoms_20261009	table	cd_subcategory_client	integer
+ops	_fix_link_phantoms_20261009	table	last_update	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	ignore_cost	boolean
+ops	_fix_link_phantoms_20261009	table	ingested_at	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	source_seq	bigint
+ops	_fix_link_phantoms_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_link_phantoms_20261009	table	deleted_at	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	id_enterprise	integer
+ops	_fix_s2_stale_stops_20261009	table	id_equipment	integer
+ops	_fix_s2_stale_stops_20261009	table	ts_event	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	status	integer
+ops	_fix_s2_stale_stops_20261009	table	old_ts_end	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	old_duration	integer
+ops	_fix_s2_stale_stops_20261009	table	new_ts_end	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	basis	text
+ops	_fix_s2_stale_stops_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_s2_stale_stops_20261009	table	applied_at	timestamp with time zone
+ops	_fix_testpo_20261009	table	kind	text
+ops	_fix_testpo_20261009	table	row	jsonb
+ops	_fix_testpo_20261009	table	snapped_at	timestamp with time zone
 ops	_fix_unbacked_20261001	table	id_equipment	integer
 ops	_fix_unbacked_20261001	table	id_enterprise	integer
 ops	_fix_unbacked_20261001	table	ts_value	timestamp with time zone
@@ -2611,6 +2706,229 @@ ops	sandbox_state	table	last_heal_at	timestamp with time zone
 ops	sandbox_state	table	last_heal_status	text
 ops	sandbox_state	table	healing_since	timestamp with time zone
 ops	sandbox_state	table	updated_at	timestamp with time zone
+ops	_bf_gap_20261009_log	table	id_equipment	integer
+ops	_bf_gap_20261009_log	table	day	date
+ops	_bf_gap_20261009_log	table	staged	integer
+ops	_bf_gap_20261009_log	table	inserted	integer
+ops	_bf_gap_20261009_log	table	marker	timestamp with time zone
+ops	_bf_gap_20261009_log	table	applied_at	timestamp with time zone
+ops	_bf_gap_20261009_plan	table	id_equipment	integer
+ops	_bf_gap_20261009_plan	table	tp_equipment	integer
+ops	_bf_gap_20261009_plan	table	tcol	character varying
+ops	_bf_gap_20261009_plan	table	src_eq	bigint
+ops	_bf_gap_20261009_plan	table	scol	character varying
+ops	_bf_gap_20261009_plan	table	nper	bigint
+ops	_bf_gap_20261009_plan	table	worst	double precision
+ops	_bf_gap_20261009_plan	table	mean	double precision
+ops	_bf_gap_20261009_plan	table	stg_tot	double precision
+ops	_bf_gap_20261009_plan	table	leg_tot	double precision
+ops	_bf_gap_20261009_plan	table	incr_ok	boolean
+ops	_bf_gap_20261009_plan	table	line_scrap_rule	boolean
+ops	_bf_gap_20261009_plan	table	val_ok	boolean
+ops	_bf_gap_20261009_plan	table	total_ok	boolean
+ops	_bf_gap_20261009_plan	table	val_med_absdiff	double precision
+ops	_bf_gap_20261009_rows	table	id_equipment	integer
+ops	_bf_gap_20261009_rows	table	ts_value	timestamp with time zone
+ops	_bf_gap_20261009_rows	table	id_enterprise	integer
+ops	_bf_gap_20261009_rows	table	id_site	integer
+ops	_bf_gap_20261009_rows	table	id_area	integer
+ops	_bf_gap_20261009_rows	table	tp_equipment	integer
+ops	_bf_gap_20261009_rows	table	gross_production_incr	real
+ops	_bf_gap_20261009_rows	table	net_production_incr	real
+ops	_bf_gap_20261009_rows	table	scrap_incr	real
+ops	_bf_gap_20261009_rows	table	gross_production_val	real
+ops	_bf_gap_20261009_rows	table	net_production_val	real
+ops	_bf_gap_20261009_rows	table	scrap_val	real
+ops	_bf_gap_20261009_rows	table	gross_production_total	double precision
+ops	_bf_gap_20261009_rows	table	net_production_total	double precision
+ops	_bf_gap_20261009_rows	table	scrap_total	double precision
+ops	_bf_gap_20261009_rows	table	speed	real
+ops	_bf_gap_20261009_rows	table	state	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	id_equipment	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	ts_value	date
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	recalc_needed	boolean
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee_p	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee_a	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	oee_q	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	available_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	running_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	stopped_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	planned_downtime	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	ideal_production	double precision
+ops	_bkp_gold_cpackgap_20261009_daily	table	idle_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	idle_starved	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	idle_blocked	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	target	double precision
+ops	_bkp_gold_cpackgap_20261009_daily	table	gross	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	net	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	downtime	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	changeover_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	scrap	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	speed	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	target_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_daily	table	proportional_target	real
+ops	_bkp_gold_cpackgap_20261009_daily	table	computed_at	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_daily	table	source_watermark	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_daily	table	no_data_time	integer
+ops	_bkp_gold_cpackgap_20261009_daily	table	out_of_service_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	id_equipment	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ts_value	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	recalc_needed	boolean
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee_p	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee_a	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	oee_q	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	available_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	running_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	stopped_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	planned_downtime	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ideal_production	double precision
+ops	_bkp_gold_cpackgap_20261009_hourly	table	idle_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	idle_starved	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	idle_blocked	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	target	double precision
+ops	_bkp_gold_cpackgap_20261009_hourly	table	gross	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	net	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	downtime	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	changeover_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	scrap	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	speed	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ts_value_production	date
+ops	_bkp_gold_cpackgap_20261009_hourly	table	target_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_hourly	table	proportional_target	real
+ops	_bkp_gold_cpackgap_20261009_hourly	table	id_team	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	ideal_speed	double precision
+ops	_bkp_gold_cpackgap_20261009_hourly	table	computed_at	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_hourly	table	source_watermark	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_hourly	table	no_data_time	integer
+ops	_bkp_gold_cpackgap_20261009_hourly	table	out_of_service_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_runtime_shift	bigint
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_value	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_equipment	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	recalc_needed	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee_p	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee_a	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	oee_q	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	available_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	running_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	stopped_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	planned_downtime	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	ideal_production	double precision
+ops	_bkp_gold_cpackgap_20261009_shift	table	idle_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	idle_starved	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	idle_blocked	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_shift	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_shift_hour	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	id_team	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	duration	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_range	tstzrange
+ops	_bkp_gold_cpackgap_20261009_shift	table	gross	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	net	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	downtime	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	changeover_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	target	double precision
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_end	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	manually_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	invalidated	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	scrap	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	speed	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	cd_shift	character varying
+ops	_bkp_gold_cpackgap_20261009_shift	table	ts_value_production	date
+ops	_bkp_gold_cpackgap_20261009_shift	table	target_customized	boolean
+ops	_bkp_gold_cpackgap_20261009_shift	table	proportional_target	real
+ops	_bkp_gold_cpackgap_20261009_shift	table	ideal_speed	double precision
+ops	_bkp_gold_cpackgap_20261009_shift	table	computed_at	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	source_watermark	timestamp with time zone
+ops	_bkp_gold_cpackgap_20261009_shift	table	no_data_time	integer
+ops	_bkp_gold_cpackgap_20261009_shift	table	out_of_service_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_production_order	bigint
+ops	_bkp_po_runtime_cpackgap_20261009	table	runtime_timerange	tstzrange
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	recalc_needed	boolean
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee_p	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee_a	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	oee_q	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	available_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	running_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	stopped_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	planned_downtime	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	ideal_production	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	idle_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	idle_starved	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	idle_blocked	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_production_orders_runtime	bigint
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_equipment	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	id_production_order_runtime	bigint
+ops	_bkp_po_runtime_cpackgap_20261009	table	net_production	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	gross_production	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	downtime	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	changeover_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	speed	real
+ops	_bkp_po_runtime_cpackgap_20261009	table	last_update	timestamp with time zone
+ops	_bkp_po_runtime_cpackgap_20261009	table	multiplier	double precision
+ops	_bkp_po_runtime_cpackgap_20261009	table	no_data_time	integer
+ops	_bkp_po_runtime_cpackgap_20261009	table	out_of_service_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_production_order	bigint
+ops	_bkp_po_runtime_cpackholes_20261009	table	runtime_timerange	tstzrange
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	recalc_needed	boolean
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee_p	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee_a	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	oee_q	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	available_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	running_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	stopped_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	planned_downtime	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	ideal_production	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	idle_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	idle_starved	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	idle_blocked	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_production_orders_runtime	bigint
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_equipment	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	id_production_order_runtime	bigint
+ops	_bkp_po_runtime_cpackholes_20261009	table	net_production	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	gross_production	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	downtime	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	changeover_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	speed	real
+ops	_bkp_po_runtime_cpackholes_20261009	table	last_update	timestamp with time zone
+ops	_bkp_po_runtime_cpackholes_20261009	table	multiplier	double precision
+ops	_bkp_po_runtime_cpackholes_20261009	table	no_data_time	integer
+ops	_bkp_po_runtime_cpackholes_20261009	table	out_of_service_time	integer
+ops	_fix_gap_edge_20261009	table	id_enterprise	integer
+ops	_fix_gap_edge_20261009	table	id_equipment	integer
+ops	_fix_gap_edge_20261009	table	ts_value	timestamp with time zone
+ops	_fix_gap_edge_20261009	table	reason	text
+ops	_fix_gap_edge_20261009	table	old_gross	real
+ops	_fix_gap_edge_20261009	table	old_net	real
+ops	_fix_gap_edge_20261009	table	old_scrap	real
+ops	_fix_gap_edge_20261009	table	new_gross	real
+ops	_fix_gap_edge_20261009	table	new_net	real
+ops	_fix_gap_edge_20261009	table	new_scrap	real
+ops	_fix_gap_edge_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_gap_edge_20261009	table	applied_at	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	id_enterprise	integer
+ops	_fix_gap_holes_20261009	table	id_equipment	integer
+ops	_fix_gap_holes_20261009	table	ts_value	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	role	text
+ops	_fix_gap_holes_20261009	table	tp	integer
+ops	_fix_gap_holes_20261009	table	hole_start	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	old_incr	real
+ops	_fix_gap_holes_20261009	table	ctr_move	double precision
+ops	_fix_gap_holes_20261009	table	extra	double precision
+ops	_fix_gap_holes_20261009	table	new_incr	real
+ops	_fix_gap_holes_20261009	table	decision	text
+ops	_fix_gap_holes_20261009	table	old_scrap	real
+ops	_fix_gap_holes_20261009	table	new_scrap	real
+ops	_fix_gap_holes_20261009	table	snapped_at	timestamp with time zone
+ops	_fix_gap_holes_20261009	table	applied_at	timestamp with time zone
+ops	_fix_po_headers_20261009	table	taken_at	timestamp with time zone
+ops	_fix_po_headers_20261009	table	kind	text
+ops	_fix_po_headers_20261009	table	id_enterprise	integer
+ops	_fix_po_headers_20261009	table	id_order	integer
+ops	_fix_po_headers_20261009	table	snap	jsonb
 public	knex_migrations	table	id	integer
 public	knex_migrations	table	name	character varying
 public	knex_migrations	table	batch	integer
@@ -2955,14 +3273,6 @@ silver	ca_discrete_changes_1s	cagg	id_team	integer
 silver	ca_discrete_changes_1s	cagg	id_shift_hour	integer
 silver	ca_discrete_changes_1s	cagg	sub_mode	character varying
 silver	ca_discrete_changes_1s	cagg	ideal_production_speed	integer
-silver	ca_equipment_boxes_1s	cagg	ts_value	timestamp with time zone
-silver	ca_equipment_boxes_1s	cagg	id_order	text
-silver	ca_equipment_boxes_1s	cagg	id_equipment	integer
-silver	ca_equipment_boxes_1s	cagg	id_area	integer
-silver	ca_equipment_boxes_1s	cagg	id_site	integer
-silver	ca_equipment_boxes_1s	cagg	id_enterprise	integer
-silver	ca_equipment_boxes_1s	cagg	net_production	double precision
-silver	ca_equipment_boxes_1s	cagg	qty	bigint
 silver	data_quality_event	table	id	bigint
 silver	data_quality_event	table	id_enterprise	integer
 silver	data_quality_event	table	id_equipment	integer
@@ -3428,6 +3738,10 @@ silver	equipment_values	hypertable	ideal_production_speed	integer
 silver	equipment_values	hypertable	check_number	bigint
 silver	equipment_values	hypertable	ingested_at	timestamp with time zone
 silver	equipment_values	hypertable	source_seq	bigint
+silver	equipment_values	hypertable	gross_production_total	double precision
+silver	equipment_values	hypertable	net_production_total	double precision
+silver	equipment_values	hypertable	scrap_total	double precision
+silver	equipment_values	hypertable	process_scrap_total	double precision
 silver	equipment_values_labeled	view	id_equipment	integer
 silver	equipment_values_labeled	view	ts_value	timestamp with time zone
 silver	equipment_values_labeled	view	id_enterprise	integer
@@ -3489,6 +3803,10 @@ silver	equipment_values_labeled	view	source_seq	bigint
 silver	equipment_values_labeled	view	state_label	text
 silver	equipment_values_labeled	view	is_running	boolean
 silver	equipment_values_labeled	view	is_stopped	boolean
+silver	equipment_values_labeled	view	net_production_total	double precision
+silver	equipment_values_labeled	view	gross_production_total	double precision
+silver	equipment_values_labeled	view	scrap_total	double precision
+silver	equipment_values_labeled	view	process_scrap_total	double precision
 silver	machine_state	table	state	integer
 silver	machine_state	table	label	text
 silver	machine_state	table	is_running	boolean

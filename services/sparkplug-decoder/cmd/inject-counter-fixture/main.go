@@ -40,7 +40,10 @@ import (
 // BREYER totalizer and the next real reading came back as a huge increment,
 // and its Parameter30700="61" told the decoder that L5 was a one-machine line,
 // so line net was metered from the infeed machine until the next register
-// re-seed. See fixtureGroupAllowed for the guard that keeps it off real groups.
+// re-seed. The guard that keeps it off real groups is the test
+// TestFixturePublishesOnlyUnderSyntheticGroup (main_test.go): every metric name
+// must sit under groupID, and groupID must not be any docs/clients/tenants/*.yaml
+// group_id.
 const (
 	// Topic anatomy: spBv1.0/<GroupID>/<MessageType>/<EdgeNodeID>
 	groupID    = "E2EFIXTURE"

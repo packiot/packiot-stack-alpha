@@ -47,6 +47,15 @@ jobs:
       - name: Validate dev/ (ADR-0060 local environment)
         run: docker compose -f dev/compose.yml --env-file dev/.env.dev config -q
 
+      - name: AMQP least privilege (no broker admin creds; stream-engine perms cover its topology)
+        run: scripts/ci/check-amqp-least-priv.py
+      - name: DB least privilege (operator-gateway, barcode-service, stream-engine log in as their own roles; analytics-sync has no DB login)
+        run: scripts/ci/check-db-least-priv.py
+      - name: No literal read-api keys (QUERY_API_KEYS / REFDATA_API_KEY from env only)
+        # refdata is public: a committed key == tenant data. In this required job on
+        # purpose (gitleaks scans full history, which still holds the burned values).
+        run: scripts/ci/no-literal-readapi-keys.sh
+
   packml-ratchet:
     # ADR-0061 D8: PackML / topic-derived identity is being removed from the cloud. Until P5 deletes the rest,
     # existing references are frozen per file and may only shrink (scripts/ci/packml-ratchet.sh).

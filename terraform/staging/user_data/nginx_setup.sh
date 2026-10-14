@@ -224,6 +224,52 @@ NGINX
 %{ endif ~}
 %{ endfor ~}
 
+# ── API docs portal (api.<domain>/docs/) ──────────────────────────────────────
+# One Swagger UI for every new-stack API, behind the same cs-admin SSO gate as
+# edge-api's /packiot/docs. Each service owns its OpenAPI contract and serves it
+# at GET /openapi.json in-network; nginx fetches the specs on the browser's behalf
+# under /docs/specs/ (also gated), so no spec has to be public. Read-only:
+# "Try it out" is off (supportedSubmitMethods: []), same as edge-api's Swagger.
+# swagger-ui-dist is pinned with SRI. NOTE: this file is a Terraform templatefile,
+# so the page must not contain dollar-brace or percent-brace sequences.
+mkdir -p /var/www/api-docs
+cat > /var/www/api-docs/index.html <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PackIOT API docs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.2/swagger-ui.css"
+        integrity="sha384-Ov4/wv3j2bmct8cDc5X4ngJZohVPzEmc6uDPH8WeljUxO5vtoykvMEfbu9Vh6RaW" crossorigin="anonymous">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.2/swagger-ui-bundle.js"
+          integrity="sha384-gNnUp++d7WqR9OKX4OMoUmV2w0JxEs1uu6NPXgcynGClIX5DOu6ol4Lp+lINyZcJ" crossorigin="anonymous"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      dom_id: "#swagger-ui",
+      urls: [
+        { name: "edge-api (control plane)",            url: "specs/edge-api.json" },
+        { name: "read-api (refdata / query)",          url: "specs/read-api.json" },
+        { name: "barcode-service (scan)",              url: "specs/barcode-service.json" },
+        { name: "sparkplug-agent (HTTP tag ingest)",   url: "specs/sparkplug-agent.json" },
+        { name: "onboard API (sparkplug-decoder)",     url: "specs/onboard-api.json" },
+        { name: "ingest-shim",                         url: "specs/ingest-shim.json" },
+        { name: "operator-gateway",                    url: "specs/operator-gateway.json" }
+      ],
+      "urls.primaryName": "edge-api (control plane)",
+      supportedSubmitMethods: [],
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: "BaseLayout"
+    });
+  </script>
+</body>
+</html>
+HTML
+
 # ── api vhost (edge-api) ──────────────────────────────────────────────────────
 # origin-verify + cs-admin gate on /, but /api/* bypasses the gate (edge-api's
 # AuthMiddleware enforces its own API-key auth there). Reconciled to the oauth2
@@ -269,6 +315,27 @@ server {
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_read_timeout 300s;
+    }
+
+    # API docs portal: the Swagger UI page + every service's spec, fetched
+    # in-network. Nested locations inherit the cs-admin gate. ingest-shim and
+    # operator-gateway listen TLS-only with the stack's internal certs (nginx's
+    # proxy_ssl_verify defaults to off). A service that isn't running answers
+    # 502 for its own spec only.
+    location = /docs { return 301 /docs/; }
+    location ^~ /docs/ {
+        auth_request /oauth2/auth-csadmin;
+        error_page 401 = @oauth2_signin;
+        alias /var/www/api-docs/;
+        index index.html;
+
+        location = /docs/specs/edge-api.json        { proxy_pass http://127.0.0.1:8080/packiot/docs-json; }
+        location = /docs/specs/read-api.json        { proxy_pass http://172.18.0.26:9104/openapi.json; }
+        location = /docs/specs/barcode-service.json { proxy_pass http://172.18.0.36:8446/openapi.json; }
+        location = /docs/specs/sparkplug-agent.json { proxy_pass http://172.18.0.44:9104/openapi.json; }
+        location = /docs/specs/onboard-api.json     { proxy_pass http://172.18.0.23:9105/openapi.json; }
+        location = /docs/specs/ingest-shim.json     { proxy_pass https://172.18.0.29:8444/openapi.json; }
+        location = /docs/specs/operator-gateway.json { proxy_pass https://172.18.0.30:8443/openapi.json; }
     }
 
     location / {
@@ -583,6 +650,15 @@ cat > /etc/nginx/conf.d/refdata.conf <<NGINX
 # is the SAME exemption rationale as api.conf's /api/* block and operator.conf's
 # XHR routes (see their comments) — so there is NO auth_request here; nginx
 # proxies straight to the container and refdata-api is the sole auth authority.
+# Allowed SPA origins (codified from the live hand-fix, 2026-10-13): front4 staging
+# moved to front.$STAGING_DOMAIN and csadmin calls refdata too; a single hard-coded
+# origin made the browser reject their responses. Unknown origins get no ACAO.
+map \$http_origin \$cors_allow_origin {
+    default                                "";
+    "https://staging.packiot.com"          \$http_origin;
+    "https://front.$STAGING_DOMAIN"    \$http_origin;
+    "https://csadmin.$STAGING_DOMAIN"  \$http_origin;
+}
 server {
     listen 80;
     server_name refdata.$STAGING_DOMAIN;
@@ -599,15 +675,21 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
+    # refdata is public (own auth), but its ops/contract routes are not for the
+    # internet: Prometheus scrapes read-api:9104 in-network and the docs portal
+    # fetches /openapi.json in-network (api.<domain>/docs/). Both were reachable
+    # here unauthenticated (/metrics returned 200 publicly, 2026-10-13).
+    location = /metrics      { return 404; }
+    location = /openapi.json { return 404; }
+
     location / {
         # CORS for the front4 staging SPA. The preflight must NOT require auth,
         # so nginx short-circuits OPTIONS with a 204 + CORS headers BEFORE the
         # request can reach refdata-api's fail-closed auth middleware. 'always'
         # ensures the ACAO header rides along on refdata's 401/4xx too, so the
         # browser can read cross-origin error bodies.
-        set \$cors_origin "https://staging.packiot.com";
         if (\$request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin  \$cors_origin always;
+            add_header Access-Control-Allow-Origin  \$cors_allow_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS" always;
             # x-packiot-agent + x-user are sent by front4 on every refdata call;
             # omitting them from Allow-Headers makes the browser block the request
@@ -618,7 +700,7 @@ server {
             add_header Content-Type "text/plain";
             return 204;
         }
-        add_header Access-Control-Allow-Origin  \$cors_origin always;
+        add_header Access-Control-Allow-Origin  \$cors_allow_origin always;
         add_header Access-Control-Allow-Headers "Authorization, X-Api-Key, Content-Type, x-packiot-agent, x-user, x-operator-superadmin-token" always;
 
         # refdata-api: internal container, no host publish. nginx (host) reaches

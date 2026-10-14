@@ -63,6 +63,28 @@ func strandedStatements(d flows.Dest, s StrandedScope) []strandedStmt {
 	    RETURNING e.id_equipment || '@' || e.ts_value AS k)
 	SELECT count(*), COALESCE((array_agg(k ORDER BY k))[1:10], '{}') FROM c`, d.GoldSchema, d.RefSchema), []string{"ml"}},
 	}
+	// Day / week / month (2026-10-14). These grains exist only for tp>1 (RunDay's
+	// day_elig, grainRollupSQL's eligible): a tp=1 row is never computed, so its flag
+	// never drains. Found live: 525 machine day rows of ents 3/5/2000003 flagged by the
+	// 2026-10-09 ops repairs (repair-s2-stale-open-stops.sh BACKFILL_ENTS +
+	// cleanup-unobservable-link-phantoms.sh flag every grain per equipment), sitting
+	// unseen because this sweep had no day/week/month statement. Age bounds are the
+	// negation of each pass's window literal (day 1 month, week/month 1 year).
+	for _, g := range []struct{ table, horizon string }{
+		{"equipment_oee_daily", "1 month"},
+		{"equipment_oee_weekly", "1 year"},
+		{"equipment_oee_monthly", "1 year"},
+	} {
+		out = append(out, strandedStmt{g.table, fmt.Sprintf(`
+	WITH c AS (
+	    UPDATE %[1]s.%[3]s e SET recalc_needed = false
+	      FROM %[2]s.equipments eq
+	     WHERE e.recalc_needed AND eq.id_equipment = e.id_equipment
+	       AND (e.ts_value < now() - interval '%[4]s'              -- rollup eligibility window
+	            OR eq.tp_equipment = 1)                           -- grain is tp>1 only
+	    RETURNING e.id_equipment || '@' || e.ts_value AS k)
+	SELECT count(*), COALESCE((array_agg(k ORDER BY k))[1:10], '{}') FROM c`, d.GoldSchema, d.RefSchema, g.table, g.horizon), nil})
+	}
 	if s.HourHorizon != "" {
 		out = append(out, strandedStmt{"equipment_oee_hourly", fmt.Sprintf(`
 	WITH c AS (

@@ -1,0 +1,4 @@
+# Local `go build ./cmd/refdata-api` output (22 MB binary). Anchored with a
+# leading slash so it never matches the cmd/refdata-api/ source directory.
+# Was committed by accident until 2026-10-13; history still holds it.
+/refdata-api

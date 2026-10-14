@@ -11,8 +11,12 @@ sprawl (44 → 14 queues).
 else should exist. Current value:
 
 ```
-WORKER_TENANT_ALLOWLIST=cpack,sbxcpack,bispharmastaging
+WORKER_TENANT_ALLOWLIST=cpack,sbxcpack,bispharmastaging,incoplast
 ```
+
+`incoplast` (added 2026-10-09) is the routing key ingest-shim publishes under
+(`sparkplug.data.incoplast`). Do not set this variable in `/opt/packiot/.env`: a hand-set
+value silently overrides this default.
 
 **Rule:** the tenant token is the **SparkPlug group name, lowercased** (e.g. group
 `BISPHARMASTAGING` → `bispharmastaging`). Use exactly one spelling per tenant — do NOT
@@ -32,10 +36,15 @@ Plus the shared infrastructure (keep):
 
 - `stream-engine-q` (+ `-retry-30s`, `-failed`) — the base/default worker queue (bound to `oee`/`sparkplug.data`)
 - `oeecloud-fanout-cpack-to-sbxcpack` — the CPACK→sandbox fanout
-- `oee-unroutable-q` — dead-letter for unroutable messages
+- `oee-unroutable-q` — catches messages that match no `oee` binding (alternate exchange via
+  policy `oee-ae`). Capped by policy `oee-unroutable-cap`: 50,000 messages, 14-day TTL.
+  Any depth fires `OeeUnroutableMessages`, so it must stay empty in normal operation.
+- `e2efixture-sink-q` — bound to `oee` / `sparkplug.data.e2efixture`. The deploy's synthetic
+  counter fixture (group `E2EFIXTURE`) lands here, not in `oee-unroutable-q`. Capped by policy
+  `e2efixture-sink-cap`: 200 messages, 1-day TTL. Nothing consumes it.
 - Exchanges: `oee` (topic), `oee-retry` (topic), `oee-failed` (topic), `oee-unroutable` (fanout)
 
-→ 14 queues total for the current 3-tenant allowlist.
+→ 18 queues total for the current 4-tenant allowlist (3 per tenant + 6 shared).
 
 ## 2026-09-14 cleanup (44 → 14)
 

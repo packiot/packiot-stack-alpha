@@ -1,6 +1,6 @@
 .PHONY: help init update dev dev-ps dev-down dev-reset dev-smoke \
         tf-bootstrap tf-init tf-plan tf-apply tf-destroy tf-output tf-fmt tf-validate \
-        staging-deploy-key
+        staging-deploy-key openapi
 
 TF_DIR      = terraform/staging
 TF_BOOT_DIR = terraform/staging/bootstrap
@@ -32,6 +32,9 @@ help:
 	@echo "    dev-ps           Show dev containers"
 	@echo "    dev-down         Stop + remove dev containers (volumes kept)"
 	@echo "    dev-smoke SVC=.. Smoke-check running slices: health + one real request each"
+	@echo ""
+	@echo "  API docs"
+	@echo "    openapi          Export every Go service's OpenAPI spec to docs/api/openapi/ (commit the result)"
 	@echo ""
 	@echo "  Staging one-time setup"
 	@echo "    staging-deploy-key  Generate + register GitHub deploy key → Secrets Manager"
@@ -137,3 +140,35 @@ staging-deploy-key:
 			--secret-string "$$(jq -n --arg k "$$(cat /tmp/staging_deploy_key)" '{private_key: $$k}')"
 	rm /tmp/staging_deploy_key /tmp/staging_deploy_key.pub
 	@echo "Done. Private key is in Secrets Manager; local copy removed."
+
+# ── API docs: OpenAPI export (wiki build input) ──────────────────────────────
+# Every Go service serves its OpenAPI 3.1 contract at GET /openapi.json; this
+# writes the same documents to docs/api/openapi/<service>.openapi.json so the
+# wiki can render them without a running stack. Embedded specs are copied
+# verbatim; read-api's spec is generated from its route tables (no DB/network).
+# CI (.github/workflows/openapi-export.yml) fails when the committed files drift.
+# edge-api exports its own spec in its repo (openapi/edge-api.openapi.json).
+OPENAPI_DIR = docs/api/openapi
+OPENAPI_EMBEDDED = \
+	barcode-service:services/barcode-service/cmd/barcode-service/openapi.json \
+	ingest-shim:services/ingest-shim/internal/httpserver/openapi.json \
+	operator-gateway:services/operator-gateway/internal/adapter/openapi.json \
+	sparkplug-agent:services/sparkplug-decoder/internal/agent/httpingest/openapi.json \
+	onboard-api:services/sparkplug-decoder/internal/agent/onboardapi/openapi.json
+
+openapi:
+	@mkdir -p $(OPENAPI_DIR)
+	@for pair in $(OPENAPI_EMBEDDED); do \
+		svc=$${pair%%:*}; src=$${pair#*:}; \
+		cp $$src $(OPENAPI_DIR)/$$svc.openapi.json && echo "  $(OPENAPI_DIR)/$$svc.openapi.json"; \
+	done
+	@cd services/read-api && go run ./cmd/refdata-api --dump-openapi > ../../$(OPENAPI_DIR)/read-api.openapi.json.tmp
+	@mv $(OPENAPI_DIR)/read-api.openapi.json.tmp $(OPENAPI_DIR)/read-api.openapi.json && echo "  $(OPENAPI_DIR)/read-api.openapi.json"
+	@# edge-api's spec lives in its own repo (npm run openapi:export there). Copy it from the
+	@# PINNED submodule commit when the submodule is checked out; CI without private
+	@# submodules keeps the committed copy, so the drift check stays green there.
+	@if git -C edge-api rev-parse --verify -q "$$(git ls-tree HEAD edge-api | awk '{print $$3}')^{commit}" >/dev/null 2>&1 \
+	   && git -C edge-api cat-file -e "$$(git ls-tree HEAD edge-api | awk '{print $$3}'):openapi/edge-api.openapi.json" 2>/dev/null; then \
+		git -C edge-api show "$$(git ls-tree HEAD edge-api | awk '{print $$3}'):openapi/edge-api.openapi.json" > $(OPENAPI_DIR)/edge-api.openapi.json \
+		&& echo "  $(OPENAPI_DIR)/edge-api.openapi.json (edge-api @ pinned submodule)"; \
+	else echo "  edge-api submodule not available — keeping committed $(OPENAPI_DIR)/edge-api.openapi.json"; fi

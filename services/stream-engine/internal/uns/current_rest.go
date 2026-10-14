@@ -5,7 +5,8 @@
 // commented out = DEAD, fourth dead-generation catch).
 //
 // Verbatim notes:
-//   - day (area/site): current-day runtime row → UNS day, end=+1day.
+//   - day (area): current PRODUCTION-day runtime row (label from
+//     piot_get_day_begin_by_area, not the UTC date) → UNS day, end=+1day.
 //   - month (area/site): current-month row + elapsed + proportional
 //     target/ideal formulas (fraction of month elapsed) verbatim.
 //   - week (area/site): joins equipments (tp=3) + shift-hour-list fn;
@@ -27,16 +28,37 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 )
 
-const refreshDayEntitySQL = `
-	WITH prod AS (
-	    SELECT %[3]s, ts_value, net, gross, scrap,
-	           oee, oee_p, oee_a, oee_q, available_time, running_time,
-	           stopped_time, planned_downtime, ideal_production,
-	           idle_time, idle_starved, idle_blocked, target, proportional_target
-	      FROM %[1]s.%[4]s
-	     WHERE ts_value >= date_trunc('day', now())::timestamptz AND ts_value <= now()
+// refreshDayAreaSQL — the area's CURRENT PRODUCTION DAY (gold area_oee_daily) →
+// silver area_live_day (read by serving.home → front4 Home area cards).
+//
+// THE KEY IS THE PRODUCTION-DAY LABEL, NOT THE UTC DATE (2026-10-13 fix).
+// area_oee_daily.ts_value is a DATE label = the production day, whose begin comes
+// from the area's shift calendar (piot_get_day_begin_by_area: CPACK days begin
+// 23:10 BRT = 02:10 UTC, Bispharma later). The old predicate
+// `ts_value >= date_trunc('day', now()) AND ts_value <= now()` picked the UTC
+// calendar date instead, so for every hour between UTC midnight and the area's
+// day begin it served the NEXT production day's not-yet-started row (zeros), and
+// for a tenant whose day begins after UTC midnight it served the wrong day for
+// that whole window. Same anchor the entity rollup's shift tail and the area
+// live-shift refresher use.
+const refreshDayAreaSQL = `
+	WITH cur AS (
+	    SELECT id_area, ts_begin, ts_day FROM (
+	        SELECT a.id_area, db.ts_value AS ts_begin, db.ts_value_production::date AS ts_day
+	          FROM %[2]s.areas a
+	          JOIN %[2]s.enterprises et ON a.id_enterprise = et.id_enterprise AND et.active
+	          CROSS JOIN LATERAL (SELECT ts_value, ts_value_production
+	                                FROM piot_get_day_begin_by_area(a.id_area, now()) LIMIT 1) db) s1
+	     WHERE ts_day IS NOT NULL
+	), prod AS (
+	    SELECT v.id_area, v.ts_value, cur.ts_begin, v.net, v.gross, v.scrap,
+	           v.oee, v.oee_p, v.oee_a, v.oee_q, v.available_time, v.running_time,
+	           v.stopped_time, v.planned_downtime, v.ideal_production,
+	           v.idle_time, v.idle_starved, v.idle_blocked, v.target, v.proportional_target
+	      FROM %[1]s.area_oee_daily v
+	      JOIN cur ON v.id_area = cur.id_area AND v.ts_value = cur.ts_day
 	)
-	UPDATE %[6]s.%[5]s u SET
+	UPDATE %[3]s.area_live_day u SET
 	       gross_production = p.gross, net_production = p.net, scrap = p.scrap,
 	       begin_time = p.ts_value, end_time = p.ts_value + interval '1 day',
 	       oee = p.oee, oee_p = p.oee_p, oee_a = p.oee_a, oee_q = p.oee_q,
@@ -44,12 +66,13 @@ const refreshDayEntitySQL = `
 	       stopped_time = p.stopped_time, planned_downtime = p.planned_downtime,
 	       ideal_production = p.ideal_production, idle_time = p.idle_time,
 	       idle_starved = p.idle_starved, idle_blocked = p.idle_blocked,
-	       target = p.target, proportional_target = p.proportional_target
-	  FROM prod p WHERE u.%[3]s = p.%[3]s`
+	       target = p.target, proportional_target = p.proportional_target,
+	       elapsed_time = extract(epoch FROM (now() - p.ts_begin))::int
+	  FROM prod p WHERE u.id_area = p.id_area`
 
 // #186: refreshMonthEntitySQL / refreshWeekEntitySQL (area/site live-week and
 // live-month refreshers) were removed with the retired area/site weekly/monthly
-// grains. refreshDayEntitySQL (above) and refreshShiftAreaSQL (below) stay — the
+// grains. refreshDayAreaSQL (above) and refreshShiftAreaSQL (below) stay — the
 // day + area-shift live grains feed front4 mission control.
 
 const refreshShiftAreaSQL = `
@@ -153,20 +176,9 @@ const refreshJobsElapsedSQL = `
 // (serving.home reads area_live_day, not site) and its source site_oee_daily is
 // likewise unread; both are dropped. Only the AREA day refresh remains.
 func RefreshCurrentRest(ctx context.Context, d flows.Dest) error {
-	type ent struct{ key, rtDay, unsDay string }
-	ents := []ent{
-		{"id_area", "area_oee_daily", "area_live_day"},
-	}
-	for _, e := range ents {
-		steps := []struct{ name, sql string }{
-			// %[1]s reads the *_oee_daily fact (gold); %[6]s writes the *_live_day grain (silver/GrainSchema).
-			{"day-" + e.key, fmt.Sprintf(refreshDayEntitySQL, d.GoldSchema, d.RefSchema, e.key, e.rtDay, e.unsDay, d.GrainSchema)},
-		}
-		for _, s := range steps {
-			if _, err := d.Pool.Exec(ctx, s.sql); err != nil {
-				return fmt.Errorf("uns %s: %w", s.name, err)
-			}
-		}
+	// %[1]s reads area_oee_daily (gold); %[2]s = core (areas/enterprises); %[3]s writes area_live_day (silver/GrainSchema).
+	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshDayAreaSQL, d.GoldSchema, d.RefSchema, d.GrainSchema)); err != nil {
+		return fmt.Errorf("uns day-id_area: %w", err)
 	}
 	// %[1]s reads area_oee_shift (gold); %[3]s writes area_live_shift (silver/GrainSchema).
 	if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshShiftAreaSQL, d.GoldSchema, d.RefSchema, d.GrainSchema)); err != nil {

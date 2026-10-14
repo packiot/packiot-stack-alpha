@@ -1,6 +1,6 @@
 # ── barcode-service (Tier 3) — ADR-0060 P4 ───────────────────────────────────
 # contract (docs/dev/contracts.md §2, contracts/go-services.md §barcode-service):
-#   inputs:   postgres packiot_analytics (production_orders, equipments, box_scans, po_box_counter);
+#   inputs:   postgres packiot_analytics as barcode_service (production_orders, equipments, box_scans, po_box_counter);
 #             dev Cognito pool JWKS (tenant = the token's custom:id_enterprise)
 #   outputs:  HTTP :8446 (POST /v1/scans, GET /v1/scans/stream SSE, /healthz); writes box_scans + po_box_counter
 #   external: dev Cognito pool (internet). Firebase OFF (FIREBASE_PROJECT_ID="" — F1, fixed in #1558).
@@ -13,10 +13,14 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      CREDS_SOURCE: env
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER:?set in dev/.env.dev}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      # least-privilege role (db/migrations/t-barcode-service-role), as staging; the dev seed gives every
+      # login role the password "dev". Seeds built before the role exists get it from base.yml's
+      # 70-service-roles init hook (fresh volume: make dev-reset).
+      DB_USER: barcode_service
+      DB_PASSWORD: ${DEV_BARCODE_SERVICE_DB_PASSWORD:-dev}
       DB_NAME: packiot_analytics
       HTTP_PORT: "8446"
       FIREBASE_PROJECT_ID: ""

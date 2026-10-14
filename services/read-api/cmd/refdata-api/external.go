@@ -893,7 +893,7 @@ func makeExternalHandler(sh externalShim, reader externalReader, keys map[string
 // external routes self-authenticate (they are in the auth-exempt set) so they can
 // reproduce the foreign 400/401 shapes, but they still resolve the tenant through
 // the SAME key map, so refdata remains the single injection authority.
-func registerExternalShims(mux *http.ServeMux, pool *pgxpool.Pool, keys map[string]int, logger *slog.Logger) {
+func registerExternalShims(mux routeMux, pool *pgxpool.Pool, keys map[string]int, logger *slog.Logger) {
 	reader := pgxExternalReader{pool: pool}
 	for _, sh := range externalShims {
 		owner := getenvInt(sh.ownerEnv, 0)

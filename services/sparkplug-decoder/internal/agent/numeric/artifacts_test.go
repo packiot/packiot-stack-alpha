@@ -16,7 +16,7 @@ import (
 )
 
 // genDir is docs/clients/gen relative to this test file's package directory
-// (services/edge-transformer/internal/agent/numeric → repo root is 5 up).
+// (services/sparkplug-decoder/internal/agent/numeric → repo root is 5 up).
 const genDir = "../../../../../docs/clients/gen"
 
 func loadTranslatable(t *testing.T, agentYAML string) map[int]numeric.Target {

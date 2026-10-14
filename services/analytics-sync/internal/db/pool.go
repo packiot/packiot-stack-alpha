@@ -21,6 +21,10 @@ type DBCreds struct {
 	Port     int
 	User     string
 	Password string
+	// Params are session settings sent in the connection's startup packet (pgx RuntimeParams), e.g.
+	// legacy-replicator's DEST tenant stamp {"app.tenant_id": "<DST_ENTERPRISE>"}. Every pooled connection
+	// gets them before its first statement. Nil = none.
+	Params map[string]string
 }
 
 // URLForDatabase builds a pgx DSN pointing at the given database name.
@@ -51,6 +55,9 @@ func NewPool(ctx context.Context, creds *DBCreds, dbName, appName string, logger
 	// no prepared statements. See oeecloud-worker/internal/db/pool.go
 	// for the rationale.
 	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	for k, v := range creds.Params {
+		pc.ConnConfig.RuntimeParams[k] = v
+	}
 	p, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
@@ -61,6 +68,7 @@ func NewPool(ctx context.Context, creds *DBCreds, dbName, appName string, logger
 	}
 	logger.Info("postgres pool ready",
 		slog.String("host", creds.Host),
+		slog.String("user", creds.User),
 		slog.Int("port", creds.Port),
 		slog.String("db", dbName),
 		slog.String("application_name", appName),

@@ -113,6 +113,11 @@ pg_database_size:
 # ── Top tables by total size in the CURRENT database (the exporter runs this
 # per auto-discovered DB; label master_only false so it runs everywhere). ──
 pg_table_size_top:
+  # cache_seconds (ADR-0063 Phase A3, 2026-10-14): sizes move slowly, but this ran on
+  # every 15 s scrape for every auto-discovered DB (116 calls / 7 min on staging,
+  # each calling chunks_detailed_size() per hypertable). The exporter now serves
+  # the cached result between runs; Grafana's size panels lag by at most 5 min.
+  cache_seconds: 300
   query: |
     SELECT current_database()          AS datname,
            n.nspname AS schema,
@@ -144,6 +149,11 @@ pg_table_size_top:
 # ── TimescaleDB hypertable sizes (guarded: view only exists when the extension
 # is installed; the LEFT JOIN + coalesce keep it inert on plain Postgres). ──
 pg_timescaledb_hypertables:
+  # cache_seconds (ADR-0063 Phase A3, 2026-10-14): sizes move slowly, but this ran on
+  # every 15 s scrape for every auto-discovered DB (116 calls / 7 min on staging,
+  # each calling chunks_detailed_size() per hypertable). The exporter now serves
+  # the cached result between runs; Grafana's size panels lag by at most 5 min.
+  cache_seconds: 300
   query: |
     SELECT current_database()      AS datname,
            hypertable_schema AS schema,
@@ -257,6 +267,11 @@ pg_timescaledb_cagg:
 # a row from hypertable_compression_stats(); uncompressed ones coalesce to 0.
 # ratio = before/after (higher = better). Runs per DB. ──
 pg_timescaledb_compression:
+  # cache_seconds (ADR-0063 Phase A3, 2026-10-14): sizes move slowly, but this ran on
+  # every 15 s scrape for every auto-discovered DB (116 calls / 7 min on staging,
+  # each calling chunks_detailed_size() per hypertable). The exporter now serves
+  # the cached result between runs; Grafana's size panels lag by at most 5 min.
+  cache_seconds: 300
   query: |
     SELECT current_database() AS datname,
            h.hypertable_schema AS schema,

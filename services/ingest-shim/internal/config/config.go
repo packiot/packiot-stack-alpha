@@ -36,7 +36,11 @@ type Config struct {
 
 	// Scope guard. Only payloads whose topic/group first segment matches
 	// this (case-insensitive) are admitted. Everything else → 403.
-	ScopeGroup string // 'INCOPLAST'
+	// No default: until 2026-10-13 an unset OR empty SCOPE_GROUP silently
+	// fell back to 'INCOPLAST', so a prod deploy that forgot
+	// INGEST_SCOPE_GROUP (compose passes it as "") admitted another
+	// client's group. Load() now refuses to start instead.
+	ScopeGroup string // e.g. 'INCOPLAST' (staging), the client's group (prod)
 
 	// Fan-out. The staging 3-flow validation needs each Incoplast message to
 	// reach F1 (source_type ""), F2 (source_type "go"), and F3 (source_type
@@ -59,12 +63,15 @@ type Config struct {
 }
 
 // Load reads full config and validates the fields that have no safe
-// default (INGEST_API_KEY). TLS files are validated in main so the
+// default (INGEST_API_KEY, SCOPE_GROUP). TLS files are validated in main so the
 // healthcheck path (LoadForHealthcheck) can skip them.
 func Load() (*Config, error) {
 	c := loadBase()
 	if c.IngestAPIKey == "" {
 		return nil, fmt.Errorf("INGEST_API_KEY is required (no default — refusing to run with auth disabled)")
+	}
+	if c.ScopeGroup == "" {
+		return nil, fmt.Errorf("SCOPE_GROUP is required (no default — refusing to guess which client group to admit)")
 	}
 	return c, nil
 }
@@ -88,7 +95,7 @@ func loadBase() *Config {
 		HTTPAddr:         getenv("HTTP_ADDR", ":8444"),
 		MetricsAddr:      getenv("METRICS_ADDR", ":9105"),
 		IngestAPIKey:     os.Getenv("INGEST_API_KEY"),
-		ScopeGroup:        getenv("SCOPE_GROUP", "INCOPLAST"),
+		ScopeGroup:        strings.TrimSpace(os.Getenv("SCOPE_GROUP")),
 		FanoutSourceTypes: parseFanout(getenv("FANOUT_SOURCE_TYPES", "legacy,go,refactored")),
 		MaxBodyBytes:      int64(getenvInt("MAX_BODY_BYTES", 1<<20)), // 1 MiB
 		TLSCertFile:      os.Getenv("TLS_CERT_FILE"),

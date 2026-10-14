@@ -3,7 +3,7 @@
 #
 # Mounted into a second edge-transformer container at
 # /etc/packiot/client.yaml and parsed by
-# services/edge-transformer/internal/clientconfig/loader.go at boot.
+# services/sparkplug-decoder/internal/clientconfig/loader.go at boot.
 #
 # Current loader honors the SKELETON only: tenant_id, customer,
 # environment, equipments. Everything below the skeleton is commented

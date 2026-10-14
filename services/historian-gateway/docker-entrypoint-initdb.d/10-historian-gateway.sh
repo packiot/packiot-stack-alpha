@@ -73,8 +73,11 @@
 #   * Superset: the silver.equipment_values virtual dataset injects the year/month range from the
 #     dashboard time filter via Jinja ({{ from_dttm }}/{{ to_dttm }}). See
 #     configs/superset/assets/datasets/historian_union/silver.equipment_values.yaml.
-#   * read-api / tools: call ev_between(p_start, p_end) (below) which injects the
-#     year/month range for you, or add the year/month predicate yourself.
+#   * read-api / tools: query the silver.equipment_values VIEW directly and add the
+#     year/month predicate yourself (read-api does this in
+#     services/read-api/cmd/refdata-api/historian.go). The ev_between() helper that
+#     used to inject it was dropped in t269 (see the REMOVED note below): pg_duckdb
+#     cannot run read_parquet inside a SQL function.
 #
 # ── LIVE-FDW pushdown (T3) ────────────────────────────────────────────────────
 # The FDW server is created with use_remote_estimate + fetch_size + async_capable so

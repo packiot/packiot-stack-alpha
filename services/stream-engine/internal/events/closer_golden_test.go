@@ -1,6 +1,6 @@
 //go:build golden
 
-// Golden: the real closeStaleOpensSQL on ephemeral Postgres. Pins the 2026-09-24 fix —
+// Golden: the real closer main pass (closeReadSQL + closeApplySQL) on ephemeral Postgres. Pins the 2026-09-24 fix —
 // the trailing count-silence close is RUNNING-only; an open STOP stays open until the next
 // transition bounds it (before the fix: ended at its own start, permanently).
 //
@@ -9,7 +9,6 @@ package events
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -53,8 +52,7 @@ func TestGoldenCloserNeverTruncatesOpenStops(t *testing.T) {
 	if _, err := pool.Exec(ctx, closerFixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	sql := fmt.Sprintf(closeStaleOpensSQL, "gcl", "gcl", "", "ev")
-	if _, err := pool.Exec(ctx, sql, []int{7}, 300, 72); err != nil {
+	if err := closeMainCommit(ctx, pool, "gcl", []int{7}, 300, 72); err != nil {
 		t.Fatalf("closer: %v", err)
 	}
 	type row struct {
@@ -82,6 +80,19 @@ func TestGoldenCloserNeverTruncatesOpenStops(t *testing.T) {
 	if r := get(301); r.open || r.ageEndMin < 19.5 || r.ageEndMin > 20.5 {
 		t.Errorf("stop followed by a run: open=%v ended %.1f min ago, want the run's start (~20 min ago)", r.open, r.ageEndMin)
 	}
+}
+
+// closeMainCommit runs the live main pass (read + apply) in its own transaction.
+func closeMainCommit(ctx context.Context, pool *pgxpool.Pool, schema string, ents []int, thr, horizon int) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	if _, err := runCloseMain(ctx, tx, Dest{SilverSchema: schema, RefSchema: schema}, ents, thr, horizon); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // TestGoldenCloserLongOpenStops pins the long-open pass (2026-09-24). The main pass only
@@ -180,8 +191,7 @@ func TestGoldenCloserRebindsClosedRows(t *testing.T) {
 	if _, err := pool.Exec(ctx, fixture); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	sql := fmt.Sprintf(closeStaleOpensSQL, "gcl", "gcl", "", "ev")
-	if _, err := pool.Exec(ctx, sql, []int{7}, 300, 72); err != nil {
+	if err := closeMainCommit(ctx, pool, "gcl", []int{7}, 300, 72); err != nil {
 		t.Fatalf("closer: %v", err)
 	}
 	endAgo := func(eq, ev int) float64 {

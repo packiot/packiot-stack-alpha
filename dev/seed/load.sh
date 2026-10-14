@@ -5,6 +5,7 @@
 #   2. full DDL restore of packiot_analytics between timescaledb_pre_restore()/post_restore()
 #      (keeps hypertables, caggs and policies; a schema-only dump would turn them into plain tables)
 #   3. load.sql with delta_days = whole weeks between snapshot_end and now (D6: weekday + shift calendars intact)
+#   4. sync-sequences.sql: every id sequence past max(id) of the loaded rows (contracts.md F11)
 set -euo pipefail
 SEED=/seed
 DB=packiot_analytics
@@ -38,6 +39,11 @@ END=$(sed -n 's/.*"snapshot_end": *"\([^"]*\)".*/\1/p' "$SEED/metadata.json")
 DELTA=$("${PSQL[@]}" -d "$DB" -At -c "SELECT (floor(extract(epoch FROM now() - '$END'::timestamptz) / 604800) * 7)::int")
 echo "devseed: snapshot_end=$END → shifting all timestamps by $DELTA days"
 "${PSQL[@]}" -d "$DB" -v delta_days="$DELTA" -f "$SEED/load.sql"
+# F11 (docs/dev/contracts.md): the schema-only dump carries no sequence positions, so every id sequence restored at 1
+# while load.sql filled the tables, and the first default-id INSERT collided (edge-api knex, 2026-10-08). Move every
+# sequence past the loaded ids here, inside the image, so the seed is right for ANY consumer (not only dev/base.yml).
+"${PSQL[@]}" -d "$DB" -f "$SEED/sync-sequences.sql"
+echo "devseed: $("${PSQL[@]}" -d "$DB" -At -c "SELECT count(*) FROM pg_sequences WHERE last_value IS NOT NULL") sequence(s) set past the loaded ids"
 [ -z "$PAUSED" ] || "${PSQL[@]}" -d "$DB" -c "SELECT alter_job(j, scheduled => true) FROM unnest('{$PAUSED}'::int[]) j" >/dev/null
 echo "devseed: $(echo "$PAUSED" | tr ',' '\n' | grep -c . ) scheduled job(s) paused during the load and resumed"
 echo "devseed: loaded $(sed -n 's/.*"tenant": *\([0-9]*\).*/tenant \1/p' "$SEED/metadata.json") into $DB"

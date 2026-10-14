@@ -12,24 +12,13 @@ import (
 
 // The cursor lives in the DEST DB (packiot_analytics), NOT the source:
 // legacy packiot40 is SELECT-only, so we cannot persist progress there.
-// Same mirror_replay_cursor shape as the in-instance mirror, created
-// on demand here since packiot_analytics has no such table yet.
 //
-// SCHEMA-QUALIFIED to ops (task #241 app-split: the `app` junk-drawer was split by
-// concern, and this operational-plumbing cursor lands in `ops`). CREATE TABLE IF NOT
-// EXISTS checks ONLY the creation namespace (first schema on the search_path), NOT
-// the whole path — so an UNQUALIFIED create here would re-spawn an empty shadow in
-// `gold` (the medallion first-schema) even though the real table lives in `ops`.
-// Qualifying the create + every ref keeps this bound to ops.mirror_replay_cursor.
-// CREATE SCHEMA IF NOT EXISTS ops first so a fresh dest self-provisions the home schema.
-
-const cursorSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ops`
-
-const cursorDDL = `CREATE TABLE IF NOT EXISTS ops.mirror_replay_cursor (
-	source       text PRIMARY KEY,
-	last_log_id  bigint NOT NULL,
-	last_run_at  timestamptz NOT NULL DEFAULT now()
-)`
+// ops.mirror_replay_cursor is OWNED BY A MIGRATION (db/migrations/t-legacy-replicator-role
+// re-asserts it with CREATE TABLE IF NOT EXISTS), never created here: the replicator runs
+// as the least-privilege role legacy_replicator, which has no CREATE on any schema. A
+// missing table therefore surfaces as a loud boot error ("read cursor: ... 42P01").
+// Every reference is schema-qualified (the task #241 lesson: an unqualified name would
+// resolve through the search_path to the wrong schema).
 
 // EnsureCursor returns the current cursor for source, seeding it on cold
 // start just BELOW the first legacy row in the backfill window so the loop
@@ -37,12 +26,6 @@ const cursorDDL = `CREATE TABLE IF NOT EXISTS ops.mirror_replay_cursor (
 // returned untouched (idempotent restarts). destPool = staging (cursor
 // store); legacyPool = source (window probe, read-only).
 func EnsureCursor(ctx context.Context, destPool, legacyPool *pgxpool.Pool, source string, srcEnterprise int, sinceStart time.Time) (int64, error) {
-	if _, err := destPool.Exec(ctx, cursorSchemaDDL); err != nil {
-		return 0, fmt.Errorf("ensure ops schema: %w", err)
-	}
-	if _, err := destPool.Exec(ctx, cursorDDL); err != nil {
-		return 0, fmt.Errorf("ensure cursor table: %w", err)
-	}
 	var existing int64
 	err := destPool.QueryRow(ctx,
 		`SELECT last_log_id FROM ops.mirror_replay_cursor WHERE source = $1`, source).Scan(&existing)

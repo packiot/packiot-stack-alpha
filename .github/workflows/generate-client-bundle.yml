@@ -374,6 +374,10 @@ jobs:
           # THIS tag; if bundle_image=true the image is embedded as a tar below so a
           # private-ECR client needs no AWS creds to pull it.
           set_kv AGENT_IMAGE "${{ inputs.agent_image }}"
+          # The readers have their OWN image variable (compose.edge.yml
+          # x-reader-base) so an agent-only AGENT_IMAGE can never drop the reader
+          # binaries. agent_image is the full build, so both pin the same ref.
+          set_kv READER_IMAGE "${{ inputs.agent_image }}"
           set_kv CLIENT_CONFIG_FILE  "./$CLIENT/$CLIENT-client.yaml"
           set_kv AGENT_CONFIG_FILE   "./$CLIENT/$CLIENT-agent.yaml"
           set_kv AGENT_PROFILE_FILE  "./$CLIENT/$CLIENT-profile.yaml"
@@ -579,7 +583,7 @@ jobs:
             echo "| \`compose.edge.yml\`, \`mosquitto/\`, \`README-reader.md\`, \`gen-mtls-certs.sh\`, \`Dockerfile.nodered-reader\` | static deploy assets |"
             echo "| \`.env.example\` | prefilled from the reader template (tenant + artifact paths normalized to \`$CLIENT\`) |"
             echo
-            echo "> Tier-1 model: **\`$PROFILE\`**. The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. \`AGENT_IMAGE\` is **pre-pinned** to \`${{ inputs.agent_image }}\` (agent + all readers) and, when \`bundle_image\` is set, **embedded** as \`images/edge-transformer.tar.gz\` — no ECR auth needed on the client box."
+            echo "> Tier-1 model: **\`$PROFILE\`**. The uplink host is baked into \`$CLIENT-agent.yaml\` from the descriptor's \`agent.uplink_broker\`. \`AGENT_IMAGE\` and \`READER_IMAGE\` are **pre-pinned** to \`${{ inputs.agent_image }}\` (agent + all readers) and, when \`bundle_image\` is set, **embedded** as \`images/edge-transformer.tar.gz\` — no ECR auth needed on the client box."
             if [ "$PROFILE" = "nodered" ]; then
               echo
               echo "> \`edge_model=nodered\`: the \`nodered\` service SEEDS \`$CLIENT/$CLIENT-reader-flow.json\` as Node-RED's active flows on FIRST boot (\`NODERED_READER_FLOW\` is prefilled) — no manual import. Add per-client integrations on the **\`$CLIENT customizations\`** tab; they persist in the \`nodered-data\` volume. Fill the per-PLC \`PLC_HOST_<NAME>\` secrets in \`.env\`."

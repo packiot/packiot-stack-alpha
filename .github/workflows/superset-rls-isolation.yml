@@ -50,6 +50,9 @@ jobs:
     name: compose.superset.yml merges + stays profile-gated
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # compose.staging.yml fails closed on this (${VAR:?}); non-secret CI placeholder.
+      EDGE_SESSION_BROKER_TOKEN: ci-placeholder-not-a-secret-0000000000
     steps:
       - name: Checkout (no submodules)
         uses: actions/checkout@v4
@@ -61,7 +64,10 @@ jobs:
         # proving the default stack is unchanged.
         run: |
           set -e
-          touch .env
+          # compose.staging.yml fails closed on the read-api key vars (${VAR:?}):
+          # give interpolation non-secret CI placeholders (never real keys).
+          printf '%s\n' REFDATA_QUERY_API_KEYS=ci-placeholder:0 OPERATOR_REFDATA_API_KEY=ci-placeholder \
+            OPERATOR_SBX_REFDATA_API_KEY=ci-placeholder OPERATOR_BISPHARMA_REFDATA_API_KEY=ci-placeholder > .env
           out=$(docker compose --env-file .env -f compose.staging.yml -f compose.superset.yml config --services 2>/dev/null | grep -E '^superset' || true)
           if [ -n "$out" ]; then
             echo "FAIL: superset services present without --profile superset:"; echo "$out"; exit 1
@@ -70,6 +76,9 @@ jobs:
 
       - name: Overlay parses under --profile superset
         run: |
-          touch .env
+          # compose.staging.yml fails closed on the read-api key vars (${VAR:?}):
+          # give interpolation non-secret CI placeholders (never real keys).
+          printf '%s\n' REFDATA_QUERY_API_KEYS=ci-placeholder:0 OPERATOR_REFDATA_API_KEY=ci-placeholder \
+            OPERATOR_SBX_REFDATA_API_KEY=ci-placeholder OPERATOR_BISPHARMA_REFDATA_API_KEY=ci-placeholder > .env
           docker compose --env-file .env --profile superset \
             -f compose.staging.yml -f compose.superset.yml config -q

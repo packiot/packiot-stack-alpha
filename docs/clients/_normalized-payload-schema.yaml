@@ -303,7 +303,7 @@ routing:
   # ── ERRATA 2026-06-30 (after Phase 2 live verification) ──────────────────
   # Phase 2 end-to-end test surfaced a mismatch between this schema's documented
   # routing-key pattern and the actual Go scaffold's binding behavior. The
-  # Go scaffold (services/edge-transformer/) won the runtime contract; this
+  # Go scaffold (services/sparkplug-decoder/) won the runtime contract; this
   # schema is updated below to reflect what's actually live.
   #
   # CURRENT RUNTIME (Phase 2 shipped, verified):

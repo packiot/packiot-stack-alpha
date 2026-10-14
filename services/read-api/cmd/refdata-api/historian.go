@@ -7,7 +7,7 @@ package main
 // scrolls back past the hot boundary needs the COLD S3 archive too. The
 // historian-gateway (compose.historian-gateway.yml, container `hist-gateway`)
 // already unions HOT (postgres_fdw → the live timescaledb) with COLD (S3 Parquet
-// via pg_duckdb) behind silver.equipment_values / ev_between, with per-partition pruning. This
+// via pg_duckdb) behind the silver.* union views (ev_between was dropped in t269), with per-partition pruning. This
 // endpoint is the read-api door to it.
 //
 // DESIGN — deliberately ISOLATED + ADDITIVE (nothing here touches the existing
@@ -32,7 +32,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -174,7 +173,7 @@ const histDowntimeSeriesSQL = `
 // the routes are discoverable); each returns 503 when histPool is nil.
 //   POST /v1/historian/production-series — daily gross/net per equipment (EV, silver.equipment_values)
 //   POST /v1/historian/downtime-series   — daily downtime per equipment (EE, silver.equipment_events)
-func registerHistorianAPI(mux *http.ServeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
+func registerHistorianAPI(mux routeMux, histPool *pgxpool.Pool, logger *slog.Logger) {
 	mux.HandleFunc("/v1/historian/production-series", func(w http.ResponseWriter, r *http.Request) {
 		serveHistWindowSeries(w, r, histPool, logger, histProductionSeriesSQL, histKindProduction)
 	})
@@ -208,11 +207,11 @@ func serveHistWindowSeries(w http.ResponseWriter, r *http.Request, histPool *pgx
 	}
 	// Validate the request BEFORE checking backend availability, so a malformed
 	// window is always a clean 400 regardless of whether the gateway is up.
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-	if err != nil {
-		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+	body, ok := readBodyCapped(w, r, maxRequestBody)
+	if !ok {
 		return
 	}
+	var err error
 	var q histSeriesReq
 	if err := json.Unmarshal(body, &q); err != nil {
 		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)

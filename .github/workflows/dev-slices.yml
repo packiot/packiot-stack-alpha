@@ -9,12 +9,22 @@ name: Dev slices
 #   tier0-grafana  Tier 0 + grafana
 #   pipeline       seed-replay → sparkplug-decoder → stream-engine (+ read-api, read-api-cors): live rows at "now"
 #   barcode        barcode-service
-#   edge           edge-api (+ its knex migrations on the seed) + csadmin, customize, operator, front4
+#   ingest         ingest-shim, oeecloud-fanout, analytics-sync (RabbitMQ-side bridges; no submodules)
+#   edge           edge-api (+ its knex migrations on the seed) + csadmin, customize, operator, front4, operator-gateway
 #
 # The edge slice needs the PRIVATE submodule repos (edge-api, csadmin, operator4, front4). GITHUB_TOKEN only reads
 # this repository, so it uses the repository secret DEV_SUBMODULES_TOKEN (read-only Contents on those four repos).
 # Without that secret (or on a fork PR) the edge slice is SKIPPED with a warning in the run summary — it does not
 # fail the PR, and it does not pretend to have run.
+#
+# Gate: the workflow runs on EVERY PR to staging and always reports one check, "dev slices gate". A path-filtered
+# workflow cannot be a required check (a PR outside the paths would wait forever for a check that never starts), so
+# the path filter lives in the `changes` job instead: outside the paths the slices are skipped and the gate passes.
+# The gate is what bump bots' `gh pr merge --auto` waits for (#1680 merged while the slices were still running).
+#
+# Docker Hub: GitHub runners share egress IPs, so anonymous pulls hit "toomanyrequests" (3 slice failures on 10-09).
+# The daemon pulls Docker Hub images through mirror.gcr.io (Google's public pull-through cache; misses fall back to
+# Docker Hub), and logs in to Docker Hub when the optional secrets DOCKERHUB_USERNAME + DOCKERHUB_TOKEN exist.
 #
 # The seed image is a private GHCR package published by dev-seed-build.yml from this repo, so this workflow's
 # GITHUB_TOKEN can pull it (packages: read). Nothing here talks to staging or AWS; the services only reach the
@@ -23,7 +33,20 @@ name: Dev slices
 on:
   pull_request:
     branches: [staging]
-    paths:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  pull-requests: read
+
+concurrency:
+  group: dev-slices-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Paths that need the slices (a submodule pointer change shows up as the bare submodule path).
+env:
+  SLICE_PATHS: |
       - 'dev/**'
       - 'db/migrations/**'
       - 'services/**'
@@ -37,19 +60,45 @@ on:
       - 'front4'
       - 'Makefile'
       - '.github/workflows/dev-slices.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: read
-
-concurrency:
-  group: dev-slices-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - name: Does this PR touch a slice path?
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi   # workflow_dispatch: always run
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename' > files.txt
+          # SLICE_PATHS lines look like "- 'dev/**'"; turn them into anchored prefixes / exact paths
+          sed -n "s/^ *- '\(.*\)'$/\1/p" <<<"$SLICE_PATHS" > paths.txt
+          hit=""
+          while read -r p; do
+            pre="${p%\*\*}"
+            if [ "$pre" != "$p" ]; then
+              grep -qF -- "$pre" <(cut -c1-${#pre} files.txt) && hit="$p" && break
+            else
+              grep -qxF -- "$p" files.txt && hit="$p" && break
+            fi
+          done < paths.txt
+          if [ -n "$hit" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "slices run: PR touches $hit"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "### dev slices skipped: no file under the slice paths changed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   slice:
     name: slice ${{ matrix.slice }}
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -65,12 +114,16 @@ jobs:
           - slice: barcode
             up: barcode-service
             smoke: postgres barcode-service
+          - slice: ingest
+            up: ingest-shim oeecloud-fanout analytics-sync
+            smoke: rabbitmq ingest-shim oeecloud-fanout analytics-sync
           - slice: edge
             submodules: true
-            up: edge-api csadmin customize operator front4
-            smoke: postgres edge-api read-api read-api-cors csadmin customize operator front4
+            up: edge-api csadmin customize operator front4 operator-gateway
+            smoke: postgres edge-api read-api read-api-cors csadmin customize operator front4 operator-gateway
     env:
       FRONT4_DIR: ${{ github.workspace }}/.ci/front4-staging
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}   # optional; job-level so a step `if` can test it
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
-            msg="edge slice SKIPPED: secret DEV_SUBMODULES_TOKEN is not available (not set, or a fork PR). edge-api, csadmin, customize, operator and front4 were NOT smoke-tested."
+            msg="edge slice SKIPPED: secret DEV_SUBMODULES_TOKEN is not available (not set, or a fork PR). edge-api, csadmin, customize, operator, front4 and operator-gateway were NOT smoke-tested."
             echo "::warning::$msg"; echo "### $msg" >> "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -98,6 +151,22 @@ jobs:
           git "${auth[@]}" clone --depth 1 -b staging https://github.com/packiot/front4.git "$FRONT4_DIR"
           git submodule status edge-api csadmin operator
           echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Docker Hub pulls via mirror.gcr.io
+        if: steps.subs.outputs.run != 'false'
+        run: |
+          set -euo pipefail
+          f=/etc/docker/daemon.json
+          cur=$(sudo cat "$f" 2>/dev/null || echo '{}')
+          jq '."registry-mirrors" = ["https://mirror.gcr.io"]' <<<"$cur" | sudo tee "$f" >/dev/null
+          sudo systemctl restart docker
+          docker info --format '{{json .RegistryConfig.Mirrors}}'
+
+      - name: Log in to Docker Hub (optional)
+        if: steps.subs.outputs.run != 'false' && env.DOCKERHUB_TOKEN != ''
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Log in to GHCR (dev seed)
         if: steps.subs.outputs.run != 'false'
@@ -134,3 +203,22 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f dev/compose.yml --env-file dev/.env.dev down -v --remove-orphans || true
+
+  gate:
+    # The one stable check name to require on staging. Passes when the slices passed or were skipped by `changes`.
+    name: dev slices gate
+    needs: [changes, slice]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slices passed or were not needed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SLICE: ${{ needs.slice.result }}
+        run: |
+          echo "changes=$CHANGES slice=$SLICE"
+          [ "$CHANGES" = success ] || { echo "::error::changes job $CHANGES"; exit 1; }
+          case "$SLICE" in
+            success|skipped) exit 0 ;;
+            *) echo "::error::dev slices $SLICE"; exit 1 ;;
+          esac

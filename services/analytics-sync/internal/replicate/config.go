@@ -29,7 +29,10 @@ type Config struct {
 	LegacyDBName   string
 
 	// DEST — staging analytics plane packiot_analytics. All writes land here;
-	// the cursor lives here too (source is read-only).
+	// the cursor lives here too (source is read-only). These DEST_DB_* fields are
+	// read ONLY with CREDS_SOURCE=env (dev/tests); staging/production take the DEST
+	// login from Secrets Manager PG_SECRET_ID (destcreds.go). The login is the
+	// least-privilege role legacy_replicator (db/migrations/t-legacy-replicator-role).
 	DestHost     string
 	DestPort     int
 	DestUser     string
@@ -121,6 +124,23 @@ type Config struct {
 	// stands down. Hold is the runtime gate main builds from it (nil = never held).
 	SandboxHoldEnabled bool
 	Hold               *Hold
+	// SandboxHoldBaseEvents (PRODT-164 AC-02): keep the base-event reconciler running
+	// during a hands-on SESSION hold. PLC stops are factory facts, not actions that
+	// could override the tester (the pass only INSERTs rows the twin lacks), so a
+	// session no longer freezes the sandbox's Events tab for its whole duration. It
+	// still pauses while a heal runs. Off by default: enabling it is a deliberate
+	// .env change (SANDBOX_HOLD_BASE_EVENTS=true on legacy-replicator-sbx).
+	SandboxHoldBaseEvents bool
+
+	// BASE (PLC) event reconciler (base_reconcile.go). Copies legacy
+	// equipment_events fcs=false rows the twin lacks within a lookback — the
+	// replay only sees base events announced in user_logs, which stopped when the
+	// CPACK edge moved to Pub/Sub (2026-10-07). Ships INERT
+	// (RECONCILE_BASE_EVENTS_ENABLED=false); also requires REPLICATE_BASE_EVENTS.
+	ReconcileBaseEventsEnabled        bool
+	ReconcileBaseEventsIntervalSec    int
+	ReconcileBaseEventsLookbackHours  int
+	ReconcileBaseEventsRefreshServing bool
 
 	ReconcileManualEnabled        bool
 	ReconcileManualIntervalSec    int
@@ -164,7 +184,7 @@ func Load() *Config {
 
 		DestHost:     getenv("DEST_DB_HOST", "10.10.10.89"),
 		DestPort:     getenvInt("DEST_DB_PORT", 5432),
-		DestUser:     getenv("DEST_DB_USER", "postgres"),
+		DestUser:     getenv("DEST_DB_USER", DestRole),
 		DestPassword: getenv("DEST_DB_PASSWORD", ""),
 		DestDBName:   getenv("DEST_DB_NAME", "packiot_analytics"),
 
@@ -194,7 +214,13 @@ func Load() *Config {
 		ReconcileEnrichWindowDays:    getenvInt("RECONCILE_PO_ENRICH_WINDOW_DAYS", 14),
 		ReconcileEnrichKeepLegacyIDs: getenv("RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS", "true") == "true",
 
-		SandboxHoldEnabled: getenv("SANDBOX_HOLD_ENABLED", "false") == "true",
+		SandboxHoldEnabled:    getenv("SANDBOX_HOLD_ENABLED", "false") == "true",
+		SandboxHoldBaseEvents: getenv("SANDBOX_HOLD_BASE_EVENTS", "false") == "true",
+
+		ReconcileBaseEventsEnabled:        getenv("RECONCILE_BASE_EVENTS_ENABLED", "false") == "true",
+		ReconcileBaseEventsIntervalSec:    getenvInt("RECONCILE_BASE_EVENTS_INTERVAL_SEC", 120),
+		ReconcileBaseEventsLookbackHours:  getenvInt("RECONCILE_BASE_EVENTS_LOOKBACK_HOURS", 72),
+		ReconcileBaseEventsRefreshServing: getenv("RECONCILE_BASE_EVENTS_REFRESH_SERVING", "true") == "true",
 
 		ReconcileManualEnabled:        getenv("RECONCILE_MANUAL_EVENTS_ENABLED", "false") == "true",
 		ReconcileManualIntervalSec:    getenvInt("RECONCILE_MANUAL_EVENTS_INTERVAL_SEC", 300),

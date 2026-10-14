@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -96,7 +97,9 @@ var validScanTypes = map[string]bool{
 // database — the pg implementation (pgScanTx) runs the real SQL, already inside
 // the advisory-locked transaction opened by pgScanStore.RecordScan.
 type scanTx interface {
-	existingByUUID(ctx context.Context, scanUUID string) (ScanResult, bool, error)
+	// existingByUUID also returns the enterprise that owns the row, so a replay
+	// can be fenced to the caller's tenant.
+	existingByUUID(ctx context.Context, scanUUID string) (res ScanResult, ownerEnterprise int, found bool, err error)
 	tenantOwns(ctx context.Context, enterpriseID int, idPO int64, idEquip int) (bool, error)
 	lastLabelSeq(ctx context.Context, idPO int64) (int64, error)
 	insertScan(ctx context.Context, enterpriseID int, req ScanRequest, labelSeq *int64, counterSeq, delta int64) (boxScanID, total int64, err error)
@@ -108,10 +111,16 @@ type scanTx interface {
 // or replay), a *domainError (expected 4xx), or an error (infra 5xx).
 func applyScan(ctx context.Context, tx scanTx, enterpriseID int, req ScanRequest) (ScanResult, *domainError, error) {
 	// 1) Idempotent replay — a repeat of an accepted scan_uuid returns the
-	//    original row with no second insert.
-	if res, ok, err := tx.existingByUUID(ctx, req.ScanUUID); err != nil {
+	//    original row with no second insert. Fenced to the caller's tenant: a
+	//    scan_uuid that belongs to ANOTHER enterprise is a 409 that reveals
+	//    nothing about that row (before this, it replayed the other tenant's
+	//    box id, label_seq and PO total with a 200).
+	if res, owner, ok, err := tx.existingByUUID(ctx, req.ScanUUID); err != nil {
 		return ScanResult{}, nil, err
 	} else if ok {
+		if owner != enterpriseID {
+			return ScanResult{}, &domainError{Status: http.StatusConflict, Code: "scan_uuid_conflict"}, nil
+		}
 		res.Replayed = true
 		return res, nil, nil
 	}
@@ -204,6 +213,16 @@ func (s *pgScanStore) RecordScan(ctx context.Context, enterpriseID int, req Scan
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, req.IDProductionOrder); err != nil {
 		return ScanResult{}, nil, err
 	}
+	// Stamp the JWT-derived tenant for this transaction only. core.production_orders
+	// and core.equipments are FORCE ROW LEVEL SECURITY on app.tenant_id, and the
+	// service's barcode_service role is NOBYPASSRLS: without the stamp the tenant
+	// fence below sees 0 rows and every scan is a 403 (fail closed). is_local=true,
+	// so it ends with the tx and is safe under pgbouncer transaction pooling (the
+	// same primitive read-api and operator-gateway use). The SQL fences
+	// (`id_enterprise = $1`) stay primary; RLS is the backstop.
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, strconv.Itoa(enterpriseID)); err != nil {
+		return ScanResult{}, nil, err
+	}
 
 	res, derr, err := applyScan(ctx, &pgScanTx{tx: tx}, enterpriseID, req)
 	if err != nil || derr != nil {
@@ -221,28 +240,29 @@ func (s *pgScanStore) RecordScan(ctx context.Context, enterpriseID int, req Scan
 // pgScanTx binds the scanTx seam to a live pgx.Tx (already advisory-locked).
 type pgScanTx struct{ tx pgx.Tx }
 
-func (p *pgScanTx) existingByUUID(ctx context.Context, scanUUID string) (ScanResult, bool, error) {
+func (p *pgScanTx) existingByUUID(ctx context.Context, scanUUID string) (ScanResult, int, bool, error) {
 	const q = `
-		SELECT bs.box_scan_id, COALESCE(bs.label_seq, 0), COALESCE(c.total_qty, 0)
-		  FROM box_scans bs
-		  LEFT JOIN po_box_counter c ON c.id_production_order = bs.id_production_order
+		SELECT bs.id_enterprise, bs.box_scan_id, COALESCE(bs.label_seq, 0), COALESCE(c.total_qty, 0)
+		  FROM bronze.box_scans bs
+		  LEFT JOIN gold.po_box_counter c ON c.id_production_order = bs.id_production_order
 		 WHERE bs.scan_uuid = $1`
 	var r ScanResult
-	err := p.tx.QueryRow(ctx, q, scanUUID).Scan(&r.BoxScanID, &r.LabelSeq, &r.Total)
+	var owner int
+	err := p.tx.QueryRow(ctx, q, scanUUID).Scan(&owner, &r.BoxScanID, &r.LabelSeq, &r.Total)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ScanResult{}, false, nil
+		return ScanResult{}, 0, false, nil
 	}
 	if err != nil {
-		return ScanResult{}, false, err
+		return ScanResult{}, 0, false, err
 	}
 	r.ScanUUID = scanUUID
-	return r, true, nil
+	return r, owner, true, nil
 }
 
 func (p *pgScanTx) tenantOwns(ctx context.Context, enterpriseID int, idPO int64, idEquip int) (bool, error) {
 	const q = `
-		SELECT EXISTS(SELECT 1 FROM production_orders WHERE id_production_order = $2 AND id_enterprise = $1)
-		   AND EXISTS(SELECT 1 FROM equipments        WHERE id_equipment        = $3 AND id_enterprise = $1)`
+		SELECT EXISTS(SELECT 1 FROM core.production_orders WHERE id_production_order = $2 AND id_enterprise = $1)
+		   AND EXISTS(SELECT 1 FROM core.equipments        WHERE id_equipment        = $3 AND id_enterprise = $1)`
 	var ok bool
 	if err := p.tx.QueryRow(ctx, q, enterpriseID, idPO, idEquip).Scan(&ok); err != nil {
 		return false, err
@@ -252,7 +272,7 @@ func (p *pgScanTx) tenantOwns(ctx context.Context, enterpriseID int, idPO int64,
 
 func (p *pgScanTx) lastLabelSeq(ctx context.Context, idPO int64) (int64, error) {
 	var last int64
-	err := p.tx.QueryRow(ctx, `SELECT COALESCE(last_label_seq, 0) FROM po_box_counter WHERE id_production_order = $1`, idPO).Scan(&last)
+	err := p.tx.QueryRow(ctx, `SELECT COALESCE(last_label_seq, 0) FROM gold.po_box_counter WHERE id_production_order = $1`, idPO).Scan(&last)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil // no counter yet ⇒ sequence starts at 0, first label is 1
 	}
@@ -264,15 +284,15 @@ func (p *pgScanTx) insertScan(ctx context.Context, enterpriseID int, req ScanReq
 	// scalar subqueries (never client-supplied). PHASE-2: hierarchy enrichment
 	// + GS1 parse of raw_barcode into structured fields.
 	const insertSQL = `
-		INSERT INTO box_scans (
+		INSERT INTO bronze.box_scans (
 			id_enterprise, id_site, id_area, id_equipment, id_production_order, id_order,
 			scan_type, label_seq, qty, counts_toward_total, raw_barcode, scan_uuid, ts_value
 		) VALUES (
 			$1,
-			(SELECT id_site FROM equipments WHERE id_equipment = $2 AND id_enterprise = $1),
-			(SELECT id_area FROM equipments WHERE id_equipment = $2 AND id_enterprise = $1),
+			(SELECT id_site FROM core.equipments WHERE id_equipment = $2 AND id_enterprise = $1),
+			(SELECT id_area FROM core.equipments WHERE id_equipment = $2 AND id_enterprise = $1),
 			$2, $3,
-			(SELECT id_order FROM production_orders WHERE id_production_order = $3 AND id_enterprise = $1),
+			(SELECT id_order FROM core.production_orders WHERE id_production_order = $3 AND id_enterprise = $1),
 			$4, $5, $6, $7, $8, $9, now()
 		)
 		RETURNING box_scan_id`
@@ -286,7 +306,7 @@ func (p *pgScanTx) insertScan(ctx context.Context, enterpriseID int, req ScanReq
 	}
 
 	const counterSQL = `
-		INSERT INTO po_box_counter (id_production_order, id_enterprise, last_label_seq, total_qty, updated_at)
+		INSERT INTO gold.po_box_counter (id_production_order, id_enterprise, last_label_seq, total_qty, updated_at)
 		VALUES ($1, $2, $3, $4, now())
 		ON CONFLICT (id_production_order) DO UPDATE
 		   SET last_label_seq = GREATEST(po_box_counter.last_label_seq, EXCLUDED.last_label_seq),
@@ -301,6 +321,10 @@ func (p *pgScanTx) insertScan(ctx context.Context, enterpriseID int, req ScanReq
 }
 
 // ── HTTP handler ─────────────────────────────────────────────────────────────
+
+// maxScanBodyBytes caps a POST /v1/scans body (64 KiB). One scan is a few
+// hundred bytes; anything over the cap is answered 413.
+const maxScanBodyBytes = 64 << 10
 
 type scanServer struct {
 	store  scanStore
@@ -324,10 +348,17 @@ func (s *scanServer) handlePostScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ScanRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxScanBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		failed.Add(1)
+		// An over-cap body is a size problem, not a syntax one: 413 tells the
+		// client not to retry it unchanged (a 400 read as "fix the JSON").
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, `{"error":"request body too large"}`)
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, `{"error":"invalid json body"}`)
 		return
 	}

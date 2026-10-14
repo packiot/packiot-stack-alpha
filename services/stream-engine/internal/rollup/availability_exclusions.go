@@ -60,7 +60,9 @@ const exclusionsCore = `
 	                                            FROM %[1]s.equipment_events n
 	                                           WHERE n.id_equipment = ev.id_equipment
 	                                             AND n.ts_event > ev.ts_event
-	                                             AND n.ts_event < upper(m.b) + interval '60 days') nx ON true
+	                                             AND n.ts_event < upper(m.b) + interval '60 days'
+	                                             -- only needed when ev has no ts_end (see poExclJoin)
+	                                             AND ev.ts_end IS NULL) nx ON true
 	                      WHERE ev.id_equipment = m.nd_src AND ev.status = 20
 	                        AND ev.ts_event < upper(m.b)
 	                        AND ev.ts_event >= lower(m.b) - interval '60 days'
@@ -72,7 +74,9 @@ const exclusionsCore = `
 	                                            FROM %[1]s.equipment_events n
 	                                           WHERE n.id_equipment = ev.id_equipment
 	                                             AND n.ts_event > ev.ts_event
-	                                             AND n.ts_event < upper(m.b) + interval '60 days') nx ON true
+	                                             AND n.ts_event < upper(m.b) + interval '60 days'
+	                                             -- only needed when ev has no ts_end (see poExclJoin)
+	                                             AND ev.ts_end IS NULL) nx ON true
 	                      WHERE ev.id_equipment = m.id_equipment AND ev.planned_downtime IS TRUE
 	                        AND ev.ts_event < upper(m.b)
 	                        AND ev.ts_event >= lower(m.b) - interval '60 days'

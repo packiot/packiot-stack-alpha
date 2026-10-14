@@ -19,7 +19,6 @@ package main
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"context"
 	"encoding/json"
@@ -234,6 +233,17 @@ func main() {
 		os.Exit(0)
 	}
 
+	// --dump-openapi: print the OpenAPI 3.1 document (the bytes GET /openapi.json
+	// serves) and exit. Built from the route tables alone — no DB, no network —
+	// so `make openapi` can export it for the wiki without a running stack.
+	if len(os.Args) > 1 && os.Args[1] == "--dump-openapi" {
+		if err := dumpOpenAPI(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "dump-openapi:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// Distributed tracing → Tempo. Opt-in: no-op unless OTEL_EXPORTER_OTLP_
 	// ENDPOINT is set (see internal/tracing). A failure here never blocks boot.
 	shutdownTracing, terr := tracing.Init(context.Background(), "read-api")
@@ -300,13 +310,7 @@ func main() {
 		logger.Info("cache-aside disabled (REDIS_CACHE_ENABLED=false or unconfigured)")
 	}
 
-	mux := http.NewServeMux()
-	for _, ep := range endpoints {
-		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
-	}
-	ensureSchema(pool)                     // startup migrations (P2 screen-config table)
-	registerQueryAPI(mux, pool, qcache)    // ADR-0015 P1-P3 + ADR-0035 cache-aside
-	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
+	checkScreenConfigTable(context.Background(), pool, logger) // no DDL: the table is a migration's job
 
 	// T2 honest windows: dataset coverage floors from ops.retention_policy (fail-open).
 	go covIdx.run(context.Background(), pool, logger)
@@ -317,34 +321,14 @@ func main() {
 	if histPool != nil {
 		defer histPool.Close()
 	}
-	registerHistorianAPI(mux, histPool, logger)
-
-	// Gap-closure 2026-07-07: the only service without /metrics.
-	// promhttp default registry — request counts come from reqCount
-	// (incremented in makeHandler's wrapper below); Go runtime metrics
-	// ride along free.
-	// EnableOpenMetrics lets the handler negotiate the OpenMetrics exposition
-	// (Prometheus sends Accept: application/openmetrics-text) — the only format
-	// that carries the trace_id exemplars httpmetrics attaches. Plain-text
-	// scrapers simply get the histogram without exemplars.
-	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{EnableOpenMetrics: true}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-		if err := pool.Ping(ctx); err != nil {
-			http.Error(w, `{"healthy":false}`, http.StatusServiceUnavailable)
-			return
-		}
-		fmt.Fprintf(w, `{"healthy":true,"served":%d,"failed":%d}`, served.Load(), failed.Load())
-	})
 
 	port := getenv("HEALTH_PORT", "9104")
 	logger.Info("read-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
 	// ADR-0027 Surface-1: the single tenant-injection authority, applied as
 	// middleware in front of the WHOLE mux so no route can skip it. It
 	// resolves a credential → customer_id (fail-closed: no/invalid credential →
-	// 401, no DB touch) and injects the id via context. /healthz + /metrics are
-	// exempt (ops probes, no tenant data).
+	// 401, no DB touch) and injects the id via context. /healthz, /metrics and
+	// /openapi.json are exempt (ops probes + API description, no tenant data).
 	//
 	// Two credential types resolve to the SAME tenant:
 	//   - X-Api-Key → customer_id via the static QUERY_API_KEYS map (operator).
@@ -372,11 +356,11 @@ func main() {
 	logger.Info("tenant auth configured",
 		slog.Int("keys", len(keys)), slog.String("cognito_issuer", cIss),
 		slog.Bool("cognito_only", true))
-	// ADR-0031 Workstream B: mount the external-contract anti-corruption shims.
-	// They resolve the tenant through the SAME key map (single injection
-	// authority) but self-authenticate, so they sit in the auth-exempt set below.
-	// Must register BEFORE the middleware wraps the mux.
-	registerExternalShims(mux, pool, keys, logger)
+	// Every route is mounted by registerRoutes — the ONE registration point, so
+	// the OpenAPI drift gate (openapi_test.go) enumerates exactly what serves.
+	// Must run BEFORE the middleware wraps the mux.
+	mux := http.NewServeMux()
+	registerRoutes(mux, routeDeps{pool: pool, qcache: qcache, histPool: histPool, keys: keys, logger: logger})
 	// Operator super-admin cross-tenant READ escalation (dark by default; nil
 	// unless OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED is on AND JWT_SECRET is
 	// set). The READ twin of edge-api's write-plane escalation — see

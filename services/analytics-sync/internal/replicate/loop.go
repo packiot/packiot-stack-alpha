@@ -67,9 +67,9 @@ func Loop(ctx context.Context, legacyPool, destPool *pgxpool.Pool, r *Resolver, 
 		return err
 	}
 	if cfg.DLQCaptureEnabled {
-		if err := EnsureDLQ(ctx, destPool); err != nil {
+		if err := CheckDLQ(ctx, destPool); err != nil {
 			// Non-fatal: capture degrades to log-only, replay continues.
-			logger.Warn("DLQ table ensure failed — failed rows will only be logged", slog.String("err", err.Error()))
+			logger.Warn("DLQ table not usable — failed rows will only be logged", slog.String("err", err.Error()))
 		}
 	}
 	logger.Info("replicate loop started",

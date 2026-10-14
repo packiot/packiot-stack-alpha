@@ -114,7 +114,7 @@ func userRoleFromContext(ctx context.Context) (int, bool) {
 // per-user-role bootstrap datasets); the X-Api-Key operator path has no user
 // axis, so hasRole is false and role-scoped datasets fail closed. A user whose
 // users.user_roles is NULL also resolves hasRole=false (tenant still valid, so
-// every non-role dataset works; only the two role datasets reject).
+// every non-role dataset works; only the per-user-role datasets reject).
 type resolvedIdentity struct {
 	customerID int
 	userRole   int
@@ -134,10 +134,13 @@ var queryAPIRoutes = []mountedRoute{
 	{"/v1/dashboard-config", routeTenantScoped},
 }
 
-// infraRoutes are the unauthenticated ops probes — no tenant data.
+// infraRoutes are the unauthenticated ops probes — no tenant data. /openapi.json
+// is the static API description (openapi.go): no tenant data either, and the
+// central API portal fetches it without a tenant credential.
 var infraRoutes = []mountedRoute{
 	{"/healthz", routeInfra},
 	{"/metrics", routeInfra},
+	{"/openapi.json", routeInfra},
 }
 
 // routeManifest is the complete, classified set of every mux route — the
@@ -271,7 +274,7 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 				}
 			}
 			ctx := withCustomerID(r.Context(), cid)
-			// Role axis for the two per-user-role bootstrap datasets (entities/menu):
+			// Role axis for the per-user-role bootstrap datasets (entities/menu/user-roles):
 			//  - NOT escalated: the caller's own home role (task #70).
 			//  - Escalated (verified super-admin who switched tenants): use the TARGET
 			//    tenant's enterprise-wide role, whose id_user_role == id_enterprise == cid

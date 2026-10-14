@@ -35,7 +35,7 @@ const lifecycleSchema = `
 	    nm_production_order text, txt_production_order_notes text,
 	    recalc_needed boolean DEFAULT false,
 	    gross_production double precision, net_production double precision,
-	    last_update timestamptz,
+	    last_update timestamptz, ts_creation timestamptz DEFAULT now(),
 	    UNIQUE (id_enterprise, id_order),
 	    CONSTRAINT production_orders_ts_start_ts_end CHECK (ts_start <= ts_end)
 	);
