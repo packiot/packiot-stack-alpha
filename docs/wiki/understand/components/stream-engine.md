@@ -284,6 +284,14 @@ no-data time is not. The PO grain gets the same treatment when `PO_AVAILABILITY_
 | `cpac-events-deriver` live extras | as above | lead's gross **or** net/scrap (lines with `downtime_from_lead_machine`); `silver.plc_link_minutes` | a PLC-link gap longer than the threshold becomes status **20 (no data)** instead of a stop; a resume without production opens a stop. Link events only for equipment the deriver saw produce in 7 days (#1663) |
 | `events-close-stale` | listed enterprises | open events | see below |
 
+**CPAC deriver tick** (`RunOnceCPAC`): one transaction. A plain `SELECT` derives the transitions
+once and returns them as a jsonb array. The correct pass (`DELETE`) and the upsert (`INSERT … ON
+CONFLICT`) then apply that snapshot and never read the cagg. Why: TimescaleDB constifies a real-time
+cagg's watermark only when planning a `SELECT`. Inside DML it prices the raw tail at every
+`equipment_values` chunk, and on 2026-10-14 those estimates gave the upsert a nested loop (1.3 s → 14 s)
+and kept the correct pass at 12–21 s. The golden test `TestGoldenCPACCaggReadIsPlannedAsSelect` fails
+any statement that reads the cagg with an unconstified watermark.
+
 **Closer** (`internal/events/closer.go`), in one transaction with
 `SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 0` (the table is compressed):
 
