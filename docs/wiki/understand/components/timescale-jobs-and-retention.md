@@ -234,6 +234,23 @@ The server flags (`shared_preload_libraries`, `max_connections=200`, `pg_stat_st
 | Refresh over dropped raw | aggregated history disappears | `refresh_continuous_aggregate(..., NULL, NULL)` or a wide window after retention | refresh only inside the raw horizon |
 | Cagg DDL blocks | `DROP MATERIALIZED VIEW` of a cagg times out even with policies paused | ingest's invalidation trigger on the source hypertable holds the lock | quiesce `stream-engine` (RabbitMQ buffers), then DDL |
 | Whole-history aggregate crashes the cluster (2026-09-24) | kernel OOM kill, all sessions reset | chunk-wise partial aggregation builds thousands of hash nodes (1,599 chunks) | merge chunks; `SET timescaledb.enable_chunkwise_aggregation = off` and narrow windows |
+| Cagg that never materializes (found 2026-10-14) | job 1014 refreshes `ca_equipment_boxes_1s` every 15 min for ~108 s (≈ 12 % of one vCPU); the cagg holds 0 rows | its watermark is −infinity, so every refresh and every real-time read works over raw rows and finds nothing (root cause of the 108 s **unverified**) | ADR-0063 Phase A: prove the readers get nothing, then drop the policy or the cagg |
+| Real-time cagg read inside DML (2026-10-14, #1770) | an upsert that read `equipment_categorical_1min` went from 1.3 s to 14 s, all CPU | Timescale constifies the real-time watermark only when planning a `SELECT`; inside `INSERT`/`DELETE` the planner prices the raw tail at every chunk | read the cagg in a separate `SELECT`, then write (`events/cpac_deriver.go`) |
+
+## Is TimescaleDB still needed?
+
+[ADR-0063](../../adr/0063-timescaledb-necessity.md) (Proposed, 2026-10-14) answers this with catalog
+numbers and call sites. Short version:
+
+- **Yes, for now.** The OEE engine reads the continuous aggregates (`equipment_categorical_1min`
+  and `_1hour` in 8 rollup/event files), compression saves about 21 GB on an 18 GB database, and
+  the production target is a self-hosted TimescaleDB container on EC2 (no RDS/Aurora plan).
+- **Not used at all:** `time_bucket_gapfill`, `locf`, `interpolate`, the toolkit.
+- **Waste to remove first:** the empty `ca_equipment_boxes_1s` refresh, real-time cagg reads
+  inside DML, and frequent exporter chunk-size queries.
+- **Full removal** (native partitioning + engine-maintained rollups + pg_cron) is estimated at
+  5–8 engineer-weeks. It becomes the plan only if the platform moves to a managed PostgreSQL
+  service or a Timescale upgrade forces it.
 
 ## Operating it
 

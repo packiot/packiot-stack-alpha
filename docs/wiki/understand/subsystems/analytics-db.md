@@ -269,6 +269,9 @@ Alerts are evaluated by Prometheus on staging; Alertmanager runs only under the 
 - **2026-09-28/30** — `packiot_analytics` and `superset` added to the nightly backup; restore drill.
 - **2026-10-01** — data invariants (`t-data-invariants`, later `-v2` … `-v10`).
 - **2026-10-07** — RLS on `core.topic_routing` (`t-topic-routing-guards`).
+- **2026-10-14** — [ADR-0063](../../adr/0063-timescaledb-necessity.md) (Proposed): is TimescaleDB still
+  needed? Partially: keep it through production promotion, remove the waste first (summary in
+  [Timescale jobs & retention](../components/timescale-jobs-and-retention.md#is-timescaledb-still-needed)).
 
 ADRs are listed in the [ADR index](../../reference/adr-index.md).
 
