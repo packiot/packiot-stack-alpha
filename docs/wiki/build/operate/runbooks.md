@@ -32,6 +32,7 @@ last_verified: 2026-09-28
 | `terraform/staging/scripts/backup-db.sh`, `restore-db.sh` | DB-host dump to S3 and restore (driven by `packiot-db-backup.timer`) |
 | `docs/runbooks/emergency-db-restore.md` | EMERGENCY restore button (GitHub workflow): drill or restore analytics / historian / superset, rollback, manual fallback |
 | `docs/runbooks/rotate-readapi-keys.md` | move/rotate the read-api tenant keys (Secrets Manager → `.env` every deploy); last rotated 2026-10-14 |
+| `docs/runbooks/per-tenant-ingest-keys.md` | move the shared ingest door (`sparkplug-agent-shared`) from one shared `X-Ingest-Key` to one key per tenant bound to its group; per-client key hand-off, then turn the shared key off |
 | `docs/runbooks/history-recompute.md` | rebuild gold OEE history older than the engine's live windows: render the engine's own passes, dry-run, commit one UTC day at a time |
 | `docs/ingestion/cpack-tee-golive-runbook.md` | swap staging's synthetic CPACK source for the real CPACK Mode-A tee (ADR-0042 P1) |
 | `docs/clients/cpack-controlled-edge-deploy-runbook.md` | deploy a parallel Node-RED + sparkplug-agent at the CPACK site (read-only co-tee) |

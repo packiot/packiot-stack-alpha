@@ -158,7 +158,8 @@ and [onboard-api](../../reference/api/onboard-api.md) pages.
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `accepted:0` on every POST, agent healthy | Reader metric suffix ≠ agent `metric_suffix` keys (exact match only) | `sparkplug_agent_unmapped_tags_total`, `/healthz` `unmapped_tags` |
-| 401 on the tee | Wrong `X-Ingest-Key` (cloud key vs `AGENT_INGEST_API_KEY`) | agent log `rejected_auth`, `sparkplug_agent_http_ingest_total{outcome}` |
+| 401 on the tee | Wrong `X-Ingest-Key` (cloud key vs `AGENT_INGEST_API_KEY`), or the shared key after `AGENT_INGEST_LEGACY_KEY_ALLOWED=false` | agent log `rejected_auth` (`reason=`), `sparkplug_agent_http_ingest_total{outcome}` |
+| 403 `key not authorised for group` | A per-tenant key used for a group it is not bound to (wrong key on the box, or the key map lacks the group) | agent log `rejected_key_scope` with `key_groups=`; runbook `docs/runbooks/per-tenant-ingest-keys.md` |
 | 403 on the tee | Group not loaded in `sparkplug-agent-shared` (no tenant yaml) | agent log `unknown group`; run `apply-agent-config` |
 | Cloud sees a line only after a restart | Sparse line never aliased → NDATA references unknown alias | Keep `AGENT_BIRTH_ALL_MAPPED=true` |
 | Floor dashboard blank, cloud fine | Local tee broken (network split or key) | reader log `local tee POST failed`; see [edge-box](../components/edge-box.md#failure-modes) |

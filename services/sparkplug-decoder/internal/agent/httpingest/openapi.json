@@ -8,7 +8,7 @@
     "title": "sparkplug-agent ingest API",
     "version": "0.1.0",
     "summary": "HTTP raw-tag front door of the sparkplug-agent (ADR-0042 Mode A).",
-    "description": "A connectivity plane (a client's Node-RED tee or the Go PLC readers) POSTs plain-JSON raw-tag envelopes here; the agent resolves them against the tenant's tag map, assigns SparkPlug aliases and publishes SparkPlug B upstream. Served by the `sparkplug-agent` binary on its ingest listener (AGENT_INGEST_PORT, default 9104, plaintext HTTP) when AGENT_HTTP_INGEST_ENABLED=true. `/healthz` and `/metrics` live on the agent's separate health listener (HEALTH_PORT).\n\nTwo modes, fixed at start-up:\n- Single-tenant (`--config <client.yaml>`): an envelope that declares a different group is 403; an envelope with no group is accepted. `X-Ingest-Group` is ignored. `POST /v1/counters` exists only in this mode and only when AGENT_NUMERIC_INGEST_ENABLED=true (404 otherwise).\n- Multi-tenant (AGENT_TENANTS_DIR, e.g. `sparkplug-agent-shared`): the group is mandatory. The body's `group`/`group_id`/`tenant` wins, else the `X-Ingest-Group` header, else 403; an unknown group is 403.\n\nPublic hosts (staging only; the agent is not deployed by the production compose file):\n- `https://ingest.staging.packiot.app:8449/v1/tags` -> sparkplug-agent-shared. Exact path only; the security group admits 8449 from registered box egress addresses only.\n- `https://cpack-ingest.staging.packiot.app:8447/v2/tags` -> sparkplug-agent-shared `/v1/tags`, with nginx injecting `X-Ingest-Group: CPACK`. `/v1/tags` on that host is closed (444). Port 8447 is admitted for CPACK's egress address only.\nNeither public host proxies `/v1/counters` or `/openapi.json`.\n\nOn-prem edge boxes run the same agent with the listener published on the box loopback (127.0.0.1:9104).\n\n## How to call this API\n\n- **Auth**: send the shared ingest key in `X-Ingest-Key: <ingest-key>` on every request. A missing or wrong key is 401; the key is compared in constant time and never logged.\n- **Base URLs**: see `servers`. Client tees use the public staging front door (`https://ingest.staging.packiot.app:8449`, `/v1/tags` only, source-IP allowlisted); services on packiot-net use the in-network address; on-prem readers use the box loopback `http://localhost:9104`. There is no production deployment.\n- **Content types**: request bodies are `application/json` (max AGENT_INGEST_MAX_BODY_BYTES, default 1 MiB). Unknown fields are ignored. Successful responses are `application/json`.\n- **Errors**: handler errors are `application/json` bodies `{\"error\":\"<message>\"}` with the messages listed per operation. A wrong HTTP method on a known path is a 405 from Go's router (`text/plain`, `Method Not Allowed`, with an `Allow` header) and an unmounted path is a 404 (`text/plain`, `404 page not found`); both happen before the key is checked.\n- **Retries**: on a network error or 5xx from a proxy, re-send the same envelope. Readings are absolute values at a timestamp, so a retry repeats samples instead of adding to them. A `link` report is counted once per accepted request, so a retried envelope counts its PLC tick twice in that minute.\n- **Docs**: browse this spec in the API docs portal at https://api.staging.packiot.app/docs/ (behind the cs-admin SSO, read-only Swagger UI). It is also exported to `docs/api/openapi/sparkplug-agent.openapi.json` in packiot-stack-alpha."
+    "description": "A connectivity plane (a client's Node-RED tee or the Go PLC readers) POSTs plain-JSON raw-tag envelopes here; the agent resolves them against the tenant's tag map, assigns SparkPlug aliases and publishes SparkPlug B upstream. Served by the `sparkplug-agent` binary on its ingest listener (AGENT_INGEST_PORT, default 9104, plaintext HTTP) when AGENT_HTTP_INGEST_ENABLED=true. `/healthz` and `/metrics` live on the agent's separate health listener (HEALTH_PORT).\n\nTwo modes, fixed at start-up:\n- Single-tenant (`--config <client.yaml>`): an envelope that declares a different group is 403; an envelope with no group is accepted. `X-Ingest-Group` is ignored. `POST /v1/counters` exists only in this mode and only when AGENT_NUMERIC_INGEST_ENABLED=true (404 otherwise).\n- Multi-tenant (AGENT_TENANTS_DIR, e.g. `sparkplug-agent-shared`): the group is mandatory. The body's `group`/`group_id`/`tenant` wins, else the `X-Ingest-Group` header, else 403; an unknown group is 403.\n\nPublic hosts (staging only; the agent is not deployed by the production compose file):\n- `https://ingest.staging.packiot.app:8449/v1/tags` -> sparkplug-agent-shared. Exact path only; the security group admits 8449 from registered box egress addresses only.\n- `https://cpack-ingest.staging.packiot.app:8447/v2/tags` -> sparkplug-agent-shared `/v1/tags`, with nginx injecting `X-Ingest-Group: CPACK`. `/v1/tags` on that host is closed (444). Port 8447 is admitted for CPACK's egress address only.\nNeither public host proxies `/v1/counters` or `/openapi.json`.\n\nOn-prem edge boxes run the same agent with the listener published on the box loopback (127.0.0.1:9104).\n\n## How to call this API\n\n- **Auth**: send your tenant's ingest key in `X-Ingest-Key: <ingest-key>` on every request. Each per-tenant key is bound to the SparkPlug group(s) it may publish for (key map AGENT_INGEST_KEYS_SECRET_ID / AGENT_INGEST_KEYS_JSON, stored as SHA-256 hashes); using it for another group is 403 `key not authorised for group`. The old shared key (AGENT_INGEST_API_KEY) is still accepted for any group while AGENT_INGEST_LEGACY_KEY_ALLOWED=true (the default during the rollout) and is counted as deprecated. A missing or unknown key, or the shared key once it is disabled, is 401. Keys are compared in constant time and never logged.\n- **Base URLs**: see `servers`. Client tees use the public staging front door (`https://ingest.staging.packiot.app:8449`, `/v1/tags` only, source-IP allowlisted); services on packiot-net use the in-network address; on-prem readers use the box loopback `http://localhost:9104`. There is no production deployment.\n- **Content types**: request bodies are `application/json` (max AGENT_INGEST_MAX_BODY_BYTES, default 1 MiB). Unknown fields are ignored. Successful responses are `application/json`.\n- **Errors**: handler errors are `application/json` bodies `{\"error\":\"<message>\"}` with the messages listed per operation. A wrong HTTP method on a known path is a 405 from Go's router (`text/plain`, `Method Not Allowed`, with an `Allow` header) and an unmounted path is a 404 (`text/plain`, `404 page not found`); both happen before the key is checked.\n- **Retries**: on a network error or 5xx from a proxy, re-send the same envelope. Readings are absolute values at a timestamp, so a retry repeats samples instead of adding to them. A `link` report is counted once per accepted request, so a retried envelope counts its PLC tick twice in that minute.\n- **Docs**: browse this spec in the API docs portal at https://api.staging.packiot.app/docs/ (behind the cs-admin SSO, read-only Swagger UI). It is also exported to `docs/api/openapi/sparkplug-agent.openapi.json` in packiot-stack-alpha."
   },
   "servers": [
     {
@@ -392,7 +392,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "`out-of-scope group`: the body declares a group other than the agent's scope.",
+            "description": "`out-of-scope group`: the body declares a group other than the agent's scope; or `key not authorised for group`: a per-tenant key not bound to the agent's group.",
             "content": {
               "application/json": {
                 "schema": {
@@ -447,7 +447,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-Ingest-Key",
-        "description": "Shared ingest key (AGENT_INGEST_API_KEY), compared in constant time. The agent refuses to start the listener without a key. Never logged."
+        "description": "Per-tenant ingest key bound to the tenant's SparkPlug group(s) (key map of SHA-256 hashes: AGENT_INGEST_KEYS_SECRET_ID or AGENT_INGEST_KEYS_JSON), or, while AGENT_INGEST_LEGACY_KEY_ALLOWED=true (default), the deprecated shared key AGENT_INGEST_API_KEY. Compared in constant time. The agent refuses to start the listener without a usable key. Never logged."
       }
     },
     "parameters": {
@@ -464,7 +464,7 @@
     },
     "responses": {
       "Unauthorized": {
-        "description": "Missing or wrong `X-Ingest-Key`.",
+        "description": "Missing or unknown `X-Ingest-Key`, or the deprecated shared key after AGENT_INGEST_LEGACY_KEY_ALLOWED=false.",
         "content": {
           "application/json": {
             "schema": {
@@ -477,7 +477,7 @@
         }
       },
       "Forbidden": {
-        "description": "Tenant routing/scope rejection: `out-of-scope group` (single-tenant: the body declares another group), `missing group (multi-tenant mode requires it in the body or the X-Ingest-Group header)`, or `unknown group` (multi-tenant: no pipeline for that group). Nothing is recorded.",
+        "description": "Tenant routing/scope rejection: `out-of-scope group` (single-tenant: the body declares another group), `missing group (multi-tenant mode requires it in the body or the X-Ingest-Group header)`, `key not authorised for group` (a per-tenant key used for a group it is not bound to; checked before the route lookup, so a foreign group gets this answer whether or not it is served), or `unknown group` (multi-tenant: no pipeline for that group). Nothing is recorded.",
         "content": {
           "application/json": {
             "schema": {
@@ -500,6 +500,12 @@
                 "summary": "Multi-tenant agent, group not served",
                 "value": {
                   "error": "unknown group"
+                }
+              },
+              "keyNotAuthorised": {
+                "summary": "Per-tenant key used for another tenant's group",
+                "value": {
+                  "error": "key not authorised for group"
                 }
               }
             }

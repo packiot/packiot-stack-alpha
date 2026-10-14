@@ -62,7 +62,7 @@ The image ships these binaries (`Dockerfile`); other `cmd/` tools are CLIs run w
 | decoder | GET | `/healthz`, `/health` | none | JSON snapshot; 503 when degraded (outbox > 5 000 rows or oldest > 60 s, MQTT stale, no confirms for `EMIT_LIVENESS_TIMEOUT_SECONDS`) |
 | decoder | GET | `/metrics` | none | Prometheus |
 | decoder, agent | POST | `/v1/onboard/generate`, `/v1/onboard/simulate` (port 9105, `ONBOARD_API_ENABLED`) | `Bearer <ONBOARD_API_KEY>` | descriptor → onboarding artifacts; pure, no side effects. Called by edge-api via `ONBOARD_GENERATE_URL` |
-| agent | POST | `/v1/tags`, `/v1/counters` (port 9104, `AGENT_HTTP_INGEST_ENABLED`) | `X-Ingest-Key` | raw-tag ingest from a client tee or reader |
+| agent | POST | `/v1/tags`, `/v1/counters` (port 9104, `AGENT_HTTP_INGEST_ENABLED`) | `X-Ingest-Key` (per-tenant key bound to its group, or the deprecated shared key while allowed) | raw-tag ingest from a client tee or reader |
 | edge-dashboard | GET | `/`, `/api/state`, `/healthz` | none | local board |
 
 Specs: [`sparkplug-agent.openapi.json`](../../docs/api/openapi/sparkplug-agent.openapi.json) and
@@ -152,7 +152,7 @@ Staging values are in `compose.staging.yml`; secrets come from Secrets Manager
 
 | Binary | Env |
 |---|---|
-| sparkplug-agent | `AGENT_CONFIG`, `AGENT_TENANTS_DIR`, `AGENT_TENANTS_PROFILE_DIR`, `AGENT_PROFILE_PATH`, `AGENT_TICK_SEC` (5), `AGENT_HTTP_INGEST_ENABLED` (false), `AGENT_INGEST_PORT` (9104), `AGENT_INGEST_API_KEY`, `AGENT_INGEST_MAX_BODY_BYTES`, `AGENT_NUMERIC_INGEST_ENABLED` (false), `AGENT_BIRTH_ALL_MAPPED` (true), `AGENT_MULTI_DERIVE_ENABLED` (true), `AGENT_LINK_HEALTH_ENABLED` (true), `AGENT_PARAM_DECOMPOSITION` (false), `AGENT_UNMAPPED_VERBOSE` (false), `AGENT_CAPTURE_ENABLED` (false), `AGENT_CAPTURE_FLUSH_SEC` (30), `AGENT_CAPTURE_STATUS_POLL_SEC` (300), `AGENT_TAGMAP_FROM_REGISTER` (false), `AGENT_REGISTER_DSN`, `AGENT_OUTBOX_DIR`, `OUTBOX_PATH`, `AGENT_UPLINK_CA`, `AGENT_UPLINK_TLS_CERT`, `AGENT_UPLINK_TLS_KEY`, `DB_HOST` (postgres), `DB_PORT` (5432), `DB_NAME` (packiot), `DB_USER`, `DB_PASSWORD`, `DB_SSLMODE` (disable), `EMIT_DEFINITIVE_BIRTH` (false), `MQTT_STALE_THRESHOLD_SECONDS`, `ONBOARD_API_ENABLED`, `ONBOARD_API_PORT` (9105), `ONBOARD_API_KEY`, `ONBOARD_API_MAX_BODY_BYTES`, `HEALTH_PORT` (9103), `LOG_LEVEL` |
+| sparkplug-agent | `AGENT_CONFIG`, `AGENT_TENANTS_DIR`, `AGENT_TENANTS_PROFILE_DIR`, `AGENT_PROFILE_PATH`, `AGENT_TICK_SEC` (5), `AGENT_HTTP_INGEST_ENABLED` (false), `AGENT_INGEST_PORT` (9104), `AGENT_INGEST_API_KEY` (legacy shared key), `AGENT_INGEST_KEYS_SECRET_ID` / `AGENT_INGEST_KEYS_JSON` (per-tenant key map), `AGENT_INGEST_LEGACY_KEY_ALLOWED` (true), `AGENT_INGEST_MAX_BODY_BYTES`, `AGENT_NUMERIC_INGEST_ENABLED` (false), `AGENT_BIRTH_ALL_MAPPED` (true), `AGENT_MULTI_DERIVE_ENABLED` (true), `AGENT_LINK_HEALTH_ENABLED` (true), `AGENT_PARAM_DECOMPOSITION` (false), `AGENT_UNMAPPED_VERBOSE` (false), `AGENT_CAPTURE_ENABLED` (false), `AGENT_CAPTURE_FLUSH_SEC` (30), `AGENT_CAPTURE_STATUS_POLL_SEC` (300), `AGENT_TAGMAP_FROM_REGISTER` (false), `AGENT_REGISTER_DSN`, `AGENT_OUTBOX_DIR`, `OUTBOX_PATH`, `AGENT_UPLINK_CA`, `AGENT_UPLINK_TLS_CERT`, `AGENT_UPLINK_TLS_KEY`, `DB_HOST` (postgres), `DB_PORT` (5432), `DB_NAME` (packiot), `DB_USER`, `DB_PASSWORD`, `DB_SSLMODE` (disable), `EMIT_DEFINITIVE_BIRTH` (false), `MQTT_STALE_THRESHOLD_SECONDS`, `ONBOARD_API_ENABLED`, `ONBOARD_API_PORT` (9105), `ONBOARD_API_KEY`, `ONBOARD_API_MAX_BODY_BYTES`, `HEALTH_PORT` (9103), `LOG_LEVEL` |
 | edge-dashboard | `LOCAL_STATE_DB` (required), `TENANT` (required), `DASHBOARD_PORT` (8080), `DASHBOARD_STALE_SECONDS` |
 | plc-sim | `MQTT_BROKER_URL`, `PLC_SIM_EDGE_NODE` (plc-sim), `PLC_SIM_TICK_SEC` (5), `EMIT_DEFINITIVE_BIRTH` |
 | s7-reader | `S7_HOST`, `S7_ENDPOINT`, `S7_RACK` (0), `S7_SLOT` (2), `S7_DB` (100), `S7_GROUP` (INCOPLAST), `S7_EDGE_NODE`, `S7_TICK_SEC` (5), `TENANT`, `CLIENT_CONFIG`, `RAW_EMIT` (true), `MQTT_BROKER_URL`, `PLC_HOST_<ENDPOINT>` |
@@ -192,6 +192,13 @@ The decoder is in the `pipeline` slice of `.github/workflows/dev-slices.yml` and
   `audience/04-ingest-debug.json`, `library/05-ingest.json`.
 - **Alerts** (`monitoring/prometheus/rules.yml`): `MQTTDisconnected`, `TransformerOutboxBacklog`,
   `TransformerOutboxStale`, `TransformerPublishNacked`, `TransformerMqttDrops`, `SparkplugSeqGapStream`.
+- **Per-tenant ingest keys** (shared door, 2026-10-14): `AGENT_INGEST_KEYS_SECRET_ID` points at a
+  Secrets Manager map `{"<sha256 hex of key>": ["GROUP", …]}` (hashes only, read at start). A key
+  may post only for its bound groups (else 403, outcome `rejected_key_scope`). The old shared
+  `AGENT_INGEST_API_KEY` keeps working for any group while `AGENT_INGEST_LEGACY_KEY_ALLOWED=true`
+  (default), counted as outcome `legacy_key` and WARN-logged once per group per 10 minutes. With
+  neither new variable set nothing changes. Rollout and rotation:
+  [`docs/runbooks/per-tenant-ingest-keys.md`](../../docs/runbooks/per-tenant-ingest-keys.md).
 - **Rules:** never run two decoders on the same Mosquitto namespace (each computes its own deltas);
   never publish test fixtures under a real tenant group; prefer `LINE_TRACE_TENANTS` over
   `LOG_LEVEL=debug` (a recreate drops alias tables until the next birth).

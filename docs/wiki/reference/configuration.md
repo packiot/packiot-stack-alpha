@@ -93,7 +93,8 @@ Detail: [sparkplug-agent](../understand/components/sparkplug-agent.md).
 | `AGENT_CONFIG` (cpack) | — | `/etc/packiot/agent.yaml` | single-tenant agent config |
 | `AGENT_TENANTS_DIR`, `AGENT_TENANTS_PROFILE_DIR` (shared) | — | `/etc/packiot/tenants`, `/etc/packiot/tenant-profiles` | per-tenant configs and conversion profiles |
 | `HEALTH_PORT` | `9103` | `9103` | health (the shared agent is scraped by Prometheus on it) |
-| `AGENT_HTTP_INGEST_ENABLED`, `AGENT_INGEST_PORT`, `AGENT_INGEST_API_KEY` | `false`, `9104`, — | `true`, `9104`, from `.env` | HTTPS `/v1/tags` ingest behind nginx |
+| `AGENT_HTTP_INGEST_ENABLED`, `AGENT_INGEST_PORT`, `AGENT_INGEST_API_KEY` | `false`, `9104`, — | `true`, `9104`, from `.env` | HTTPS `/v1/tags` ingest behind nginx; the shared key is deprecated |
+| `AGENT_INGEST_KEYS_SECRET_ID`, `AGENT_INGEST_LEGACY_KEY_ALLOWED` | —, `true` | empty, `true` (not provisioned yet) | per-tenant key map (hashes → groups) and whether the shared key still works; runbook `docs/runbooks/per-tenant-ingest-keys.md` |
 | `OUTBOX_PATH` (cpack) / `AGENT_OUTBOX_DIR` (shared) | `/var/lib/edge-transformer/agent-outbox.db` / `/var/lib/edge-transformer/outbox` | same | durability |
 | `AGENT_BIRTH_ALL_MAPPED` | `true` | `true` | NBIRTH declares every mapped metric |
 | `AGENT_MULTI_DERIVE_ENABLED` (shared) | `true` | not set | apply each tenant's saved calculation rules (kill switch) |
