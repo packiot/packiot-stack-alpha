@@ -1088,13 +1088,13 @@ DEST — WRITE:
 | INCOPLAST_ENTERPRISE_ID | required int (`services/operator-gateway/cmd/operator-adapter/main.go:66`) | `4` (`:3085`) |
 | INCOPLAST_TOPIC_PREFIX | (`services/operator-gateway/cmd/operator-adapter/main.go:75`) | `INCOPLAST` (`:3086`) |
 | AWS_REGION / PG_SECRET_ID | `us-east-1` / `packiot/staging/db` (`services/operator-gateway/cmd/operator-adapter/main.go:86-87`) | same (`:3092-3093`) **AWS Secrets Manager** unless CREDS_SOURCE=env |
-| CREDS_SOURCE | Secrets Manager unless `env` (`services/operator-gateway/internal/secrets/secrets.go:102`) | `env` (`:3094`) → **SM bypassed on staging** |
+| CREDS_SOURCE | Secrets Manager unless `env` (`services/operator-gateway/internal/secrets/secrets.go:102`) | unset → Secrets Manager `${OPERATOR_GATEWAY_PG_SECRET_ID:-packiot/staging/operator-gateway-db-creds}` (role `operator_gateway`, `db/migrations/t-operator-gateway-role`); no `env_file`; dev keeps `env` with `DB_USER=operator_gateway` |
 | DB_HOST / DB_PORT / DB_NAME (env path) | `postgres` / 5432 / `packiot` (`secrets.go` fetchDBCredsFromEnv, `envOr("DB_HOST","postgres")`, `envOr("DB_NAME","packiot")`) | `10.10.10.89` / `5432` / `packiot_analytics` (`:3095-3099`) — **direct, not pgbouncer** (compose comment `:3091` and `services/operator-gateway/cmd/operator-adapter/main.go:80-83` comment say packiot/pgbouncer — stale) |
-| DB_USER / DB_PASSWORD | required (`services/operator-gateway/internal/secrets/secrets.go:176-177`) | `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` (`:3097-3098`) |
+| DB_USER / DB_PASSWORD | required (`services/operator-gateway/internal/secrets/secrets.go:176-177`) | staging/prod: from the secret (`operator_gateway`); dev: `operator_gateway` / `dev`. Admin `POSTGRES_*` forbidden by `scripts/ci/check-db-least-priv.py` |
 | TLS_CERT_FILE / TLS_KEY_FILE | required, refuse plaintext (`services/operator-gateway/cmd/operator-adapter/main.go:126-132`) | `/opt/packiot/operator-adapter/certs/tls.{crt,key}` (`:3109-3110`) |
 | OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TRACES_SAMPLER_ARG | (`services/operator-gateway/internal/tracing/tracing.go:39,91`) | `http://tempo:4317` (`:3083`) |
 
-**3. PostgreSQL**: pool `MaxConns=3` (`services/operator-gateway/internal/db/pool.go:30`), boot ping fatal (`services/operator-gateway/internal/db/pool.go:47-49`). READ only: `packml_register` ⋈ `equipments` ⋈ `areas` ⋈ `sites` by `packml_topic` + `s.id_enterprise` (`services/operator-gateway/internal/adapter/resolver.go:149-154`). No writes (searched INSERT/UPDATE/DELETE in `services/operator-gateway`). Unqualified names → search_path of the `POSTGRES_USER` role in `packiot_analytics` (UNPROVEN).
+**3. PostgreSQL**: pool `MaxConns=3` (`services/operator-gateway/internal/db/pool.go`), boot ping fatal. READ only, as role `operator_gateway` (NOBYPASSRLS, 10 SELECT columns): a READ ONLY tx stamps `app.tenant_id` then reads `core.topic_routing` ⋈ `core.equipments` ⋈ `core.areas` ⋈ `core.sites` by topic + `s.id_enterprise` (`services/operator-gateway/internal/adapter/resolver.go` `queryEquipment`). No writes. Names are schema-qualified. Proved by `resolver_role_golden_test.go` (`-tags golden`).
 
 **4–6. RabbitMQ / MQTT / Redis** — none.
 

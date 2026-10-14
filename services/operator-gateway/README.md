@@ -20,7 +20,7 @@ alias, cert path, metric names and `cmd/operator-adapter/` still use that name.
 client operator app (Node-RED tee)
    │ HTTPS POST /operator/*   X-Ingest-Key
    ▼
-operator-gateway ── SELECT packml_register ⋈ equipments ⋈ areas ⋈ sites ──▶ analytics DB
+operator-gateway ── SELECT topic_routing ⋈ equipments ⋈ areas ⋈ sites (as operator_gateway) ──▶ analytics DB
    │ POST /api/downtimes/* | /api/production-orders/*   x-api-key (tenant), ?idEnterprise=
    ▼
 edge-api ──▶ analytics DB (downtimes, production orders, user_logs)
@@ -103,8 +103,26 @@ N/A: HTTP in, HTTP out.
 
 ### Database
 
-Read-only by query (the pool runs only the resolver `SELECT`; max 3 connections) against the analytics
-DB `packiot_analytics`: `packml_register`, `equipments`, `areas`, `sites`. All writes happen in edge-api.
+One read, as the least-privilege login **`operator_gateway`** (migration
+[`db/migrations/t-operator-gateway-role/`](../../db/migrations/t-operator-gateway-role/)): NOSUPERUSER,
+NOBYPASSRLS, NOINHERIT, read-only sessions (`default_transaction_read_only=on`, `statement_timeout=5s`),
+max 3 pool connections to `packiot_analytics`. All writes happen in edge-api.
+
+| Call path | Statement | Privilege it needs |
+|---|---|---|
+| boot (`db.New`, `MinConns=1`) and `/healthz` (`Ping`) | connect | `CONNECT` on the database |
+| resolver (`queryEquipment`), per uncached topic | `BEGIN READ ONLY; SELECT set_config('app.tenant_id', <enterprise>, true)` | none (built-in) |
+| | `SELECT … FROM core.topic_routing ⋈ core.equipments ⋈ core.areas ⋈ core.sites` | `USAGE` on `core`; `SELECT` on `topic_routing(packml_topic, id_equipment, active)`, `equipments(id_equipment, cd_equipment, id_area)`, `areas(id_area, id_site)`, `sites(id_site, id_enterprise)` |
+| the RLS policies on `topic_routing` + `equipments` (run as the caller) | `public.current_tenant()`, `public.is_all_tenant()` | `USAGE` on `public`, `EXECUTE` on both |
+
+Nothing else: no writes, sequences, `LISTEN` or other functions. **RLS:** `core.topic_routing` and
+`core.equipments` are `FORCE ROW LEVEL SECURITY` on `app.tenant_id`, so the resolver stamps the
+instance's enterprise as a transaction-local GUC first (safe under pgbouncer transaction pooling, as
+read-api does); without it the role sees 0 rows and every topic would 422. The resolver's own
+`s.id_enterprise = $2` fence stays primary. It reads `core.topic_routing` rather than the
+`security_invoker` compat view, which would need `SELECT` on every column of the table.
+`resolver_role_golden_test.go` (`-tags golden`, CI "golden fixtures") applies the real migration and runs
+this call path as the role, including the denials.
 
 ## Configuration
 
@@ -118,16 +136,20 @@ DB `packiot_analytics`: `packml_register`, `equipments`, `areas`, `sites`. All w
 | `PORT` | `8443` | no | TLS listener |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | — | yes | the process refuses to serve plaintext |
 | `AWS_REGION` | `us-east-1` | no | Secrets Manager region |
-| `PG_SECRET_ID` | `packiot/staging/db` | no | resolver DB credentials secret (`{host,port,user,password,name}`) |
+| `PG_SECRET_ID` | `packiot/staging/db` (code); compose sets `packiot/<env>/operator-gateway-db-creds` | no | resolver DB credentials secret (`{host,port,user,password,name}`, user `operator_gateway`); compose reads it from `OPERATOR_GATEWAY_PG_SECRET_ID` when set |
 | `CREDS_SOURCE` | unset | no | `env` = read `DB_*` from env instead of Secrets Manager |
 | `DB_HOST`, `DB_PORT`, `DB_NAME` | `postgres`, `5432`, `packiot` | with `CREDS_SOURCE=env` | resolver DB location |
 | `DB_USER`, `DB_PASSWORD` | — | with `CREDS_SOURCE=env` | resolver DB login; empty fails closed |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | no | tracing to Tempo; unset = off |
 | `OTEL_TRACES_SAMPLER_ARG` | `1.0` | no | trace sampling ratio |
 
-Staging sets `CREDS_SOURCE=env` with the `.env` Postgres login and `DB_HOST` = the DB EC2, database
-`packiot_analytics` (direct, not pgbouncer), so `PG_SECRET_ID` is not used there. Production uses
-`PG_SECRET_ID=packiot/production/db`.
+Staging and production read the `operator_gateway` login from Secrets Manager
+(`packiot/staging/operator-gateway-db-creds`, `packiot/production/operator-gateway-db-creds`; staging's
+holds host `10.10.10.89`, database `packiot_analytics`, direct, not pgbouncer). `CREDS_SOURCE` is unset
+there and the service has no `env_file`, so the admin `POSTGRES_*` from `.env` never enters the container.
+Dev (`CREDS_SOURCE=env`) logs in as `operator_gateway` with the seed's password `dev`.
+`scripts/ci/check-db-least-priv.py` (PR Validation) fails a compose change that hands this service the
+admin login, an admin secret or an `env_file`.
 
 ## Run locally
 
@@ -140,6 +162,50 @@ cd services/operator-gateway && go test -race ./...
 
 It runs in the `edge` slice of `.github/workflows/dev-slices.yml` (needs `DEV_SUBMODULES_TOKEN`) and in
 the `go-services.yml` matrix. `openapi_completeness_test.go` checks the spec covers every route.
+
+## Provisioning the DB role
+
+Once per environment, **before** the compose change that points the service at the role is deployed (a
+deploy without the secret exits at boot: `fetch db secret failed`). Commands are for staging; production
+is the same with `packiot/production/*` and its own hosts. No password is ever printed or copied off a host.
+
+1. **Apply the migration** on the DB host (instance tag `packiot-staging-db`), as in
+   [Add a migration, steps 8–9](../../docs/wiki/build/develop/add-a-migration.md#8-dry-run-on-staging):
+   dry-run `01-up.sql` with `COMMIT` → `ROLLBACK`, then apply it and run `verify.sql`. Every `V` line
+   must match its label; `I1` is `f` (no password yet).
+2. **Copy the provisioning script to the app host** (instance tag `packiot-staging-app`; the host has
+   no checkout of an unmerged branch): on your laptop
+   `base64 -w0 scripts/ops/provision-operator-gateway-db-role.py`, then on the host
+   (`aws ssm start-session --target <app instance>`, `sudo -i`)
+   `echo '<paste>' | base64 -d > /root/provision-operator-gateway-db-role.py`.
+3. **Create the secret and set the role password** on the app host:
+   `python3 /root/provision-operator-gateway-db-role.py`. It checks the role (step 1 done), generates a
+   256-bit password and creates `packiot/staging/operator-gateway-db-creds` =
+   `{host: 10.10.10.89, port: 5432, user: operator_gateway, password, name: packiot_analytics}` (the app
+   instance role may create `packiot/staging/*`), sets the role password as a SCRAM verifier (the plaintext
+   never reaches Postgres or its logs), then logs in as `operator_gateway`. Expect four numbered lines
+   ending `4. login OK as operator_gateway …`. Re-running is safe (it reuses the secret).
+4. **Re-run `verify.sql`** on the DB host: `I1` is now `t`.
+5. **Merge the PR and deploy** ("Deploy to Staging"). The container is recreated with
+   `PG_SECRET_ID=packiot/staging/operator-gateway-db-creds` and no `.env`.
+6. **Verify it connects as `operator_gateway`:**
+   - `docker logs operator-gateway 2>&1 | grep 'db secret fetched'` shows
+     `postgres://operator_gateway:***@10.10.10.89:5432/packiot_analytics…`;
+   - `curl -sk https://127.0.0.1:8445/healthz` → `{"db":true,"healthy":true}`;
+   - on the DB host: `SELECT usename, count(*) FROM pg_stat_activity WHERE application_name = 'operator-gateway' GROUP BY 1;`
+     → only `operator_gateway`;
+   - the next real Incoplast action is `accepted` (dashboard `07-operator.json`, or
+     `operator_adapter_requests_total` has no new `unresolved`/`resolver_error`).
+7. **Confirm the admin path is unused:**
+   `docker inspect operator-gateway --format '{{json .Config.Env}}' | grep -c POSTGRES_` → `0`, and the
+   `pg_stat_activity` query above returns no `postgres` row for `operator-gateway`.
+
+**Rotate:** `python3 provision-operator-gateway-db-role.py --rotate`, then
+`docker compose -f compose.staging.yml -p stack up -d --force-recreate operator-gateway` and step 6
+(open connections keep the old password until the recreate). `--check` verifies without changing
+anything. **Roll back:** revert the compose change and redeploy (the service goes back to the admin
+login), then, if the role should go, `rollback.sql` on the DB host. Production: the role is a cluster
+object, so apply the migration and run the script there too (`--env production --db-host <host>`).
 
 ## Operating it
 
