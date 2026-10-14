@@ -59,7 +59,7 @@ SparkPlug detail.
 | sparkplug-agent | Raw tags → SparkPlug B session (alias, birth/death, RBE, outbox, uplink) | Go, distroless | [sparkplug-agent](../components/sparkplug-agent.md) |
 | Edge box | The client factory machine: SSM hybrid instance + generated compose bundles + optional on-prem offline stack | Docker Compose on client hardware | [edge-box](../components/edge-box.md) |
 | edge-node-red | Legacy Node-RED edge: still runs in CPACK's factory (it feeds legacy production and tees raw tags to staging); the cloud copy was retired on staging 2026-08-16 (profile `legacy-sim`, off). Also the generated per-client reader flow | Node-RED 4 | [edge-node-red](../components/edge-node-red.md) |
-| edge-session-broker | Runs `session-manager-plugin`; bridges SSM sessions to a WebSocket / HTTP proxy for csadmin | Node 18 on Debian | [edge-session-broker](../components/edge-session-broker.md) |
+| edge-session-broker | Runs `session-manager-plugin`; bridges SSM sessions to a WebSocket / HTTP proxy for csadmin | Node 22 on Debian | [edge-session-broker](../components/edge-session-broker.md) |
 | Simulators & twins | plc-sim, s7-softplc, numeric-sim, bispharma-twin, inject-counter-fixture, onboarding CLIs | Go / Python | [simulators-and-twins](../components/simulators-and-twins.md) |
 
 ## How it works
