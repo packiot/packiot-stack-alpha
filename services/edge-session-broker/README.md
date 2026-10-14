@@ -33,7 +33,7 @@ The sidecar holds no AWS credentials and is never exposed beyond the compose net
 | Environment | Where (compose file · service · profile) | Image | Ports | Health |
 |---|---|---|---|---|
 | dev | none: left out on purpose (no SSM handle offline; `dev/README.md`, "Not in dev") | — | — | — |
-| staging | `compose.staging.yml` · `edge-session-broker` · no profile | built from `Dockerfile` (`node:18-bookworm-slim` + `session-manager-plugin` .deb, runs as `node`) | in-network 8090 (WS), 8091 (HTTP); no host publish | TCP connect to 8090 |
+| staging | `compose.staging.yml` · `edge-session-broker` · no profile | built from `Dockerfile` (`node:22-bookworm-slim` + `session-manager-plugin` .deb, runs as `node`) | in-network 8090 (WS), 8091 (HTTP); no host publish | TCP connect to 8090 |
 | production | not in `compose.production.yml` | — | — | — |
 
 ## Interfaces
@@ -105,7 +105,7 @@ Tests: `npm test` (`node:test`, `server.test.mjs`: token enforcement on WS and H
 |---|---|
 | `server.mjs` | WebSocket shell bridge, port-forward control, HTTP reverse proxy, idle reaper (`createBroker` exported for tests) |
 | `server.test.mjs` | `node:test` suite |
-| `Dockerfile` | debian-slim Node 18 image with the arch-matched `session-manager-plugin` |
+| `Dockerfile` | debian-slim Node 22 (LTS) image with the arch-matched `session-manager-plugin` |
 | `package.json`, `package-lock.json` | single dependency `ws` (locked; image uses `npm ci`) |
 
 ## Related docs

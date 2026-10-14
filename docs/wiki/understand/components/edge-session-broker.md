@@ -28,7 +28,7 @@ edge-api's image is Alpine (musl).
 
 | | |
 |---|---|
-| Language / runtime | Node.js 18 (`node:18-bookworm-slim`), ESM, one dependency (`ws@^8.18`, pinned by `package-lock.json`, installed with `npm ci`) |
+| Language / runtime | Node.js 22 LTS (`node:22-bookworm-slim`), ESM, one dependency (`ws@^8.18`, pinned by `package-lock.json`, installed with `npm ci`) |
 | Repo path | `services/edge-session-broker/` (`server.mjs`, `server.test.mjs`, `Dockerfile`, `package.json`, `package-lock.json`) |
 | Image | Built in compose (`build: ./services/edge-session-broker`); installs `session-manager-plugin` `.deb` for amd64 or arm64 at build time |
 | Container | compose service `edge-session-broker` (no `container_name`, so the container is `stack-edge-session-broker-1`; DNS name `edge-session-broker` on `packiot-net`) |

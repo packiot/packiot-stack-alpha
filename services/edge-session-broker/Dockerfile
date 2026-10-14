@@ -1,7 +1,7 @@
 # ADR-0057 — data-plane sidecar: node + AWS session-manager-plugin on debian
 # (edge-api's alpine/musl image can't run the glibc plugin, hence a dedicated
 # minimal debian image with a tiny attack surface).
-FROM node:18-bookworm-slim
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 

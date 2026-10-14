@@ -26,7 +26,7 @@ Checkout: `origin/staging @ 28356ccc` (branch `docs/p0-dev-contracts`). All path
 | analytics-sync | `:3141` | `services/analytics-sync/Dockerfile` | `cmd/shadow-mirror` → `analytics-sync` | up, `SHADOW_MIRROR_ENABLED=false` (idle) |
 | legacy-replicator | `:3214` | `services/analytics-sync/Dockerfile.replicator` | `cmd/legacy-replicator` | on |
 | legacy-replicator-sbx | `:3345` | same | `cmd/legacy-replicator` | flag `REPLICATE_SBX_ENABLED` (default off) |
-| edge-session-broker | `:711` | `services/edge-session-broker/Dockerfile` (Node 18) | `server.mjs` | on |
+| edge-session-broker | `:711` | `services/edge-session-broker/Dockerfile` (Node 22) | `server.mjs` | on |
 
 ## Cross-service data-flow summary (from the sections below)
 
@@ -1151,7 +1151,7 @@ DEST — WRITE:
 
 ## edge-session-broker  (Node.js, not Go — included for completeness)
 
-**1. Build**: compose `compose.staging.yml:711` (`context: ./services/edge-session-broker`). `services/edge-session-broker/Dockerfile:4` `node:18-bookworm-slim`, installs AWS `session-manager-plugin` .deb from `https://s3.amazonaws.com/session-manager-downloads/...` at **build time** (`Dockerfile:9-23`), `CMD node server.mjs` (`:32`).
+**1. Build**: compose `compose.staging.yml:711` (`context: ./services/edge-session-broker`). `services/edge-session-broker/Dockerfile:4` `node:22-bookworm-slim`, installs AWS `session-manager-plugin` .deb from `https://s3.amazonaws.com/session-manager-downloads/...` at **build time** (`Dockerfile:9-23`), `CMD node server.mjs` (`:32`).
 
 **2. Env vars** (`services/edge-session-broker/server.mjs`)
 
