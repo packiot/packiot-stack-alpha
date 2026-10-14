@@ -7,7 +7,7 @@ UPDATE ops.retention_policy SET keep = v.keep::interval, updated_at = now()
 FROM (VALUES
   ('silver.equipment_values','90 days'), ('bronze.equipment_values_raw','90 days'), ('bronze.equipment_events_raw','90 days'),
   ('silver.plc_link_minutes','90 days'),
-  ('silver.ca_discrete_changes_1s','90 days'), ('silver.ca_equipment_boxes_1s','90 days'),
+  ('silver.ca_discrete_changes_1s','90 days'),
   ('silver.agg_equipment_values_1min','90 days'), ('silver.equipment_metrics_1min','90 days'),
   ('silver.equipment_categorical_1min','90 days'),
   ('silver.agg_equipment_values_1hour','13 months'), ('silver.equipment_categorical_1hour','13 months'),

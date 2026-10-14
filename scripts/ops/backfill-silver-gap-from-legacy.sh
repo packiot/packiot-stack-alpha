@@ -270,7 +270,7 @@ caggs(){
   while [[ ! "$d" > "$d1" ]]; do
     # TWIN_DAYS also limits the refresh to those days
     if [ -n "${TWIN_DAYS:-}" ] && [[ " ${TWIN_DAYS} " != *" ${d} "* ]]; then d=$(date -u -d "$d + 1 day" +%F); continue; fi
-    for cagg in silver.ca_discrete_changes_1s silver.ca_equipment_boxes_1s silver.agg_equipment_values_1min \
+    for cagg in silver.ca_discrete_changes_1s silver.agg_equipment_values_1min \
                 silver.equipment_metrics_1min silver.equipment_categorical_1min \
                 silver.agg_equipment_values_1hour silver.equipment_categorical_1hour; do
       PSQL -c "SET statement_timeout='30min'" -c "CALL refresh_continuous_aggregate('${cagg}', '${d} 00:00:00+00', '$(date -u -d "$d + 1 day" +%F) 00:00:00+00')" >/dev/null

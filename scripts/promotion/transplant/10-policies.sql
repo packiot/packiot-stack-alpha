@@ -13,7 +13,6 @@ ALTER MATERIALIZED VIEW silver.ca_discrete_changes_1s     SET (timescaledb.compr
 SELECT add_continuous_aggregate_policy('silver.agg_equipment_values_1min',  start_offset => '30 minutes', end_offset => '1 minute', schedule_interval => '1 minute',   if_not_exists => true);
 SELECT add_continuous_aggregate_policy('silver.agg_equipment_values_1hour', start_offset => '3 days',     end_offset => '1 hour',   schedule_interval => '30 minutes', if_not_exists => true);
 SELECT add_continuous_aggregate_policy('silver.ca_discrete_changes_1s',     start_offset => '30 minutes', end_offset => '1 minute', schedule_interval => '15 minutes', if_not_exists => true);
-SELECT add_continuous_aggregate_policy('silver.ca_equipment_boxes_1s',      start_offset => '6 hours',    end_offset => '1 minute', schedule_interval => '15 minutes', if_not_exists => true);
 SELECT add_continuous_aggregate_policy('silver.equipment_categorical_1min', start_offset => '3 hours',    end_offset => '2 minutes',schedule_interval => '2 minutes',  if_not_exists => true);
 SELECT add_continuous_aggregate_policy('silver.equipment_categorical_1hour',start_offset => '1 day',      end_offset => '1 hour',   schedule_interval => '30 minutes', if_not_exists => true);
 SELECT add_continuous_aggregate_policy('silver.equipment_metrics_1min',     start_offset => '3 hours',    end_offset => '1 minute', schedule_interval => '1 minute',   if_not_exists => true);
