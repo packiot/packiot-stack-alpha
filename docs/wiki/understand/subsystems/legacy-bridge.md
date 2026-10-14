@@ -221,7 +221,8 @@ Full table: [analytics-sync configuration](../components/analytics-sync.md#confi
 
 - [analytics-sync (legacy-replicator + shadow-mirror)](../components/analytics-sync.md)
 - [mirror-worker (retired)](../components/mirror-worker.md)
-- [Simulators & twins](../components/simulators-and-twins.md) — sandbox twin, self-heal, hold modes
+- [Sandbox twin](../components/sandbox-twin.md) — sandbox twin, self-heal, hold modes
+- [Simulators & twins](../components/simulators-and-twins.md) — simulators and synthetic twins
 - [Analytics DB](analytics-db.md) · [Compute](compute.md) · [Serving & APIs](serving-apis.md)
 - [Service catalog](../../reference/service-catalog.md)
 - [Environments](../architecture/environments.md) — which tenant gets data from where

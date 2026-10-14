@@ -200,7 +200,7 @@ without applying, because the heal at the end of the grace period reflects the s
 current state; in **healing** mode the loop pauses (no fetch, no advance) so actions
 arriving mid-heal are replayed afterwards. In both modes the reconcilers and the DLQ
 retrier skip their passes. Errors fail open (not held). See
-[Simulators and twins](simulators-and-twins.md).
+[Sandbox twin](sandbox-twin.md).
 
 ### DLQ (`dlq.go`)
 

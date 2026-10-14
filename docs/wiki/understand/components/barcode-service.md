@@ -29,7 +29,9 @@ serialization feature (ADR-0040): GS1 parsing, EPCIS, e-signatures and genealogy
     `POST /api/scanned-boxes` (its nginx injects the sandbox api-key); edge-api's
     scanned-boxes DAO is a port of this service's algorithm against the same tables. Both
     take the same per-PO advisory lock, so they are safe together, but a change to scan
-    counting must be made in both places.
+    counting must be made in both places. Scans written directly to this service write no
+    `user_logs` row, so they do not hold the [sandbox twin](sandbox-twin.md); scans through
+    edge-api do.
 
 ## At a glance
 

@@ -18,6 +18,8 @@ Success team.
 |---|---|---|
 | **Customer Success or the automation team** | [Use Packiot — start here](use/index.md) | [Set up a client](use/setting-up-a-client.md) · [Customize a client](use/customize/index.md) · [Troubleshoot OEE](use/troubleshooting-oee.md) |
 | **An engineer, new to Packiot** | [Your first week](learn/first-week.md) | [Understand Packiot](understand/index.md) · [Develop](build/index.md#develop) |
+| **QA / testing** | [Sandbox for testing](use/sandbox-for-testing.md) | [Operator app](understand/components/operator-app.md) · [Barcode app](understand/components/barcode-app.md) |
+| **Product or management** | [Test environments, explained](learn/test-environments.md) | [Sandbox for testing](use/sandbox-for-testing.md#the-reset-rule) |
 | **On call, something is broken** | [Runbooks](build/operate/runbooks.md) | [Environments](understand/architecture/environments.md) · [Observability](understand/components/observability.md) |
 | **Integrating with an API** | [API reference](reference/api/index.md) | [Service catalog](reference/service-catalog.md) · [Tenancy & security](understand/architecture/tenancy-and-security.md) |
 

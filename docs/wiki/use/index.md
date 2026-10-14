@@ -67,5 +67,6 @@ There is also a **barcode app** for factories that scan the boxes they pack.
 | Choose how a line's OEE is measured (its own signals or its lead machine) | [OEE settings](customize/oee-settings.md) |
 | Leave days out of OEE for a line that is not in use on purpose | [Out of service](setting-up-a-client.md#step-4-lines-and-machines) |
 | Find out why a number looks wrong (OEE 0, no data, Performance above 100 %) | [Troubleshooting OEE](troubleshooting-oee.md) |
+| Test something on staging without breaking a client (QA, demos, practice) | [Sandbox for testing](sandbox-for-testing.md) |
 | Understand a word | [Glossary](../reference/glossary.md) |
 | See how the system is built | [For engineers](../understand/index.md) |

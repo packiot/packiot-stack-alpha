@@ -73,7 +73,7 @@ user sees (their role's entity scope).
     Staging edge-api blocks PO, downtime, out-of-service and shift writes for enterprise 3
     with 403 `MIRROR_TENANT_WRITE_BLOCKED` (edge-api #298/#299), because CPACK's analytics
     data is replicated from legacy. Writes from `operator.staging…` therefore fail by design;
-    test write flows on `operator-sbx` (2000003).
+    test write flows on `operator-sbx` (2000003). Testers: [Sandbox for testing](../../use/sandbox-for-testing.md).
 
 ## Internal design
 

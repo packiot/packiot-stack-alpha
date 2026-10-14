@@ -15,6 +15,10 @@ last_verified: 2026-10-13
 > · Python simulator: [simulator/README.md](https://github.com/packiot/packiot-stack-alpha/blob/staging/simulator/README.md)
 > · [Service catalog](../../reference/service-catalog.md). None of these serve an HTTP API.
 
+!!! note "Looking for the CPACK sandbox (SANDBOX-CPACK, 2000003)?"
+    It is a tenant copy, not a simulator: see [Sandbox twin](sandbox-twin.md) and, for testers,
+    [Sandbox for testing](../../use/sandbox-for-testing.md).
+
 ## Responsibility
 
 These tools are accountable for **producing realistic edge input without a real factory** —

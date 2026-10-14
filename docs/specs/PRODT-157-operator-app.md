@@ -46,6 +46,11 @@ which is why this spec is tier **large** (industrial data correctness).
 | CPACK-Staging | 3 | Read-only mirror of production. Writes refused with `MIRROR_TENANT_WRITE_BLOCKED` |
 | SANDBOX-CPACK | 2000003 | Where write flows are tested. Resettable clone of CPACK-Staging |
 
+Addresses: Operator on the sandbox `operator-sbx.staging.packiot.app`; `operator.staging.packiot.app` is
+CPACK-Staging (read-only). The sandbox resets completely to CPACK-Staging (POs, stops, configuration,
+barcode scans) 4 hours after the last change, and nightly at 06:00 UTC unless held. QA guide (logins,
+how to extend a hold, gotchas): [Sandbox for testing](https://wiki.packiot.app/use/sandbox-for-testing/).
+
 ### Feature catalogue
 
 | Area | Feature | Rules | Criteria |
