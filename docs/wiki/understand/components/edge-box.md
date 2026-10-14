@@ -190,9 +190,22 @@ Opt-in per tenant with `client_descriptors.descriptor.onprem_offline = true`
 **What is generated vs out of band.** `deploy-onprem` now overwrites
 `compose.onprem-edge.yml` with the edge-api-rendered one (`shared/onprem-compose.ts`) and
 writes `.env.onprem` (`TENANT`, `DASHBOARD_PORT`, `AGENT_INGEST_API_KEY` = edge-api's
-`SSM_EDGE_INGEST_KEY` or `__SET_ME__`). The **source tree** (`services/sparkplug-decoder`),
+`SSM_EDGE_INGEST_KEY` or `__SET_ME__`; with the edge SPAs also `OPERATOR_EDGE_API_KEY` /
+`BARCODE_EDGE_API_KEY` = the tenant's `enterprises.api_key`, and
+`OPERATOR_REFDATA_API_KEY=__SET_ME__`). The **source tree** (`services/sparkplug-decoder`),
 `configs/mosquitto/`, `onprem/agent.yaml` and `onprem/client.yaml` must already be in
 `/opt/packiot/fatedge`; edge-api does not distribute them.
+
+**Keys set on the box survive a redeploy** (edge-api#307). `.env.onprem` is rewritten
+on every `deploy-onprem`, but the script writes the fresh render to `.env.onprem.new`,
+copies over the box's current value for every key the render left as `__SET_ME__` (today
+`OPERATOR_REFDATA_API_KEY`, and `AGENT_INGEST_API_KEY` when edge-api has no ingest key),
+then `mv`s it into place before `compose up`. So: set the refdata read key **once** in
+`/opt/packiot/fatedge/.env.onprem` (`OPERATOR_REFDATA_API_KEY=<read key>`) and restart
+`operator-edge`; later redeploys keep it. Values edge-api knows (`TENANT`, the
+`enterprises.api_key`-backed keys) are always re-rendered, so a rotation still reaches the
+box, and a hand edit to those is overwritten. The copy happens only on the box, so the key
+never reaches edge-api or its logs. Teardown deletes `.env.onprem`, keys included.
 
 **Teardown** (`teardownOnpremStack`): `docker compose … down -v || true`, then
 `rm -rf` of `onprem/`, `services/`, `configs/`, `*.tar.gz`, `.env.onprem` and the compose
@@ -205,7 +218,7 @@ audit event `onboarding.operator-edge`); the generated compose then adds:
 
 | Service | Image | Ports | Env |
 |---|---|---|---|
-| `operator-edge` (container `onprem-operator`) | `${OPERATOR_EDGE_IMAGE:-ghcr.io/packiot/operator-edge:staging}` built from `operator/Dockerfile.edge` | `${OPERATOR_PORT:-8081}:80` | `EDGE_API_UPSTREAM` (default `https://edge.api.staging.packiot.app`), `REFDATA_UPSTREAM` (default `https://read.api.staging.packiot.app`), `NGINX_ENVSUBST_FILTER=^(EDGE_\|REFDATA_)` |
+| `operator-edge` (container `onprem-operator`) | `${OPERATOR_EDGE_IMAGE:-ghcr.io/packiot/operator-edge:staging}` built from `operator/Dockerfile.edge` | `${OPERATOR_PORT:-8081}:80` | `EDGE_API_UPSTREAM` (default `https://edge.api.staging.packiot.app`), `REFDATA_UPSTREAM` (default `https://read.api.staging.packiot.app`), `NGINX_ENVSUBST_FILTER=^(EDGE_\|REFDATA_)`, `EDGE_API_KEY=${OPERATOR_EDGE_API_KEY}`, `REFDATA_API_KEY=${OPERATOR_REFDATA_API_KEY}` |
 | `barcode-edge` (container `onprem-barcode`) | `${BARCODE_EDGE_IMAGE:-ghcr.io/packiot/barcode-edge:staging}` | `${BARCODE_PORT:-8082}:80` | same upstreams, plus `EDGE_API_KEY=${BARCODE_EDGE_API_KEY}` (the tenant's `enterprises.api_key`) and `REFDATA_API_KEY=${BARCODE_REFDATA_API_KEY}` |
 
 `barcode-edge` is added when the descriptor enables it (`/api/onboarding/barcode-edge`). Both
@@ -220,12 +233,13 @@ How the operator survives an outage today:
 | Box-wide write outbox | ADR-0054 Option A: forward to cloud; a 4xx is returned (never queued); transport error or 502/503/504 ⇒ persist to the SQLite outbox and return `202 {queued:true}`; replay FIFO preserving `Idempotency-Key` | **Not built.** An unwired engine (`internal/writeforward`, no binary imported it) was removed on 2026-10-13; recover it from git history (`git show 192378b5:services/sparkplug-decoder/internal/writeforward/writeforward.go`) if Option A is picked up |
 | Local PO authority (Option B) | Local Postgres + bidirectional sync | Design only, gated on the PLC command channel (C1) |
 
-!!! warning "Gap in code (not tested live)"
+!!! note "operator-edge keys"
     `operator/nginx.edge.conf.template` injects `x-api-key: ${EDGE_API_KEY}` on `/api/` and
-    `${REFDATA_API_KEY}` on `/v1`/`/v2`, but the `operator-edge` service rendered by
-    `onprem-compose.ts` sets neither variable (unlike `barcode-edge`). With an envsubst filter
-    that only substitutes variables that are set, the literal `${EDGE_API_KEY}` would stay in the
-    nginx config. Check a live box before relying on the edge-operator.
+    `${REFDATA_API_KEY}` on `/v1`/`/v2`. Since edge-api#306 the rendered `operator-edge`
+    service sets both (`EDGE_API_KEY=${OPERATOR_EDGE_API_KEY:-}`,
+    `REFDATA_API_KEY=${OPERATOR_REFDATA_API_KEY:-}`). edge-api renders the first from
+    `enterprises.api_key`; the refdata read key must be set on the box once (see "Keys set on
+    the box survive a redeploy" above). Until it is, `/v1`/`/v2` reads return 401.
 
 ## Configuration
 
