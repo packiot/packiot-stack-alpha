@@ -69,9 +69,20 @@ N/A: neither binary uses RabbitMQ or MQTT; both poll Postgres.
 
 | Binary | Reads | Writes |
 |---|---|---|
-| analytics-sync (when enabled) | `packiot.public.user_logs` | `shadow_go_port.*` (main pool) and `packiot_analytics.public.*`; cursor `mirror_replay_cursor` source `shadow-mirror` |
+| analytics-sync (when enabled; **idle on staging and dev: no connection, no DB credentials**) | `packiot.public.user_logs` | `shadow_go_port.*` (main pool) and `packiot_analytics.public.*`; cursor `mirror_replay_cursor` source `shadow-mirror` |
 | legacy-replicator | legacy `user_logs`, `production_orders`, `equipment_events`, `equipment_events_man`, `packml_register`, products/clients | analytics `core.production_orders`, `core.products`/`clients`/`product_families`, `gold.production_orders_runtime`, `silver.equipment_events`, `silver.equipment_events_man`, `ops.mirror_replay_cursor` (source = `CURSOR_SOURCE`), `ops.mirror_replay_dlq`, `ops.legacy_manual_event_link`; calls `serving.refresh_downtime_events_resolved`; reads `ops.sandbox_held()` |
 
+
+**Least privilege (analytics-sync).** The idle binary returns before it reads any DB setting, so
+staging and dev give it **no DB login at all**: no `DB_*`, no `PG_SECRET_ID`, no `env_file` (it used to
+receive the Postgres admin `POSTGRES_*` and the whole `.env` for a path that never runs).
+`scripts/ci/check-db-least-priv.py` (`NO_DB`) fails if any of that comes back or if
+`SHADOW_MIRROR_ENABLED` is flipped. No DB role is created for it: its replay source, the F1 `packiot`
+DB, is retired, so a role would only grant a dead path. If it is ever re-enabled, give it a
+`t-analytics-sync-role` migration first (as operator-gateway and barcode-service have: `SELECT` on
+`user_logs` and the cursor, writes on its sink tables, NOBYPASSRLS) and move it to `SERVICES` in the
+check. legacy-replicator, the live binary of this module, still logs in to `packiot_analytics` as the
+admin (`DEST_DB_USER=${POSTGRES_USER}`); its role is a separate change.
 ## Configuration
 
 ### analytics-sync (`internal/config/config.go`, `cmd/shadow-mirror/main.go`)
@@ -79,14 +90,14 @@ N/A: neither binary uses RabbitMQ or MQTT; both poll Postgres.
 | Name | Default | Required | Effect |
 |---|---|---|---|
 | `SHADOW_MIRROR_ENABLED` | `false` | no | `true` runs the replay loop; otherwise idle (health + metrics only). Staging and dev: `false` |
-| `DB_HOST` / `DB_PORT` / `DB_USER` | `postgres` / `5432` / `postgres` | when enabled | DB server (staging: the DB EC2 directly) |
-| `DB_PASSWORD` | — | when enabled | Refuses to boot if empty. Staging: `POSTGRES_PASSWORD` from `.env` |
+| `DB_HOST` / `DB_PORT` | `postgres` / `5432` | when enabled | DB server |
+| `DB_USER` / `DB_PASSWORD` | — / — | when enabled | Refuses to boot if either is empty (no default user, so never the admin by accident). **Not set on staging or dev**: idle needs no DB login |
 | `PG_DB_NAME` | `packiot` | no | Source DB (`user_logs`, `shadow_go_port`) |
 | `PG_ANALYTICS_DB_NAME` | `packiot_analytics` | no | Second sink; empty = write `shadow_go_port` only |
 | `POLL_INTERVAL_MS` / `BATCH_SIZE` | `2000` / `100` | no | Loop pacing |
 | `HEALTH_PORT` | `9103` | no | HTTP listener; also read by `--healthcheck` |
 | `LOG_LEVEL` | `info` | no | slog level |
-| `AWS_REGION`, `PG_SECRET_ID`, `MAX_RETRIES` | `us-east-1`, `packiot/staging/db`, `5` | no | Loaded but **unused** (Secrets Manager fetch is a TODO; credentials come from env) |
+| `MAX_RETRIES` | `5` | no | Loaded but **unused** |
 
 ### legacy-replicator (`internal/replicate/config.go`)
 

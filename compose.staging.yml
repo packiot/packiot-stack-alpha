@@ -3183,32 +3183,15 @@ services:
     build: ./services/analytics-sync
     container_name: analytics-sync
     restart: unless-stopped
-    env_file: [.env]
+    # IDLE (SHADOW_MIRROR_ENABLED=false): the binary serves /healthz + /metrics and never opens a DB
+    # connection — the F1 `packiot` DB it replays from is retired, and CPACK's operator actions come
+    # from legacy-replicator. So it gets NO DB credentials and no env_file: it used to carry the admin
+    # ${POSTGRES_USER}/${POSTGRES_PASSWORD} and the whole .env for a path that never runs.
+    # Enabling it needs its own least-privilege role first (services/analytics-sync/README.md
+    # § Database); scripts/ci/check-db-least-priv.py (NO_DB) fails this file until then.
     environment:
       LOG_LEVEL: info
-      # DEFAULT OFF — service starts but no polling happens.
-      # ADR-0013 shadow-mirror now ACTIVE:
-      # - shadow_go_port.equipment_events_man + production_orders exist
-      #   (migration 20260702000001_shadow_go_port_operator_tables.ts)
-      # - packiot_analytics.public.* exists (Phase 3 writer-tables SQL)
-      # - 10 handlers registered covering ~90% of daily operator volume
       SHADOW_MIRROR_ENABLED: "false"
-      AWS_REGION: us-east-1
-      PG_SECRET_ID: packiot/staging/db
-      # DB creds come from the .env for skeleton; migrate to AWS
-      # Secrets Manager in Phase 2 (matches mirror-worker-go and
-      # oeecloud-worker patterns). Connects DIRECTLY to postgres
-      # (not pgbouncer) because pgbouncer's static database list
-      # doesn't include packiot_analytics — bypassing keeps the skeleton
-      # PR from having to touch pgbouncer config too.
-      DB_HOST: 10.10.10.89   # staging DB EC2 direct
-      DB_PORT: "5432"
-      # Explicit env mapping — .env has POSTGRES_USER/POSTGRES_PASSWORD
-      # (as used by pgbouncer + edge-api), NOT DB_USER/DB_PASSWORD.
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      PG_DB_NAME: packiot
-      PG_ANALYTICS_DB_NAME: packiot_analytics
       POLL_INTERVAL_MS: "2000"
       BATCH_SIZE: "100"
       MAX_RETRIES: "5"

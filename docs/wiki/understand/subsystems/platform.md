@@ -159,7 +159,7 @@ does not reach a running box by itself**. Either the deploy workflow adds it (do
 
 | Secret (Secrets Manager) | Holds (by name, never values) | Consumed by |
 |---|---|---|
-| `packiot/staging/db` | analytics DB credentials | `.env` `POSTGRES_*`; stream-engine, analytics-sync via `PG_SECRET_ID` |
+| `packiot/staging/db` | analytics DB credentials | `.env` `POSTGRES_*`; stream-engine via `PG_SECRET_ID` |
 | `packiot/staging/operator-gateway-db-creds` | `operator_gateway` login (least privilege, `t-operator-gateway-role`): `{host, port, user, password, name}` | operator-gateway via `PG_SECRET_ID`; created on the app host by `scripts/ops/provision-db-role.py --service operator-gateway` |
 | `packiot/staging/barcode-service-db-creds` | `barcode_service` login (least privilege, `t-barcode-service-role`): `{host: pgbouncer, port, user, password, name}` | barcode-service via `PG_SECRET_ID`; created on the app host by `scripts/ops/provision-db-role.py --service barcode-service` |
 | `packiot/staging/app` | app keys: API keys, oauth2-proxy client/cookie secrets, Superset secrets, optional `slack_api_url` | `app_init.sh`; deploy step "Materialize Alertmanager Slack webhook" |

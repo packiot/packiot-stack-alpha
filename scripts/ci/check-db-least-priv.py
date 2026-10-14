@@ -16,6 +16,10 @@ For every service in SERVICES, in every compose file that defines it (staging, p
    - DB_USER, if present at all, must be the role name.
 3. The service must exist in each listed compose file, so a rename cannot make the check pass vacuously.
 
+NO_DB services run without any DB login (e.g. analytics-sync, idle): no env_file, no admin reference, no
+DB_USER / DB_PASSWORD / PG_SECRET_ID / CREDS_SOURCE at all, and their enable flag pinned to "false" — so
+turning one on fails here until it has its own role (and moves to SERVICES).
+
 The role itself (grants, NOBYPASSRLS, no superuser) is proved by the migration's verify.sql and the
 service's golden test; this script only guards which login the deployment hands the service.
 
@@ -41,6 +45,12 @@ SERVICES = {
     "operator-gateway": ("operator_gateway", list(COMPOSE_FILES)),
     "barcode-service": ("barcode_service", ["compose.staging.yml", "dev/compose.yml"]),  # not in production yet
 }
+
+# service → (the env flag that would make it connect, the compose files it must appear in)
+NO_DB = {
+    "analytics-sync": ("SHADOW_MIRROR_ENABLED", ["compose.staging.yml", "dev/compose.yml"]),
+}
+DB_LOGIN_KEYS = ("DB_USER", "DB_PASSWORD", "PG_SECRET_ID", "CREDS_SOURCE")
 
 # Secrets Manager ids that hold the admin login (or the legacy DB's).
 ADMIN_SECRET_IDS = {"packiot/staging/db", "packiot/production/db", "databaseCredentials"}
@@ -105,9 +115,29 @@ for path, extra in COMPOSE_FILES.items():
             elif secret in ADMIN_SECRET_IDS:
                 errors.append(f"{where}: PG_SECRET_ID={secret} is an admin secret; use the {role} secret")
 
+    for name, (flag, required_in) in NO_DB.items():
+        if name not in services:
+            if path in required_in:
+                errors.append(f"{path}: service {name} not found (renamed? update NO_DB in {__file__})")
+            continue
+        svc = services[name]
+        env = env_of(svc)
+        where = f"{path}: {name}"
+        if svc.get("env_file"):
+            errors.append(f"{where}: env_file puts .env (admin POSTGRES_* and all secrets) into a service "
+                          f"that needs no DB login")
+        for k, v in sorted(env.items()):
+            if ADMIN_REF.search(v):
+                errors.append(f"{where}: {k}={v} references the Postgres admin login")
+            elif k in DB_LOGIN_KEYS:
+                errors.append(f"{where}: {k} is set, but {name} runs without a DB login")
+        if env.get(flag) != "false":
+            errors.append(f"{where}: {flag}={env.get(flag)!r}; enabling it needs its own least-privilege DB "
+                          f"role first (then move {name} from NO_DB to SERVICES)")
+
 if errors:
     for e in errors:
         print(f"::error::{e}")
     sys.exit(1)
-print(f"db least privilege OK: {', '.join(f'{s} as {r}' for s, (r, _) in SERVICES.items())} "
-      f"in {len(COMPOSE_FILES)} compose files")
+print(f"db least privilege OK: {', '.join(f'{s} as {r}' for s, (r, _) in SERVICES.items())}; "
+      f"no DB login: {', '.join(NO_DB)}; in {len(COMPOSE_FILES)} compose files")
