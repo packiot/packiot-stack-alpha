@@ -44,7 +44,7 @@ const defaultFirebaseProject = "fbpackiot"
 // refdata-api task #68: id_user_firebase is UNIQUE (≤1 row), active=true (a
 // deactivated user's still-valid token can't resolve), id_enterprise IS NOT
 // NULL (no default/NULL tenant). Zero rows ⇒ errUnknownUID ⇒ 401.
-const usersEnterpriseSQL = `SELECT id_enterprise FROM users
+const usersEnterpriseSQL = `SELECT id_enterprise FROM identity.users
 	WHERE id_user_firebase = $1 AND active = true AND id_enterprise IS NOT NULL`
 
 // Package-wide auth errors. Every one maps to a uniform 401 at the middleware —
