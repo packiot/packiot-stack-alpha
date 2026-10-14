@@ -46,7 +46,7 @@ BEGIN READ ONLY;
 SET LOCAL statement_timeout = '60s';
 SET LOCAL ROLE readapi_ro;
 SELECT set_config('app.tenant_id', :'t', true) IS NOT NULL AS _ \gset
-SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;   -- parallel plans even on
+SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_index_scan_size = 0;   -- parallel plans even on
 SET LOCAL min_parallel_table_scan_size = 0; SET LOCAL max_parallel_workers_per_gather = 1;  -- tiny tables
 DO $$ DECLARE j json; BEGIN
   EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) SELECT count(*) FROM core.equipments' INTO j;
@@ -69,7 +69,7 @@ ROLLBACK;
 -- ── readapi_ro, a tenant that owns nothing / no tenant at all ─────────────────────────────────
 BEGIN READ ONLY;
 SET LOCAL ROLE readapi_ro;
-SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;   -- parallel plans even on
+SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_index_scan_size = 0;   -- parallel plans even on
 SET LOCAL min_parallel_table_scan_size = 0; SET LOCAL max_parallel_workers_per_gather = 1;  -- tiny tables
 SELECT set_config('app.tenant_id', :'nobody', true) IS NOT NULL AS _ \gset
 SELECT 'V9 readapi_ro as a tenant that owns nothing: equipments|POs|runtime 0|0|0',
@@ -83,7 +83,7 @@ ROLLBACK;
 --    defaults, so it is set explicitly here, exactly as the login gets it) ─────────────────────
 BEGIN READ ONLY;
 SET LOCAL ROLE stream_engine;
-SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;   -- parallel plans even on
+SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_index_scan_size = 0;   -- parallel plans even on
 SET LOCAL min_parallel_table_scan_size = 0; SET LOCAL max_parallel_workers_per_gather = 1;  -- tiny tables
 SELECT set_config('app.tenant_id', '-1', true) IS NOT NULL AS _ \gset
 SELECT 'V11 stream_engine (-1 sentinel, parallel plan) sees every equipment: t', count(*) = :all_eq
