@@ -155,8 +155,8 @@ G=$(P "WITH c AS (SELECT DISTINCT id_equipment, ts_value FROM $FIX
                 WHERE g.id_equipment IN (SELECT id_equipment FROM eqs) AND g.ts_value = date_trunc('hour', c.ts_value) RETURNING 1)
        , s AS (UPDATE gold.equipment_oee_shift g SET recalc_needed = true FROM c
                 WHERE g.id_equipment IN (SELECT id_equipment FROM eqs) AND c.ts_value >= g.ts_value AND c.ts_value < g.ts_end RETURNING 1)
-       , d AS (UPDATE gold.equipment_oee_daily g SET recalc_needed = true FROM c
-                WHERE g.id_equipment IN (SELECT id_equipment FROM eqs) AND g.ts_value = date_trunc('day', c.ts_value) RETURNING 1)
+       , d AS (UPDATE gold.equipment_oee_daily g SET recalc_needed = true FROM c  -- day grain is tp>1 only (2026-10-14)
+                WHERE g.id_equipment IN (SELECT id_equipment FROM eqs JOIN core.equipments USING (id_equipment) WHERE tp_equipment > 1) AND g.ts_value = date_trunc('day', c.ts_value) RETURNING 1)
        , p AS (UPDATE gold.production_orders_runtime r SET recalc_needed = true FROM c
                 WHERE r.id_equipment IN (SELECT id_equipment FROM eqs) AND r.runtime_timerange @> c.ts_value RETURNING 1)
        SELECT format('hour %s shift %s day %s po_runtime %s', (SELECT count(*) FROM h), (SELECT count(*) FROM s),

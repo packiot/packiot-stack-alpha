@@ -37,6 +37,9 @@ func TestGoldenStrandedSweep(t *testing.T) {
 		`CREATE TABLE golden.production_orders (id_production_order int, status int, ts_start timestamptz, ts_end timestamptz, recalc_needed boolean)`,
 		`CREATE TABLE golden.equipment_oee_shift (id_equipment int, ts_value timestamptz, recalc_needed boolean)`,
 		`CREATE TABLE golden.equipment_oee_hourly (id_equipment int, ts_value timestamptz, recalc_needed boolean)`,
+		`CREATE TABLE golden.equipment_oee_daily (id_equipment int, ts_value date, recalc_needed boolean)`,
+		`CREATE TABLE golden.equipment_oee_weekly (id_equipment int, ts_value date, recalc_needed boolean)`,
+		`CREATE TABLE golden.equipment_oee_monthly (id_equipment int, ts_value date, recalc_needed boolean)`,
 		`INSERT INTO golden.equipments VALUES (1, 3, 5), (2, 1, 5), (3, 1, 6)`,
 		// runtime: 1 closed 2 months ago (stranded) · 2 closed 1 day ago (48 h re-flag band) · 3 open since 2 months (re-flagged every pass)
 		`INSERT INTO golden.production_orders_runtime VALUES
@@ -55,6 +58,19 @@ func TestGoldenStrandedSweep(t *testing.T) {
 		// hour: line 12 d (stranded) · line 2 d (kept, backfill reach) · tp=1 (stranded)
 		`INSERT INTO golden.equipment_oee_hourly VALUES
 		   (1, now() - interval '12 days', true), (1, now() - interval '2 days', true), (2, now() - interval '2 days', true)`,
+		// day: line 40 d (stranded, past the 1-month day window) · line 2 d (kept) · line tomorrow (kept, future)
+		//      · tp=1 2 d (stranded — the 2026-10-14 class) · tp=1 of machine-level ent 6 (stranded too: no day pass computes tp=1)
+		`INSERT INTO golden.equipment_oee_daily VALUES
+		   (1, (now() - interval '40 days')::date, true), (1, (now() - interval '2 days')::date, true),
+		   (1, (now() + interval '1 day')::date, true), (2, (now() - interval '2 days')::date, true),
+		   (3, (now() - interval '2 days')::date, true)`,
+		// week/month: line 400 d (stranded, past the 1-year window) · line this bucket (kept) · tp=1 this bucket (stranded)
+		`INSERT INTO golden.equipment_oee_weekly VALUES
+		   (1, date_trunc('week', now() - interval '400 days')::date, true), (1, date_trunc('week', now())::date, true),
+		   (2, date_trunc('week', now())::date, true)`,
+		`INSERT INTO golden.equipment_oee_monthly VALUES
+		   (1, date_trunc('month', now() - interval '400 days')::date, true), (1, date_trunc('month', now())::date, true),
+		   (2, date_trunc('month', now())::date, true)`,
 	} {
 		if _, err := pool.Exec(ctx, s); err != nil {
 			t.Fatalf("%s: %v", s, err)
@@ -66,7 +82,8 @@ func TestGoldenStrandedSweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int64{"production_orders_runtime": 1, "production_orders": 1, "equipment_oee_shift": 2, "equipment_oee_hourly": 2}
+	want := map[string]int64{"production_orders_runtime": 1, "production_orders": 1, "equipment_oee_shift": 2, "equipment_oee_hourly": 2,
+		"equipment_oee_daily": 3, "equipment_oee_weekly": 2, "equipment_oee_monthly": 2}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s cleared %d, want %d", k, got[k], v)
@@ -77,11 +94,16 @@ func TestGoldenStrandedSweep(t *testing.T) {
 	    (SELECT count(*) FROM golden.production_orders_runtime WHERE recalc_needed AND id_production_order_runtime IN (2, 3)) +
 	    (SELECT count(*) FROM golden.production_orders WHERE recalc_needed AND id_production_order IN (11, 12)) +
 	    (SELECT count(*) FROM golden.equipment_oee_shift WHERE recalc_needed) +
-	    (SELECT count(*) FROM golden.equipment_oee_hourly WHERE recalc_needed)`).Scan(&kept); err != nil {
+	    (SELECT count(*) FROM golden.equipment_oee_hourly WHERE recalc_needed) +
+	    (SELECT count(*) FROM golden.equipment_oee_daily WHERE recalc_needed AND id_equipment = 1) +
+	    (SELECT count(*) FROM golden.equipment_oee_daily WHERE recalc_needed AND id_equipment <> 1) +
+	    (SELECT count(*) FROM golden.equipment_oee_weekly WHERE recalc_needed AND id_equipment = 1) +
+	    (SELECT count(*) FROM golden.equipment_oee_monthly WHERE recalc_needed AND id_equipment = 1)`).Scan(&kept); err != nil {
 		t.Fatal(err)
 	}
-	if kept != 2+2+2+1 {
-		t.Fatalf("live flags kept = %d, want 7", kept)
+	// day: line 2 d + tomorrow kept, no tp=1 left; week/month: the current line bucket kept
+	if kept != 2+2+2+1+2+0+1+1 {
+		t.Fatalf("live flags kept = %d, want 11", kept)
 	}
 	// idempotent: nothing left to clear
 	got, err = RunStrandedSweep(ctx, d, scope, slog.New(slog.NewTextHandler(io.Discard, nil)))

@@ -373,7 +373,8 @@ func main() {
 
 	// Stranded-flag sweep (2026-10-01): flags no consumer can ever drain (PO rows
 	// closed before the window, shift > 30 d or out of scope, hour > backfill
-	// horizon or tp=1) are cleared hourly with a WARN, so a stranded repair is seen.
+	// horizon or tp=1, day/week/month past their window or tp=1) are cleared hourly
+	// with a WARN, so a stranded repair is seen.
 	if cfg.StrandedFlagSweepEnabled && (cfg.PORecalcEnabled || cfg.RuntimeRollupEnabled) {
 		hourHorizon := ""
 		if cfg.RollupBackfillEnabled {
