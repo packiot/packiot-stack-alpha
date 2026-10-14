@@ -24,7 +24,8 @@ import (
 // and the flag-off render is the exact pre-exclusion statement.
 func TestGoldenPOExclusions(t *testing.T) {
 	off := withPOExclusions(computeAvailabilitySQL, false, "golden")
-	if strings.Contains(off, "/*EXCL") || strings.Contains(off, "excl") {
+	offApply := withPOExclusions(applyAvailabilitySQL, false, "golden")
+	if strings.Contains(off+offApply, "/*EXCL") || strings.Contains(off+offApply, "excl") || strings.Contains(offApply, "no_data_time") {
 		t.Fatalf("flag-off render must be the pre-exclusion statement")
 	}
 	url := os.Getenv("DATABASE_URL")
@@ -44,7 +45,7 @@ func TestGoldenPOExclusions(t *testing.T) {
 		`CREATE TABLE golden.equipments (id_equipment int PRIMARY KEY, id_site int, lead_machine int, gross_machine int, id_parentequipment int)`,
 		`CREATE TABLE golden.equipment_events (id_equipment int, ts_event timestamptz, ts_end timestamptz, status int, planned_downtime boolean, change_over boolean)`,
 		`CREATE TABLE golden.equipment_out_of_service (id bigserial, id_enterprise int, id_equipment bigint, period tstzrange, reason text)`,
-		`CREATE TABLE golden.production_orders_runtime (id_equipment int, runtime_timerange tstzrange, recalc_needed boolean,
+		`CREATE TABLE golden.production_orders_runtime (id_production_order_runtime bigserial PRIMARY KEY, id_equipment int, runtime_timerange tstzrange, recalc_needed boolean,
 		    available_time int, planned_downtime int, no_data_time int NOT NULL DEFAULT 0, out_of_service_time int NOT NULL DEFAULT 0)`,
 		`INSERT INTO golden.equipments VALUES (900, 1, 901, NULL, NULL), (901, 1, NULL, NULL, 900)`,
 	} {
@@ -73,10 +74,17 @@ func TestGoldenPOExclusions(t *testing.T) {
 		}
 	}
 	d := flows.Dest{EvSchema: "golden", RefSchema: "golden", SilverSchema: "golden", GoldSchema: "golden", GrainSchema: "golden", ConfigSchema: "golden"}
-	stmt := fmtRD(withPOExclusions(computeAvailabilitySQL, true, d.ConfigSchema), d, plannedDowntimeExpr(false))
+	d.Pool = pool
+	step := &computeStep{name: "availability",
+		compute: fmtRD(withPOExclusions(computeAvailabilitySQL, true, d.ConfigSchema), d, plannedDowntimeExpr(false)),
+		apply:   fmtRD(withPOExclusions(applyAvailabilitySQL, true, d.ConfigSchema), d),
+		args:    []any{"1 day"}}
 	for pass := 1; pass <= 2; pass++ {
-		if _, err := pool.Exec(ctx, stmt, "1 day"); err != nil {
-			t.Fatalf("pass %d: %v", pass, err)
+		if _, err := computeSnapshot(ctx, d, []*computeStep{step}); err != nil {
+			t.Fatalf("pass %d compute: %v", pass, err)
+		}
+		if _, err := pool.Exec(ctx, step.apply, step.rows, []int64{1}); err != nil {
+			t.Fatalf("pass %d apply: %v", pass, err)
 		}
 		var avail, planned, nd, oos int
 		if err := pool.QueryRow(ctx, `SELECT available_time, planned_downtime, no_data_time, out_of_service_time FROM golden.production_orders_runtime`).

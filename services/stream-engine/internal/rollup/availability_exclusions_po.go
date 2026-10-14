@@ -15,7 +15,7 @@ import "strings"
 func withPOExclusions(sql string, engaged bool, configSchema string) string {
 	if !engaged {
 		return strings.NewReplacer("/*EXCL_ELIG*/", "", "/*EXCL_SEL*/", "", "/*EXCL_JOIN*/", "",
-			"/*EXCL_TERM*/", "", "/*EXCL_SET*/", "").Replace(sql)
+			"/*EXCL_TERM*/", "", "/*EXCL_SET*/", "", "/*EXCL_APPLY*/", "", "/*EXCL_COLS*/", "").Replace(sql)
 	}
 	join := strings.ReplaceAll(poExclJoin, "CFGSCHEMA", configSchema)
 	return strings.NewReplacer(
@@ -26,8 +26,13 @@ func withPOExclusions(sql string, engaged bool, configSchema string) string {
 		"/*EXCL_JOIN*/", join,
 		"/*EXCL_TERM*/", ` - ev.excl`,
 		"/*EXCL_SET*/", `,
-	       no_data_time        = round(ev.nd)::int,
-	       out_of_service_time = round(ev.oos)::int`,
+	       round(ev.nd)::int  AS no_data_time,
+	       round(ev.oos)::int AS out_of_service_time`,
+		// applyAvailabilitySQL: carry the two columns from the compute snapshot.
+		"/*EXCL_APPLY*/", `,
+	       no_data_time        = r.no_data_time,
+	       out_of_service_time = r.out_of_service_time`,
+		"/*EXCL_COLS*/", `, no_data_time int, out_of_service_time int`,
 	).Replace(sql)
 }
 
