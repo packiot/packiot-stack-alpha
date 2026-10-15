@@ -52,11 +52,24 @@ func RunTick(ctx context.Context, d flows.Dest) (TickResult, error) {
 // Loop schedules the tick on the jobs runner (panic recovery, timeout, tick metrics).
 func Loop(ctx context.Context, dests []flows.Dest, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
 	logger.Info("rollup shadow tick started (ADR-0063 Phase B, twins of the caggs)")
+	recorded := map[string]time.Time{} // per destination: the top of the hour last recorded
 	jobs.Loop(ctx, jobs.Job{Name: "rollup-shadow", Every: every, Run: func(ctx context.Context) error {
 		return jobs.RunPerDest(ctx, dests, "rollup-shadow", logger, func(ctx context.Context, d flows.Dest) (int64, error) {
 			r, err := RunTick(ctx, d)
 			if err != nil {
 				return 0, err
+			}
+			// Once an hour, after the tick drained the late rows: record the previous hour's shadow
+			// diff as invariants (R1/R2, the B2 cutover gate). A failure is logged, not fatal: the
+			// twins must keep ticking either way, and the next hour retries.
+			if from, to, ok := HourToRecord(time.Now(), recorded[d.Name]); ok {
+				if n, err := RecordHour(ctx, d, from, to); err != nil {
+					logger.Warn("rollup shadow record failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
+				} else {
+					recorded[d.Name] = to
+					logger.Info("rollup shadow recorded", slog.String("dest", d.Name),
+						slog.Time("from", from), slog.Int("checks", int(n)))
+				}
 			}
 			if r.Remaining > 0 {
 				// A backlog that survives ticks means the drain limit is too small for the
