@@ -502,6 +502,36 @@ NGINX
 nginx -t && nginx -s reload
 echo "oauth2-proxy forward-auth + origin-verify configured for all services"
 
+# ── shared multi-tenant reader front-door (ingest.<domain>:8449) — Bispharma go-live 2026-10 ──────────────────────
+# Same block as staging's nginx_setup.sh: TLS on 8449 (the wildcard cert), /v1/tags → sparkplug-agent-shared
+# (compose static 172.18.0.44:9104), which routes by the envelope's group. Auth = the box's X-Ingest-Key, checked by the
+# agent (fails closed without a key). Inbound 8449 is admitted per-box egress /32 only (security_groups.tf). Not behind
+# CloudFront: ingest.<domain> is an A record to the EIP (dns.tf), like the 8883 mTLS door.
+cat > /etc/nginx/conf.d/ingest.conf <<NGINX
+server {
+    listen 8449 ssl;
+    server_name ingest.$PRODUCTION_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+nginx -t && nginx -s reload
+echo "Shared reader ingest front-door configured at https://ingest.$PRODUCTION_DOMAIN:8449/v1/tags"
+
 # ── oauth2-proxy vhost (auth.<domain>) ────────────────────────────────────────
 # NO origin-verify + NO auth_request — this IS the authentication endpoint.
 # Serves ONLY the /oauth2/ callback+start+sign_out endpoints; everything else 404.

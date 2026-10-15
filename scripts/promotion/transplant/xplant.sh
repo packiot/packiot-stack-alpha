@@ -18,14 +18,26 @@ runsrv() { f=$1; docker exec -i $PGC sh -c "cat > /tmp/$f" < $f; t0=$(date +%s);
 for ph in ${@:-create pre hyper views}; do case $ph in
  roles)  runsrv 00-roles.sql;;
  joblog) runsrv 00-joblog.sql;;
- create) docker exec -i $PGC psql -U postgres -X -d postgres -q < /dev/null -c "DROP DATABASE IF EXISTS packiot_next" -c "CREATE DATABASE packiot_next" \
+ # TEMPLATE template0 (Bispharma rehearsal 2026-10-15): the prod server's template1 carries timescaledb 2.25.2, so a plain
+ # CREATE DATABASE inherited 2.25.2 even under the 2.27.0 image. From template0, CREATE EXTENSION installs the image's default.
+ create) docker exec -i $PGC psql -U postgres -X -d postgres -q < /dev/null -c "DROP DATABASE IF EXISTS packiot_next" -c "CREATE DATABASE packiot_next TEMPLATE template0" \
            -c "ALTER DATABASE packiot_next SET search_path = \"\$user\", gold, silver, bronze, identity, config, ops, serving, customer_reports, core, public" \
            -c "ALTER DATABASE packiot_next SET track_functions = 'pl'"
-         $PSN -q -c "CREATE EXTENSION IF NOT EXISTS timescaledb" < /dev/null 2>&1 | grep -v -E 'WARNING|^$'; echo "== create: ok";;
+         $PSN -q -c "CREATE EXTENSION IF NOT EXISTS timescaledb" < /dev/null 2>&1 | grep -v -E 'WARNING|^$'
+         echo "== create: ok, timescaledb $($PSN -At -c "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'" < /dev/null)";;
  pre)    run pre.sql 4;;
  hyper)  run 02-hypertables-caggs.sql; run 03-hyper-keys.sql;;
  views)  run views.sql;;
  copy)   run 04-data-copy.sql 20;;
+ # Single-tenant CLEAN start (Bispharma go-live, docs/runbooks/go-live-bispharma.md): `tload` replaces `copy`. Inputs from
+ # scripts/promotion/bispharma/tenant_extract.py: 04t-tenant-load.sql + 12t-tenant-verify.sql here, and the extracted
+ # files in TENANT_DIR (they hold api keys: the container copy is deleted right after the load; shred the host copy too).
+ tload)  TD=${TENANT_DIR:-/root/tenant5}; [ -d "$TD" ] || { echo "!! TENANT_DIR $TD missing"; exit 2; }
+         docker exec $PGC rm -rf /tmp/tenant5; docker cp "$TD" $PGC:/tmp/tenant5
+         run 04t-tenant-load.sql 20; docker exec $PGC rm -rf /tmp/tenant5
+         grep -E '^COPY ' 04t-tenant-load.sql.out | awk '{n+=$2} END {print "== tload rows", n+0, "in", NR, "COPY statements"}';;
+ seqfloor) run seq-floor.sql 5; grep -E 'seq-floor' seq-floor.sql.out | tail -12;;   # before the swap: old DB is still `packiot`
+ tverify) run 12t-tenant-verify.sql 5; echo "== tverify fingerprints: $(grep -c '^fp|' 12t-tenant-verify.sql.out) (diff against the staging extract: fingerprint-diff.py)";;
  post)   run post.sql 20;;
  repair) run 05-repairs.sql 10; grep -E "still inconsistent|overlapping" 05-repairs.sql.out;;
  checks) run 06-checks.sql 30;;
