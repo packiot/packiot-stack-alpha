@@ -40,6 +40,8 @@ last_verified: 2026-09-28
 | `docs/clients/bispharma-prod-recut-runbook.md` | Bispharma production go-live execution (re-cut) |
 | `docs/clients/bispharma-twin-convergence-runbook.md` | planned maintenance to converge the Bispharma feed onto the codified twin (not under live feed) |
 | `docs/adr/reference/0016-flip-runbook.md` | the single-flow consolidation flip (ADR-0016 §6) |
+| `docs/adr/reference/production-promotion-transplant-runbook.md` | the production promotion's database transplant (build → copy → verify → swap → rollback); the up-to-date version lives on `release/prod-promotion-2026-10` |
+| `docs/runbooks/go-live-rehearsal-2026-10-14.md` | go-live dress rehearsal on a prod clone: timings, evidence, go/no-go checklist, the user's remaining actions |
 | `docs/adr/reference/production-recut-runbook.md` | re-cut `production` from `staging` with the prod overlay — design only, needs user sign-off |
 | `docs/ops/rabbitmq-topology.md` | canonical queue set per tenant and how to remove orphan queues safely |
 | `docs/ops/observability-persona-dashboards.md` | which Grafana board answers which question |

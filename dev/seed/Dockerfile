@@ -9,4 +9,6 @@ COPY --chown=postgres:postgres payload/ /seed/
 # run by load.sh after load.sql (F11); also kept in the image so a consumer can re-run it (idempotent)
 COPY --chown=postgres:postgres sync-sequences.sql /seed/sync-sequences.sql
 COPY --chown=postgres:postgres --chmod=755 load.sh /docker-entrypoint-initdb.d/50-devseed.sh
-CMD ["postgres", "-c", "timescaledb.telemetry_level=off"]
+# enable_job_execution_logging = staging's server flag since 2026-10-14 (ADR-0063 A5,
+# terraform/staging/user_data/db_init.sh): job_history records every TimescaleDB job run, not only failures.
+CMD ["postgres", "-c", "timescaledb.telemetry_level=off", "-c", "timescaledb.enable_job_execution_logging=on"]

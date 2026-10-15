@@ -411,56 +411,55 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 	} else if !got {
 		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, fmtRD(hourEligibleSQL, d), exclAreas, exclEnterprises); err != nil {
+	if _, err := fillElig(ctx, tx, "hour_elig", fmtRD(hourEligibleSQL, d), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("hour eligible: %w", err)
 	}
 	steps := []rollupStep{
-		{"values", fmtRD(hourValuesSQL, d)},
-		{"cascade-day", fmtRD(hourCascadeDayLiveSQL, d)},
+		passStep("values", hourValuesPass.Map(rd(d))),
+		{name: "cascade-day", sql: fmtRD(hourCascadeDayLiveSQL, d)},
 		// #186: cascade-area (flag area_oee_hourly) removed — the area/site hourly
 		// grain was retired (dead). Area day freshness is now driven by the
 		// equipment→area day-flag cascade in entity_grains.go.
-		{"speed", fmtRD(hourSpeedSQL, d)},
-		{"events", fmtRD(hourEventsSQL, d, plannedDowntimeExpr(changeoverAvailability))},
+		passStep("speed", hourSpeedPass.Map(rd(d))),
+		passStep("events", hourEventsPass.Map(rd(d, plannedDowntimeExpr(changeoverAvailability)))),
 	}
 	// Counters-only Availability fallback — flag + opt-in gated, positioned
 	// after events / before oee-p. Inert (not appended) when not engaged, so
 	// the disabled path executes the exact original statement stream.
 	if ca.engaged() {
-		steps = append(steps, rollupStep{"counters-avail",
-			fmtRD(hourCountsAvailSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+		steps = append(steps, passStep("counters-avail", hourCountsAvailPass.Map(rd(d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec))))
 	}
 	// Line-from-lead derivation — flag + enterprise gated, after events / before
 	// oee-p (so hourOeePSQL back-solves oee_p off the just-cleared line rows).
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
-		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
+		steps = append(steps, passStep("line-lead", hourLineLeadPass.Map(func(s string) string {
+			return fmtRD(withPlannedPred(s, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)
+		})))
 	}
 	// ADR-0048 §Fault-2: availability count-floor (see shift.go). Inert when off.
 	if ca.engagedFloor() {
-		steps = append(steps, rollupStep{"avail-floor",
-			fmtRD(hourAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+		steps = append(steps, passStep("avail-floor", hourAvailFloorPass.Map(rd(d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec))))
 	}
 	// Availability exclusions (out of service + PLC no data) — after EVERY
 	// available_time writer, before the finalize. Inert when off.
 	if ca.engagedExclusions() {
-		steps = append(steps, rollupStep{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
+		steps = append(steps, rollupStep{name: "exclusions", sql: fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
 	}
 	// ADR-0048 §Fault-3: canonical A·P·Q reconcile replaces the legacy residual
 	// when engaged; otherwise the legacy oee-p runs (byte-identical).
 	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmtRD(hourOeeReconcileSQL, d)})
+		steps = append(steps, rollupStep{name: "oee-reconcile", sql: fmtRD(hourOeeReconcileSQL, d)})
 	} else {
-		steps = append(steps, rollupStep{"oee-p", fmtRD(hourOeePSQL, d)})
+		steps = append(steps, rollupStep{name: "oee-p", sql: fmtRD(hourOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema)},
-		rollupStep{"stamp", fmtRD(hourStampSQL, d)},
-		rollupStep{"reflag", fmtRD(hourReflagSQL, d)},
+		rollupStep{name: "targets", sql: fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema)},
+		rollupStep{name: "stamp", sql: fmtRD(hourStampSQL, d)},
+		rollupStep{name: "reflag", sql: fmtRD(hourReflagSQL, d)},
 	)
 	for _, s := range steps {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
+		if err := execStep(ctx, tx, s); err != nil {
 			return fmt.Errorf("hour %s: %w", s.name, err)
 		}
 	}
@@ -471,13 +470,13 @@ func RunHour(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int
 func HourStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
 	return []struct{ Name, SQL string }{
 		{"eligible", fmtRP(hourEligibleSQL, evSchema)},
-		{"values", fmtRP(hourValuesSQL, evSchema)},
+		{"values", fmtRP(hourValuesSplitSQL, evSchema)},
 		{"cascade-day", fmtRP(hourCascadeDaySQL, evSchema)},
 		// #186: cascade-area removed (area hourly grain retired).
 		{"speed", fmtRP(hourSpeedSQL, evSchema)},
 		// Parity accessor is frozen to the prod-verbatim (off) classification —
 		// it is diffed against prod (F2), which has no changeover reclassification.
-		{"events", fmtRP(hourEventsSQL, evSchema, plannedDowntimeExpr(false))},
+		{"events", fmtRP(hourEventsSplitSQL, evSchema, plannedDowntimeExpr(false))},
 		{"oee-p", fmtRP(hourOeePSQL, evSchema)},
 		{"targets", fmtRP(withOosTarget(hourTargetsSQL, false, ""), evSchema, evSchema)},
 		{"reflag", fmtRP(hourReflagSQL, evSchema)},

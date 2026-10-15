@@ -167,7 +167,8 @@ Booleans are on only when exactly `true`. Staging values are in `compose.staging
 |---|---|---|
 | `RUNTIME_ROLLUP_ENABLED` | `false` | the 1-min grain cascade (hour → day → shift → week/month → area/site → DQ → clamp) |
 | `ROLLUP_BACKFILL_ENABLED`, `ROLLUP_BACKFILL_INTERVAL_SECONDS`, `ROLLUP_BACKFILL_LIMIT` | `true`, `30`, `200` | flagged-hour backfill (staging 7 s, 50) |
-| `ROLLUP_SHIFT_LIMIT` | `300` | shift rows per tick (staging 75) |
+| `ROLLUP_SHIFT_LIMIT` | `300` | most shift rows per tick (staging 75); the batch adapts below it |
+| `ROLLUP_SHIFT_BUDGET_SECONDS`, `ROLLUP_BACKFILL_BUDGET_SECONDS` | `120`, `120` | a shift / backfill batch over its budget rolls back alone and the next is halved (`rollup/batch.go`) |
 | `ROLLUP_MACHINE_LEVEL_ENTERPRISES` | `6` | enterprises whose machines join the shift grain |
 | `RUNTIME_PROVISION_ENABLED`, `RUNTIME_PROVISION_INTERVAL_HOURS` | `false`, `6` | pre-create future grain rows |
 | `DQ_ALARMS_ENABLED`, `SILVER_CLAMP_ENABLED` | `true`, `true` | data-quality events; clamp served Gold to invariants (each change logged as a DQ event) |

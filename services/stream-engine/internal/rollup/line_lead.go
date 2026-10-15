@@ -168,7 +168,12 @@ var shiftLineLeadSQL = `
 	                     AND c.ts_value > l.ts_value - interval '1 hour' AND c.ts_value < l.bend
 	                  OFFSET 0) h
 	      ) b
-	), bucket_reconciled AS (
+	), bucket_reconciled AS MATERIALIZED (
+	    -- MATERIALIZED (2026-10-14), for the reason reconciled is: referenced once,
+	    -- PG inlines it into reconciled's LEFT JOIN and, under a low estimate for the
+	    -- eligible set, re-runs the per-line bucket lookups for EVERY outer line —
+	    -- O(N^2). Staging, 63 shift rows: 24.9 s inlined (3,969 loops of the bucket
+	    -- lookup) vs 2.2 s materialized, identical rows (md5 of the full result).
 	    -- COUNTER-ROLE MATRIX via the identity gross = net + scrap (ProdConsumedCount
 	    -- = ProdProcessedCount + ProdDefectiveCount), PER BUCKET. Reconcile whichever
 	    -- pair of the three counters the bucket reports, filling the missing one:
@@ -556,8 +561,8 @@ var hourLineLeadSQL = `
 // The parity/golden accessors keep their historical contract — %[6]s is the
 // enterprise array LITERAL — by re-expanding the scope placeholder to the
 // enterprise-only predicate (exactly the pre-override text).
-func ShiftLineLeadSQLForParity() string { return entOnlyScope(withPlannedPred(shiftLineLeadSQL, false)) }
-func HourLineLeadSQLForParity() string  { return entOnlyScope(withPlannedPred(hourLineLeadSQL, false)) }
+func ShiftLineLeadSQLForParity() string { return entOnlyScope(withPlannedPred(shiftLineLeadSplitSQL, false)) }
+func HourLineLeadSQLForParity() string  { return entOnlyScope(withPlannedPred(hourLineLeadSplitSQL, false)) }
 
 func entOnlyScope(sql string) string {
 	return strings.Replace(sql, "AND %[6]s", "AND eq.id_enterprise = ANY(%[6]s)", 1)

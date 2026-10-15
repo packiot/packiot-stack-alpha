@@ -22,6 +22,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
@@ -113,12 +116,45 @@ const refreshEquipmentSQL = `
 	  FROM prod p
 	 WHERE u.id_equipment = p.id_equipment`
 
+// refreshEquipmentSplitSQL is refreshEquipmentSQL as a read planned as a SELECT
+// plus the unchanged UPDATE (ADR-0063 A2, internal/caggsplit): the prod CTE reads
+// the REAL-TIME agg_equipment_values_1hour cagg, whose watermark TimescaleDB
+// constifies only in a SELECT — inside the UPDATE it priced the raw tail of every
+// equipment_values chunk (staging 2026-10-14: 6.6 s mean, 30 s max per call). One
+// The engine runs it as a caggsplit.Pass (session snapshot table, binary COPY —
+// ADR-0063 A3) in one transaction; refreshEquipmentSplitSQL is the equivalent
+// self-contained text the golden test compares against the original.
+var (
+	refreshEquipmentPass     = caggsplit.Spec{Temp: "uns_prod_snap", Tail: "SELECT * FROM prod", Feeds: []string{"prod"}}.MustPass(refreshEquipmentSQL)
+	refreshEquipmentSplitSQL = refreshEquipmentPass.SQL()
+)
+
+// refreshEquipmentPassFor renders the pass for one grain of d, with the
+// exclusion arrays inlined (COPY takes no bind parameters).
+func refreshEquipmentPassFor(d flows.Dest, grain, unsTable, span string, exclAreas, exclEnterprises []int) (caggsplit.Pass, error) {
+	var inlineErr error
+	p := refreshEquipmentPass.Map(func(s string) string {
+		out, err := caggsplit.InlineIntArrays(fmt.Sprintf(s, d.EvSchema, d.RefSchema, grain, unsTable, span, d.GrainSchema),
+			exclAreas, exclEnterprises)
+		if err != nil {
+			inlineErr = err
+		}
+		return out
+	})
+	return p, inlineErr
+}
+
 // RefreshEquipment runs the CAgg-sourced grains for one destination.
 func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
 	for _, g := range equipmentGrains {
-		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshEquipmentSQL,
-			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span, d.GrainSchema),
-			exclAreas, exclEnterprises); err != nil {
+		p, err := refreshEquipmentPassFor(d, g.grain, g.unsTable, g.span, exclAreas, exclEnterprises)
+		if err != nil {
+			return fmt.Errorf("refresh %s: %w", g.grain, err)
+		}
+		if err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+			_, err := p.Run(ctx, tx)
+			return err
+		}); err != nil {
 			return fmt.Errorf("refresh %s: %w", g.grain, err)
 		}
 	}
