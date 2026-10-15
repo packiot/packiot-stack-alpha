@@ -117,6 +117,11 @@ resource "aws_instance" "db" {
   user_data = base64encode(<<-USERDATA
     #!/bin/bash
     set -euo pipefail
+    # SSM agent FIRST and on its own: data.aws_ami.al2023_arm64 globs al2023-ami-*-arm64, which also matches the
+    # *minimal* AMI (no agent). The 2026-07-28 DB box got minimal → no shell at all (no SSH ingress by design).
+    # Found 2026-10-15; the running box was fixed by a per-boot user-data swap. Every other host already installs it.
+    dnf install -y amazon-ssm-agent
+    systemctl enable --now amazon-ssm-agent
     dnf install -y docker jq awscli
     systemctl enable --now docker
     mkdir -p /opt/packiot/pgdata
