@@ -339,3 +339,28 @@ variable "ec2_backup_retention_days" {
   type        = number
   default     = 30
 }
+
+# ── ADR-0064: staging mirror of production (mirror_peering.tf) ──────────────────
+variable "staging_mirror_enabled" {
+  description = "Peer the staging VPC and let staging's prod-reflector reach the production DB (5432, SELECT-only role)"
+  type        = bool
+  default     = false
+}
+
+variable "staging_mirror_vpc_name" {
+  description = "Name tag of the staging VPC to peer with"
+  type        = string
+  default     = "packiot-staging"
+}
+
+variable "staging_mirror_vpc_cidr" {
+  description = "Staging VPC CIDR (route from the production private subnet back to staging)"
+  type        = string
+  default     = "10.10.0.0/16"
+}
+
+variable "staging_mirror_source_cidrs" {
+  description = "Who may open 5432 on the production DB through the peering: the staging app EC2 (prod-reflector) only"
+  type        = list(string)
+  default     = ["10.10.0.228/32"]
+}

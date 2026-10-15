@@ -26,7 +26,7 @@ the `copy` phase with a single-tenant load (`scripts/promotion/bispharma/`).
 | D2 | **Image `timescale/timescaledb:2.27.0-pg16@sha256:51eb3bcd…`** with `shared_preload_libraries=timescaledb,pg_stat_statements,auto_explain` and `max_connections=200` (`terraform/production/database.tf`) | It is staging's TimescaleDB (2.27.0), so every behaviour proven on staging holds (ADR-0063 §7 step 1). It stays on PostgreSQL 16, so prod never needs a major upgrade. The image still ships the 2.25.2 libraries, so the old DB keeps working unchanged. Rehearsed on a prod-AMI clone: restart 5 s; all 5 databases open; the old DB's queries, caggs and 14/14 jobs run under the new image. Today the prod server runs with `max_connections=100` and no `pg_stat_statements`; the flags match staging's `db_init.sh` minus `pg_cron`, which the F3 schema does not use |
 | D3 | `packiot_next` is created **from `template0`** | The prod server's `template1` carries TimescaleDB 2.25.2. A plain `CREATE DATABASE` inherited 2.25.2 even under the 2.27.0 image (rehearsal finding) |
 | D4 | **Ids are preserved.** Every enterprise, site, area, equipment, topic route, device key and api key keeps its staging value | The factory box, the reader config and the descriptor all reference them. The generator renders the box's bundle byte-identically from the copied descriptor (§5.1) |
-| D5 | **Sequences are floored above the old DB's ids** (`seq-floor.sql`) | Bispharma has no POs yet, so `core.production_orders` would restart at 1 while CPACK's prod history goes up to ~1.68 M. CPACK's later go-live into this DB then keeps its ids. 9 sequences are raised (POs → 1,676,663) |
+| D5 | **Sequences are floored above the old DB's ids** (`seq-floor.sql`) | Bispharma has no POs yet, so `core.production_orders` would restart at 1 while CPACK's prod history goes up to ~1.68 M. CPACK's later go-live into this DB then keeps its ids. 9 sequences are raised (POs → 1,676,663). **Then every sequence is floored at 1,000,000,000** (the production id block, [ADR-0064](../adr/0064-staging-mirror-of-production-after-go-live.md) D6, on `staging`): staging mirrors production after the go-live and copies production's rows with their ids, so production's ids must never fall in staging's range (staging's highest: 601,633,961). It also removes the collision class of the old-DB floor (legacy CPACK keeps minting after that snapshot) |
 | D6 | **Group id stays `BISPHARMASTAGING`** in prod | Topic routes, ADR-0061 device keys, the descriptor's `tenant` and the reader's metric suffixes are all keyed on it. Renaming is its own change, with its own rehearsal |
 | D7 | **Raw values are not carried** (`bronze.equipment_values_raw`). Silver, gold, serving, events, box scans, samples, POs, shifts, targets, reasons and descriptors are | Bronze raw is staging's 90-day replay buffer; silver is the system of record. Prod raw starts at the go-live and is kept forever (`PROD_RAW_RETENTION=off`) |
 
@@ -167,6 +167,26 @@ Install, by the user over SSM on `mi-0114b66366e2d6613`, in the window:
 Rollback: `uninstall-prod.sh` (it stops only `packiot-prod`). Rehearsed: the install takes 0.6 s, and the first reader
 cycle comes 19 s later (pip install of snap7).
 
+## 5.3 Staging becomes a read-only mirror of production (ADR-0064)
+
+From the window on, **production is Bispharma's single source of truth**. Staging keeps its own box instance and reader
+(the rollback base), but enterprise 5 on staging becomes a **read-only mirror** (ADR-0064 and
+`docs/runbooks/staging-mirror-of-production.md`, both on `staging`):
+- **one switch** `PROD_MIRROR_ENTERPRISES=5` in staging's `/opt/packiot/.env` (edge-api, barcode-service, stream-engine,
+  prod-reflector);
+- every write of enterprise 5 on staging → 403 "read-only mirror of production — make this change in production";
+  the SPAs show a banner;
+- **prod-reflector** copies everything production owns (config, users, POs, events + justifications, scans, samples,
+  OEE) into staging every minute, production wins; staging's engine skips enterprise 5;
+- staging's enterprise name becomes **"Bispharma (mirror)"**; keys stay per environment;
+- invariants MR1–MR5 (`ops.data_invariant_result`, source `prod-reflector`) and ProdMirror* alerts.
+
+Network: a VPC peering staging ↔ production, a route to the production DB `/32`, one DB SG ingress from the staging app
+(`terraform/production/mirror_peering.tf`, `staging_mirror_enabled`; `terraform/staging` `prod_mirror_peering_id`).
+Plans (2026-10-15, targeted, no lock): production **+1 peering, route table +1 route, DB SG +1 ingress** (the app SG
+8449 change in the same plan is §3's); with the var off, no change of its own. Staging: IAM policy +1 secret ARN; with a
+peering id, +1 route.
+
 ## 6. Cutover sequence
 
 **T-1 day (no customer impact):**
@@ -183,6 +203,12 @@ cycle comes 19 s later (pip install of snap7).
    - `COMPOSE_PROFILES` containing `client-ingest`.
 4. CS on site: the PLC connection-resource check (§5.1).
 5. Snapshot the prod DB volume.
+6. **Staging mirror prerequisites (§5.3):**
+   - packiot-stack `staging` (prod-reflector) and edge-api `staging` (the write block) deployed — inert while the switch is unset;
+   - on staging: `db/migrations/t-prod-reflector-roles` applied + `verify.sql`; `provision-db-role.py --service prod-reflector`;
+   - terraform `production` apply `-var staging_mirror_enabled=true`, then `terraform/staging` apply
+     `-var prod_mirror_peering_id=<output staging_mirror_peering_id>`;
+   - from the staging app host: `pg_isready -h 10.20.10.89` → accepting connections.
 
 **T-0, the window.** Bispharma keeps running on staging throughout; nobody is down.
 
@@ -190,24 +216,31 @@ cycle comes 19 s later (pip install of snap7).
 |---|---|---|
 | 1 | Stop the prod app services (`docker compose -f compose.production.yml stop`; prod serves no customer today) | — |
 | 2 | **Image swap** on the DB host: `docker rename timescaledb timescaledb-2252`; `docker run` D2 on the **same** `/opt/packiot/pgdata` with name `timescaledb` (the `database.tf` command). Keep the old container stopped, for rollback | 5 s to ready |
+| 2a | **Staging write block ON** (before the extract, so the snapshot is final): `PROD_MIRROR_ENTERPRISES=5` in staging's `/opt/packiot/.env`; recreate `edge-api barcode-service stream-engine` (`-p stack`). Check: an ent-5 PO create → 403 `MIRROR_TENANT_WRITE_BLOCKED`; ent 3 unaffected. From here staging's ent-5 OEE is frozen until step 11c | — |
 | 3 | **Staging extract** (READ ONLY, one REPEATABLE READ snapshot), streamed to S3 `promotion-rehearsal/<date>/` (a go-live prefix of the same bucket), then to the DB host | 55 s extract + 56 s upload + 10 s download |
 | 4 | `xplant.sh roles … seqfloor` (§2.2) | 155 s on r7g.large (of which `tload` 109 s, `seqfloor` 28 s) |
 | 5 | Gates (§2.3): fingerprint and purity diff, compare-catalog, compare-acl | ~1 min |
 | 6 | **Swap**: terminate connections; `packiot → packiot_pre_promotion`; `packiot_next → packiot`; `start_background_workers()` in both; read back `current_database()` and the extension versions | 68 ms SQL |
 | 7 | `XPLANT_DB=packiot xplant.sh refresh` in the background (the caggs are real-time meanwhile). Shred `/root/tenant5` | 438–563 s |
 | 8 | `provision-db-role.py --env production` for stream-engine, legacy-replicator and operator-gateway (10-14 item 7) | — |
+| 8a | Check the id block: on `packiot`, `SELECT min(last_value) FROM pg_sequences WHERE last_value IS NOT NULL AND sequencename NOT LIKE 'knex%' AND schemaname NOT LIKE '\_timescaledb%'` ≥ 1000000000. Apply `db/migrations/t-prod-reflector-roles/01-up.sql` + `verify.sql` to `packiot` (idempotent), then `provision-db-role.py --service prod-reflector-ro --env production --db-name packiot --db-host 10.20.10.89 --admin-host 10.20.10.89` (secret `packiot/production/prod-reflector-ro-db-creds`) | — |
 | 9 | Optional, recommended: **rotate ent 5's api key on prod** (`UPDATE core.enterprises SET api_key = gen_random_uuid()::text WHERE id_enterprise = 5`, on the host), so staging's key is not valid on prod. Put it in `OPERATOR_EDGE_API_KEY` | — |
 | 10 | Merge release → `production`: the deploy runs the one-shots, then the services | one-shots 2 + 1 + 3 + 17 s; services healthy in 10 s |
+| 9a | Rename ent 5 on prod: `UPDATE core.enterprises SET nm_enterprise = 'Bispharma' WHERE id_enterprise = 5` (staging then shows "Bispharma (mirror)") | — |
 | 11 | Smoke: edge-api PO create ×2 with one `Idempotency-Key` gives 1 PO; start; box scan; current; read-api `/v1/catalog` and `/v1/query` 1min/1hour with the ent-5 read key | all 200/201 |
 | 12 | **Box install** (§5.2) | 0.6 s; first post at 19 s |
-| 13 | Watch, for 1 h: `silver.equipment_values` for ent 5 rising; `gold.equipment_oee_hourly` for the 23 lines with `computed_at` advancing; `silver.plc_link_minutes.fail_ticks` per endpoint on **both** stacks (0 except L60); no `stmtcache`, `permission denied` or `ERROR` in the stream-engine, decoder or agent logs | — |
+| 11a | **Reflector dry run** on the staging app host (3 min, writes nothing): `timeout 180 docker compose -f compose.staging.yml -p stack run --rm -e PROD_REFLECT_DRY_RUN=true -e PROD_MIRROR_ENTERPRISES=5 prod-reflector` → `errors=0 guarded=0`, `changed` small (`core.enterprises` = the rename; the smoke PO; gold of hours computed on prod since the swap) | — |
+| 11b | Delete the step-11 smoke PO/scan on **prod** if it should not stay (the mirror would copy it to staging too) | — |
+| 11c | **Reflector ON**: `docker compose -f compose.staging.yml -p stack up -d --force-recreate prod-reflector` → `reflect pass … converged=true` within 2 min | — |
+| 13 | Watch, for 1 h: `silver.equipment_values` for ent 5 rising; `gold.equipment_oee_hourly` for the 23 lines with `computed_at` advancing; `silver.plc_link_minutes.fail_ticks` per endpoint on **both** stacks (0 except L60); no `stmtcache`, `permission denied` or `ERROR` in the stream-engine, decoder or agent logs. **Staging mirror:** `prod-reflector` passes `converged=true`; after 15 min `SELECT check_id, ok, observed FROM ops.data_invariant_latest WHERE source = 'prod-reflector'` on staging → MR1–MR4 ok; `front.staging` as a Bispharma user shows "Bispharma (mirror)" + the read-only banner; a justify there → 403 with the production link | — |
 | 14 | Superset: sync the assets and verify Reports for ent 5 (front4 → Reports) | — |
 
 **Go/no-go gates:**
 - every §2.3 gate is 0;
 - step 11 is green;
 - step 13 shows prod's live hour computing;
-- staging's ent-5 ingest is unchanged.
+- staging's ent-5 ingest is unchanged;
+- the staging mirror converged (MR1–MR4 ok) and refuses writes.
 
 ## 7. Rollback
 
@@ -218,23 +251,30 @@ Bispharma never left staging: staging's box instance, staging's cloud and the st
 | Box | `uninstall-prod.sh` (stops `packiot-prod` only) | yes: 10.4 s; staging instance untouched |
 | Prod services | `docker compose -f compose.production.yml stop` | yes |
 | Prod DB | Rename `packiot → packiot_bispharma_rolled_back` and `packiot_pre_promotion → packiot`. Then, to restore the old runtime too, stop the 2.27 container and `docker start timescaledb-2252`. The rolled-back DB opens only under the 2.27 image | yes: 22 ms SQL, image back in 2.3 s, **5.9 s total**; old layout served, `authentik`/`superset` intact |
-| Users | Keep using the staging URLs (`front.staging`, `operator-bispharma.staging`). Nothing to tell them unless they were already switched | — |
+| Staging mirror | Remove `PROD_MIRROR_ENTERPRISES` from staging's `/opt/packiot/.env`; recreate `edge-api barcode-service stream-engine prod-reflector` → staging is the master again (writes reopen, its engine resumes ent 5 from the next hour, the reflector idles). Everything production did until then is already on staging. Optional: `UPDATE core.enterprises SET nm_enterprise = 'Bispharma-Staging' WHERE id_enterprise = 5` on staging; peering terraform back to off later | inert-by-default proven in tests; switch is config only |
+| Users | Back to the staging URLs (`front.staging`, `operator-bispharma.staging`), which accept writes again once the mirror is off | — |
 
 ## 8. User actions
 
 1. Approve and merge the release-branch PR (or let it merge when green), and the release catch-up.
-2. Terraform apply `production` (the 10-14 items plus 8449/nginx/DB pin), then re-run `nginx_setup.sh` on the app box.
+2. Terraform apply `production` (the 10-14 items plus 8449/nginx/DB pin, **plus `-var staging_mirror_enabled=true`**), then
+   `terraform/staging` with `-var prod_mirror_peering_id=<pcx>`; re-run `nginx_setup.sh` on the app box.
 3. Create the **prod ingest key**. Put it in `/opt/packiot/.env` (`AGENT_INGEST_API_KEY`) and, in the window, in
    `/root/.packiot-prod-ingest-key` on Bispharma's box.
 4. Fill the prod `.env` keys (§6 T-1 step 3) and the 10-14 list (`READAPI_RO_PASSWORD`, `INTERNAL_API_KEY`,
    `ONBOARD_API_KEY`, the runner token B3).
 5. Have CS run the PLC connection-resource check on site (§5.1) and confirm whether the legacy Pi is still polling.
-6. Decide the display name: ent 5 is `Bispharma-Staging` on staging and travels as-is. Rename it on prod after the swap
-   (`UPDATE core.enterprises SET nm_enterprise = 'Bispharma' WHERE id_enterprise = 5`)? Recommended.
+6. Display name (approved 10-15): `Bispharma` on prod (§6 step 9a); staging shows `Bispharma (mirror)` automatically
+   (the reflector's suffix, ADR-0064 D5).
 7. Decide ent 5's api key on prod: rotate it (§6 step 9, recommended) or keep staging's.
 8. Pick the window. Run §6 (steps 1–11 and 13–14 are the operator's; step 12 is on the customer's VM).
-9. After a stable week:
-   - tell Bispharma's users the prod URLs;
+9. **At the go-live (not after a week):** tell Bispharma's users and CS the prod URLs (`front.prod`, `operator.prod`,
+   `csadmin.prod`) — from step 2a staging refuses every ent-5 change and shows a banner pointing to production. Same
+   Cognito logins (shared pool).
+10. Decide (optional): backfill production's `silver.equipment_values` for the window gap (from the step-3 extract to the
+   first production reading at step 12, ≈ 30–60 min) from staging's reader, so production's (and the mirror's) hours of
+   the window are complete. Not done by this runbook (a write to production).
+11. After a stable week:
    - decide when the staging box instance is retired (then move the fat-edge dashboard to the prod instance);
    - decide whether CPACK's prod mTLS tee is stopped at its box. After the swap, prod has no CPACK routes, so its
      batches are unmapped; watch the decoder's unmapped counter in the first hour.
