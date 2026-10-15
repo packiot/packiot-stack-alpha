@@ -826,11 +826,26 @@ services:
     build: ./services/stream-engine
     container_name: stream-engine
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env holds the admin POSTGRES_USER/POSTGRES_PASSWORD, the broker admin RABBITMQ_* and every
+    # other service's secrets. The engine's own tuning keys that may live in .env are passed through
+    # explicitly at the end of `environment:` (${KEY:-} = unchanged when .env does not set it: the code
+    # treats "" as unset). Same shape as compose.staging.yml. Enforced by scripts/ci/check-db-least-priv.py.
     environment:
       LOG_LEVEL: info
       AWS_REGION: us-east-1
-      PG_SECRET_ID: packiot/production/db
+      # DB login = the least-privilege `stream_engine` role (db/migrations/t-stream-engine-role: table-level
+      # DML on its own tables, TEMP, sequence USAGE, EXECUTE on the INVOKER engine functions; no DDL/TRUNCATE;
+      # NOBYPASSRLS with role default app.tenant_id=-1 because the engine is cross-tenant), NOT the admin
+      # packiot/production/db. Creds {host,port,user,password,name} from Secrets Manager (CREDS_SOURCE unset);
+      # the secret's host is the r7g DIRECT (POSTGRES_HOST_UPSTREAM — session advisory locks, like staging).
+      # PROVISION FIRST (transplant `roles` step, then scripts/ops/provision-db-role.py --service
+      # stream-engine --env production on the app host) — a deploy before that exits at boot.
+      # EMERGENCY ROLLBACK without a redeploy: STREAM_ENGINE_PG_SECRET_ID=packiot/production/db in
+      # /opt/packiot/.env + recreate stream-engine.
+      PG_SECRET_ID: ${STREAM_ENGINE_PG_SECRET_ID:-packiot/production/stream-engine-db-creds}
+      # Pin AMQP to the least-privilege broker user in RABBITMQ_SECRET_ID, never RABBITMQ_USER/PASSWORD (the
+      # broker ADMIN). Was implicit (CREDS_SOURCE unset in .env ⇒ Secrets Manager); explicit now, as staging.
+      AMQP_CREDS_SOURCE: aws
       # MANUAL PRE-REQ (rename S1+S2, oeecloud-worker -> stream-engine): this
       # secret does not exist yet under the new name. A human must create
       # packiot/production/rabbitmq-stream-engine-creds (username
@@ -934,8 +949,9 @@ services:
       # (staging-packiot_analytics-shaped) DB. Without POSTGRES_ANALYTICS_DB_NAME
       # the handler routes source_type=refactored to (main pool, `public`) — the
       # pre-medallion names t252 dropped — so this is REQUIRED, not cosmetic.
-      # Staging points BOTH pools at packiot_analytics (CREDS_SOURCE=env,
-      # DB_NAME=packiot_analytics); prod points both at ${POSTGRES_DB} (SM creds).
+      # Staging points BOTH pools at packiot_analytics (the secret's name +
+      # POSTGRES_ANALYTICS_DB_NAME); prod points both at ${POSTGRES_DB} (the
+      # stream-engine-db-creds secret's `name` must be the same DB).
       POSTGRES_ANALYTICS_DB_NAME: ${POSTGRES_DB}
       POSTGRES_MAX_CONNS: "5"
       POSTGRES_ANALYTICS_MAX_CONNS: "15"
@@ -976,6 +992,56 @@ services:
       # Tenant allowlist: EMPTY = passthrough (all discovered tenants). Prod's only
       # known Sparkplug tenant is `cpack`; ent 1's group is unverified, so no list.
       WORKER_TENANT_ALLOWLIST: ""
+      # ── .env pass-through (env_file removed) ─────────────────────────────────────────────────
+      # Every key the engine reads (internal/config/config.go, internal/secrets, tracing) that is NOT set
+      # above, so a value an operator put in /opt/packiot/.env still reaches it exactly as env_file did.
+      # ${KEY:-} → "" when absent, which the code treats as unset (code default). CPAC_EVENT_LIVE_ENTERPRISES
+      # is passed through for parity only — it must stay unset/empty on prod (see the CPAC note above).
+      # Deliberately NOT passed: CREDS_SOURCE, DB_*/POSTGRES_* and RABBITMQ_USER/PASSWORD (admin logins).
+      AVAILABILITY_EXCLUSIONS_ENABLED: ${AVAILABILITY_EXCLUSIONS_ENABLED:-}
+      BAKE_ENTERPRISE_IDS: ${BAKE_ENTERPRISE_IDS:-}
+      BIRTHBIND_VERIFY: ${BIRTHBIND_VERIFY:-}
+      BIRTHBOUND_SWITCHED_ENTERPRISES: ${BIRTHBOUND_SWITCHED_ENTERPRISES:-}
+      BOXES13_INTERVAL_MINUTES: ${BOXES13_INTERVAL_MINUTES:-}
+      CHANGEOVER_AVAILABILITY_ENABLED: ${CHANGEOVER_AVAILABILITY_ENABLED:-}
+      COUNTER_TOTALS_PUBLIC: ${COUNTER_TOTALS_PUBLIC:-}
+      CPAC_EVENT_DERIVATION_INTERVAL_MINUTES: ${CPAC_EVENT_DERIVATION_INTERVAL_MINUTES:-}
+      CPAC_EVENT_LIVE_ENTERPRISES: ${CPAC_EVENT_LIVE_ENTERPRISES:-}
+      CPAC_EVENT_TARGET_TABLE: ${CPAC_EVENT_TARGET_TABLE:-}
+      DQ_ALARMS_ENABLED: ${DQ_ALARMS_ENABLED:-}
+      EVENTS_CLOSE_STALE_HORIZON_HOURS: ${EVENTS_CLOSE_STALE_HORIZON_HOURS:-}
+      EVENTS_CLOSE_STALE_INTERVAL_SEC: ${EVENTS_CLOSE_STALE_INTERVAL_SEC:-}
+      EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS: ${EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS:-}
+      EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC: ${EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC:-}
+      EVENTS_DERIVER_INTERVAL_MINUTES: ${EVENTS_DERIVER_INTERVAL_MINUTES:-}
+      EVENTS_EXCLUDED_AREAS: ${EVENTS_EXCLUDED_AREAS:-}
+      EVENTS_EXCLUDED_ENTERPRISES: ${EVENTS_EXCLUDED_ENTERPRISES:-}
+      EVENTS_WIDEROW_STATE_ENTERPRISES: ${EVENTS_WIDEROW_STATE_ENTERPRISES:-}
+      INCREMENT_SANITY_CLAMP_K: ${INCREMENT_SANITY_CLAMP_K:-}
+      INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS: ${INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS:-}
+      INCREMENT_SANITY_CLAMP_SPIKE_FLOOR: ${INCREMENT_SANITY_CLAMP_SPIKE_FLOOR:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-}
+      PO_RECALC_EXCLUDED_ENTERPRISES: ${PO_RECALC_EXCLUDED_ENTERPRISES:-}
+      PO_RECALC_INTERVAL_MINUTES: ${PO_RECALC_INTERVAL_MINUTES:-}
+      PO_RECALC_WINDOW: ${PO_RECALC_WINDOW:-}
+      PO_RECOMPUTE_SWEEP_HOURS: ${PO_RECOMPUTE_SWEEP_HOURS:-}
+      PROVISIONAL_SPEED_EQUIPMENTS: ${PROVISIONAL_SPEED_EQUIPMENTS:-}
+      PROVISIONAL_SPEED_FLOOR: ${PROVISIONAL_SPEED_FLOOR:-}
+      PROVISIONAL_SPEED_INFERENCE_ENABLED: ${PROVISIONAL_SPEED_INFERENCE_ENABLED:-}
+      PROVISIONAL_SPEED_MIN_MINUTES: ${PROVISIONAL_SPEED_MIN_MINUTES:-}
+      PROVISIONAL_SPEED_PERCENTILE: ${PROVISIONAL_SPEED_PERCENTILE:-}
+      PROVISIONAL_SPEED_WINDOW_HOURS: ${PROVISIONAL_SPEED_WINDOW_HOURS:-}
+      ROLLUP_MACHINE_LEVEL_ENTERPRISES: ${ROLLUP_MACHINE_LEVEL_ENTERPRISES:-}
+      RUNTIME_PROVISION_INTERVAL_HOURS: ${RUNTIME_PROVISION_INTERVAL_HOURS:-}
+      SAP13_CUSTOMER_ID: ${SAP13_CUSTOMER_ID:-}
+      SHIFT06_CUSTOMER_ID: ${SHIFT06_CUSTOMER_ID:-}
+      SILVER_CLAMP_ENABLED: ${SILVER_CLAMP_ENABLED:-}
+      STRANDED_FLAG_SWEEP_ENABLED: ${STRANDED_FLAG_SWEEP_ENABLED:-}
+      SYNC06_ENTERPRISE_ID: ${SYNC06_ENTERPRISE_ID:-}
+      SYNC06_INTERVAL_MINUTES: ${SYNC06_INTERVAL_MINUTES:-}
+      UNS_CURRENT_METRICS_INTERVAL_MINUTES: ${UNS_CURRENT_METRICS_INTERVAL_MINUTES:-}
+      UNS_INTERVAL_MINUTES: ${UNS_INTERVAL_MINUTES:-}
     # Horizontal scale: default 1 (byte-identical). To run a pool of N, set
     # OEECLOUD_WORKER_REPLICAS=N + WORKER_POOL_SAC_ENABLED=true (post-migration)
     # and COMMENT OUT container_name (line ~753) + the static ipv4_address below
@@ -1496,7 +1562,11 @@ services:
     container_name: legacy-replicator
     profiles: ["legacy-replicator"]
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env carries the Postgres admin login and every other secret. The DEST login is the
+    # least-privilege role legacy_replicator (db/migrations/t-legacy-replicator-role) from Secrets Manager
+    # (PG_SECRET_ID); the LEGACY source login is unchanged (LEGACY_DB_PASSWORD is still interpolated from .env
+    # by compose, as before). Emergency lever, no redeploy: LEGACY_REPLICATOR_PG_SECRET_ID=packiot/production/db
+    # in /opt/packiot/.env + recreate puts the DEST connection back on the admin login. Same shape as staging.
     environment:
       LOG_LEVEL: info
       REPLICATE_ENABLED: "true"
@@ -1506,14 +1576,14 @@ services:
       LEGACY_DB_USER: awslambda
       LEGACY_DB_PASSWORD: ${LEGACY_DB_PASSWORD:-}
       LEGACY_DB_NAME: packiot40
-      # DEST — prod's (transplanted, medallion) DB, DIRECT to the r7g like the
-      # other DDL/long-session one-shots (the replicator creates ops.mirror_replay_*
-      # IF NOT EXISTS and holds a cursor transaction per batch).
-      DEST_DB_HOST: ${POSTGRES_HOST_UPSTREAM}
-      DEST_DB_PORT: "5432"
-      DEST_DB_USER: ${POSTGRES_USER}
-      DEST_DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DEST_DB_NAME: ${POSTGRES_DB}
+      # DEST — prod's (transplanted, medallion) DB as the least-privilege role
+      # legacy_replicator. The secret {host,port,user,password,name} points DIRECT
+      # at the r7g (POSTGRES_HOST_UPSTREAM, name = POSTGRES_DB): the replicator holds
+      # a cursor transaction per batch. Written ON THE APP HOST by
+      # scripts/ops/provision-db-role.py --service legacy-replicator --env production.
+      # No DEST_DB_* / CREDS_SOURCE here (the code reads DEST_DB_* only with CREDS_SOURCE=env).
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: ${LEGACY_REPLICATOR_PG_SECRET_ID:-packiot/production/legacy-replicator-db-creds}
       # Enterprise id-map — CPACK legacy 1 -> new-stack 3 (same as staging).
       SRC_ENTERPRISE: "1"
       DST_ENTERPRISE: "3"
@@ -1539,6 +1609,25 @@ services:
       RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "60"
       RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
       RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
+      # Keys the code reads that are not set above used to arrive through env_file. Passed through
+      # explicitly so dropping env_file changes nothing: unset in .env ⇒ "" ⇒ the code's default.
+      # Deliberately NOT passed: CREDS_SOURCE, DEST_DB_*, POSTGRES_*, RABBITMQ_* (admin logins / would
+      # switch the DEST login source).
+      BACKFILL_SINCE_DAYS: ${BACKFILL_SINCE_DAYS:-}
+      RECONCILE_BASE_EVENTS_ENABLED: ${RECONCILE_BASE_EVENTS_ENABLED:-}
+      RECONCILE_BASE_EVENTS_INTERVAL_SEC: ${RECONCILE_BASE_EVENTS_INTERVAL_SEC:-}
+      RECONCILE_BASE_EVENTS_LOOKBACK_HOURS: ${RECONCILE_BASE_EVENTS_LOOKBACK_HOURS:-}
+      RECONCILE_BASE_EVENTS_REFRESH_SERVING: ${RECONCILE_BASE_EVENTS_REFRESH_SERVING:-}
+      EVENT_MIN_OVERLAP_SEC: ${EVENT_MIN_OVERLAP_SEC:-}
+      EVENT_MAX_START_DRIFT_SEC: ${EVENT_MAX_START_DRIFT_SEC:-}
+      DLQ_CAPTURE_ENABLED: ${DLQ_CAPTURE_ENABLED:-}
+      DLQ_RETRY_ENABLED: ${DLQ_RETRY_ENABLED:-}
+      DLQ_RETRY_INTERVAL_SEC: ${DLQ_RETRY_INTERVAL_SEC:-}
+      DLQ_RETRY_MAX_ATTEMPTS: ${DLQ_RETRY_MAX_ATTEMPTS:-}
+      DLQ_RETRY_BATCH_SIZE: ${DLQ_RETRY_BATCH_SIZE:-}
+      RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS: ${RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS:-}
+      SANDBOX_HOLD_ENABLED: ${SANDBOX_HOLD_ENABLED:-}
+      SANDBOX_HOLD_BASE_EVENTS: ${SANDBOX_HOLD_BASE_EVENTS:-}
     networks:
       packiot-net:
     depends_on:
