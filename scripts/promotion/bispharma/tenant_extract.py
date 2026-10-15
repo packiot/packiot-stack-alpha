@@ -62,6 +62,14 @@ SKIP = {
     'ops.retention_policy': 'seeded by phase `data` (t-retention-catalog + PROD_RAW_RETENTION)',
     'ops.retention_run': 'staging retention run log',
     'ops.data_invariant_result': "staging's invariant run history; prod's first run writes its own",
+    # ADR-0063 Phase B (t-ts-b1-rollup-shadow, 2026-10-15): DERIVED twins of the caggs, rebuilt on prod by
+    # CALL silver.rollup_backfill(...) when Phase B is promoted; copying them would ship a stale snapshot.
+    'silver.equipment_categorical_1min__next': 'ADR-0063 B1 derived twin of a cagg; rebuilt by silver.rollup_backfill',
+    'silver.equipment_categorical_1hour__next': 'ADR-0063 B1 derived twin of a cagg; rebuilt by silver.rollup_backfill',
+    'silver.equipment_metrics_1min__next': 'ADR-0063 B1 derived twin of a cagg; rebuilt by silver.rollup_backfill',
+    'silver.agg_equipment_values_1min__next': 'ADR-0063 B1 derived twin of a cagg; rebuilt by silver.rollup_backfill',
+    'silver.agg_equipment_values_1hour__next': 'ADR-0063 B1 derived twin of a cagg; rebuilt by silver.rollup_backfill',
+    'silver.rollup_invalidation': 'ADR-0063 B1 transient work queue of the rollup tick',
 }
 PLATFORM_TABLES = {'core.enterprises', 'identity.users', 'identity.user_roles'}
 PLAN = []
