@@ -2076,6 +2076,9 @@ services:
       # ADR-0014 P4 — enterprise-6 sync state machine (verbatim embed).
       SYNC06_REPORT_ENABLED: "true"
       BOXES_BRIDGE_ENABLED: "true"
+      # ADR-0063 Phase B — tick the plain-table twins of the caggs (db/migrations/t-ts-b1-rollup-shadow).
+      # Off until that migration is applied + backfilled; then ROLLUP_SHADOW_ENABLED=true in /opt/packiot/.env.
+      ROLLUP_SHADOW_ENABLED: ${ROLLUP_SHADOW_ENABLED:-false}
       # NOTE: the F2/F3 shadow-comparison apparatus (refsync, bake comparator,
       # shadow_go_port "go" leg, identity-sentinel) was fully RETIRED in #252 —
       # staging is the one and only stack, no legacy ties. Those flags
