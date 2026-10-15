@@ -415,14 +415,14 @@ const hourOeeReconcileSQL = `
 // HourStatementsForParity / ShiftStatementsForParity (those are diffed against
 // the prod engine, which has no counters-only fallback). The golden test drives
 // these directly against a hand-built state-less fixture.
-func HourCountsAvailSQLForParity() string  { return hourCountsAvailSQL }
-func ShiftCountsAvailSQLForParity() string { return shiftCountsAvailSQL }
+func HourCountsAvailSQLForParity() string  { return hourCountsAvailSplitSQL }
+func ShiftCountsAvailSQLForParity() string { return shiftCountsAvailSplitSQL }
 
 // ADR-0048 accessors (used by the reconcile/floor golden tests + port-parity).
 func ShiftOeeReconcileSQLForParity() string { return shiftOeeReconcileSQL }
 func HourOeeReconcileSQLForParity() string  { return hourOeeReconcileSQL }
-func ShiftAvailFloorSQLForParity() string   { return shiftAvailFloorSQL }
-func HourAvailFloorSQLForParity() string    { return hourAvailFloorSQL }
+func ShiftAvailFloorSQLForParity() string   { return shiftAvailFloorSplitSQL }
+func HourAvailFloorSQLForParity() string    { return hourAvailFloorSplitSQL }
 
 // ── ADR-0037 finding (c) (medallion R3c): changeover vs Availability ─────────
 //

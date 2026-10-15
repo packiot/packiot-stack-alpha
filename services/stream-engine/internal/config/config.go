@@ -280,6 +280,8 @@ type Config struct {
 	RollupBackfillLimit           int // hour rows recomputed per backfill tick
 	RollupBackfillIntervalSeconds int
 	RollupShiftLimit              int // shift rows recomputed per live rollup tick (bounds the tx so it can't roll back wholesale under load)
+	RollupShiftBudgetSeconds      int // the shift pass's own deadline inside the 300 s tick; over it the batch rolls back alone and halves (rollup/batch.go)
+	RollupBackfillBudgetSeconds   int // the same for one hour-backfill batch
 	// SentinelEnterpriseIDs — CSV of enterprises the --identity-sentinel F3
 	// int-overflow deploy gate checks (env BAKE_ENTERPRISE_IDS, kept for compat).
 	// The bake COMPARATOR was retired in #252; the per-plane overflow gate survives.
@@ -504,6 +506,8 @@ func Load() (*Config, error) {
 		RollupBackfillEnabled:            getenv("ROLLUP_BACKFILL_ENABLED", "true") == "true",
 		RollupBackfillLimit:              getenvInt("ROLLUP_BACKFILL_LIMIT", 200),
 		RollupShiftLimit:                 getenvInt("ROLLUP_SHIFT_LIMIT", 300),
+		RollupShiftBudgetSeconds:         getenvInt("ROLLUP_SHIFT_BUDGET_SECONDS", 120),
+		RollupBackfillBudgetSeconds:      getenvInt("ROLLUP_BACKFILL_BUDGET_SECONDS", 120),
 		SentinelEnterpriseIDs:            getenv("BAKE_ENTERPRISE_IDS", "3"),
 		RollupBackfillIntervalSeconds:    getenvInt("ROLLUP_BACKFILL_INTERVAL_SECONDS", 30),
 		LegacyIngestEnabled:              getenv("LEGACY_INGEST_ENABLED", "true") == "true",

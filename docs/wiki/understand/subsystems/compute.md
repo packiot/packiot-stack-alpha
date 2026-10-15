@@ -131,7 +131,8 @@ data is visible), so freshness can be checked per row.
 | Knob | Staging | Effect |
 |---|---|---|
 | `RUNTIME_ROLLUP_ENABLED`, `ROLLUP_BACKFILL_ENABLED` | on | the grain jobs |
-| `ROLLUP_SHIFT_LIMIT` | 75 | shift rows per tick; too high and the 5-minute tick rolls back |
+| `ROLLUP_SHIFT_LIMIT` | 75 | the most shift rows per tick (the batch adapts below it) |
+| `ROLLUP_SHIFT_BUDGET_SECONDS` / `ROLLUP_BACKFILL_BUDGET_SECONDS` | 120 / 120 (default) | a batch over its budget rolls back alone and the next one is halved |
 | `ROLLUP_BACKFILL_LIMIT` / `_INTERVAL_SECONDS` | 50 / 7 | backfill drain rate |
 | `COUNTERS_ONLY_LINE_LEAD_ENTERPRISES` | `3,5,2000003` | enterprises whose lines use line-lead |
 | `COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS` | 300 | a gap longer than this between productive minutes counts as stopped |
@@ -178,6 +179,7 @@ The full list with defaults is on the [stream-engine](../components/stream-engin
 | 2026-10-02 | Shift boundary hours split by overlap (#1545) and a shift-vs-silver invariant (#1546) |
 | 2026-10-13 | Day time columns stored raw (no production-day-length cap, like P and Q); invariant K7 reports days above their length |
 | 2026-10-13 | Hour rows' production day no longer depends on when provisioning runs (engine-owned `provisionHourlySQL`, bucket + 59 min rule); day cascade follows the label; invariant K8 counts hour rows per day |
+| 2026-10-14 | Every runtime-rollup tick timed out in shift values (cagg read inside an `UPDATE`, 250–296 s) → all cagg-reading DML split into read + apply; per-pass budget + adaptive batch |
 
 ## Go deeper
 

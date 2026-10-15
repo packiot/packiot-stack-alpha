@@ -163,11 +163,11 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 // emits exactly the passes the engine runs — never a hand-maintained copy.
 func hourBackfillSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
 	steps := []rollupStep{
-		{"values", widenHourWindows(fmtRD(hourValuesSQL, d))},
+		{"values", widenHourWindows(fmtRD(hourValuesSplitSQL, d))},
 		{"cascade-day", fmtRD(hourCascadeDaySQL, d)},
 		// #186: cascade-area removed (area hourly grain retired).
 		{"speed", widenHourWindows(fmtRD(hourSpeedSQL, d))},
-		{"events", widenHourWindows(fmtRD(hourEventsSQL, d, plannedDowntimeExpr(changeoverAvailability)))},
+		{"events", widenHourWindows(fmtRD(hourEventsSplitSQL, d, plannedDowntimeExpr(changeoverAvailability)))},
 	}
 	// #207: LINE-FROM-LEAD backfill. Same position as the live RunHour (after
 	// events, which it overrides for line-lead lines — single writer, like the
@@ -182,7 +182,7 @@ func hourBackfillSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bo
 	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))})
+			widenHourWindows(fmtRD(withPlannedPred(hourLineLeadSplitSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))})
 	}
 	if ca.engagedExclusions() {
 		steps = append(steps, rollupStep{"exclusions", fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
@@ -213,13 +213,29 @@ func hourBackfillSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bo
 // is empty, then keeps ticking cheaply (each tick is a single indexed count once
 // drained). Runs alongside LoopGrains; the shared advisory lock keeps them from
 // racing on grain rows.
-func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+//
+// Each batch runs under budget with an adaptive size (batch.go): a batch that
+// overruns rolls back alone and the next one is half its size, so the backlog
+// drains even when a batch of `limit` rows costs more than a tick. 0 →
+// defaultBackfillBudget.
+func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, budget time.Duration, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	if budget <= 0 {
+		budget = defaultBackfillBudget
+	}
+	batch := newBatchSizer("runtime-rollup-hour-backfill", limit)
 	logger.Info("runtime-rollup-hour-backfill started (drains stranded recalc hours)",
-		slog.Int("limit_per_tick", limit), slog.Duration("every", every))
+		slog.Int("limit_per_tick", limit), slog.Duration("budget", budget), slog.Duration("every", every))
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup-hour-backfill", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			n, err := RunHourBackfill(ctx, d, exclAreas, exclEnterprises, limit, ca, changeoverAvailability)
+			lim, n, over, err := runAdaptive(ctx, batch, d.Name, budget, logger, func(c context.Context, lim int) (int64, error) {
+				return RunHourBackfill(c, d, exclAreas, exclEnterprises, lim, ca, changeoverAvailability)
+			})
+			if over {
+				logger.Warn("hour-backfill over budget (rolled back; next batch halved)", slog.String("dest", d.Name),
+					slog.Int("batch", lim), slog.Duration("budget", budget))
+				continue
+			}
 			if err != nil {
 				logger.Warn("hour-backfill failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {

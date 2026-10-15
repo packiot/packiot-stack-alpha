@@ -143,14 +143,10 @@ func TestGoldenShiftProportionalTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, st := range ShiftStatementsForParity("golden", "golden") {
-		// eligible/reflag take ($exclAreas,$exclEnt[,$machineEnt]); the middle
-		// passes take none — try the 3-arg form, then 2-arg, then 0-arg.
-		if _, err := tx.Exec(ctx, st.SQL, []int{}, []int{}, []int{35}); err != nil {
-			if _, e2 := tx.Exec(ctx, st.SQL, []int{}, []int{35}); e2 != nil {
-				if _, e3 := tx.Exec(ctx, st.SQL); e3 != nil {
-					t.Fatalf("shift %s: %v / %v / %v", st.Name, err, e2, e3)
-				}
-			}
+		// eligible takes ($exclAreas,$exclEnt,$machineEnt), reflag ($exclEnt,$machineEnt);
+		// the middle passes take none.
+		if err := goldenExec(ctx, tx, st.SQL, map[int][]any{3: {[]int{}, []int{}, []int{35}}, 2: {[]int{}, []int{35}}}); err != nil {
+			t.Fatalf("shift %s: %v", st.Name, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
