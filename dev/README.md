@@ -44,7 +44,7 @@ healthcheck, add a `smoke` case to `e2e/smoke.sh` and put it in a slice of `.git
 
 | Service | Host port | Image | Staging equivalent |
 |---|---|---|---|
-| postgres | 5432 | `${DEVDB_IMAGE}` = `ghcr.io/packiot/devseed:latest` (`.env.dev`; plain `timescale/timescaledb:2.27.0-pg15` if unset) | separate EC2, PG 15.17 + TimescaleDB 2.27.0 |
+| postgres | 5432 | `${DEVDB_IMAGE}` = `ghcr.io/packiot/devseed:latest` (`.env.dev`; plain `timescale/timescaledb:2.27.0-pg15` pinned by digest, as staging's `db/Dockerfile`, if unset) | separate EC2, PG 15.17 + TimescaleDB 2.27.0 |
 | rabbitmq | 5672, mgmt 15672 | `rabbitmq:3.13-management` (3.13.7) | same image, conf, plugins |
 | mosquitto | 1883 | `eclipse-mosquitto:2` | same image + `configs/mosquitto/mosquitto.conf` |
 | redis | 6379 | `redis:7-alpine` (alias `app-redis`) | `app-redis`, same flags |
@@ -58,6 +58,10 @@ healthcheck reads a row of `silver.equipment_values`); `DEVDB_EXPECT_SEED=0` rel
 `DEVDB_IMAGE`. A volume left over from an older run makes postgres skip initialization and stay unhealthy: run
 `make dev-reset`. The image is Alpine (musl): its `en_US.utf8` collation sorts like `C`, so text `ORDER BY` can
 differ from staging's glibc host.
+`base.yml` starts postgres with staging's `timescaledb.enable_job_execution_logging=on` (ADR-0063 A5), so
+`timescaledb_information.job_history` lists every job run, as on staging. The seed carries staging's login roles,
+including the Go services' least-privilege ones (`operator_gateway`, `barcode_service`, `stream_engine`,
+`legacy_replicator`), all with password `dev`; `seed/70-service-roles.sh` re-creates them only for an older cached seed.
 
 **rabbitmq.** `monitoring/rabbitmq/rabbitmq.conf` (shared with staging) sets `load_definitions`.
 Staging renders `monitoring/rabbitmq/definitions.template.json` with jq and Secrets Manager

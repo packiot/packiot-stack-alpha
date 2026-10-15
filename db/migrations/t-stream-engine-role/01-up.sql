@@ -78,7 +78,9 @@ GRANT SELECT ON
   config.label_formats,
   silver.equipment_categorical_1min, silver.equipment_categorical_1hour,
   silver.agg_equipment_values_1min, silver.agg_equipment_values_1hour,
-  silver.ca_discrete_changes_1s, silver.ca_equipment_boxes_1s,
+  -- silver.ca_equipment_boxes_1s dropped by t-drop-ca-equipment-boxes-1s (ADR-0063 A1, 2026-10-14); its
+  -- rollback re-grants it. Listing it here failed every re-run of this file (dev seed boot, dev slices).
+  silver.ca_discrete_changes_1s,
   silver.plc_endpoint_equipment, silver.plc_link_minutes
 TO stream_engine;
 GRANT SELECT ON config.production_targets, config.equipment_out_of_service TO stream_engine;

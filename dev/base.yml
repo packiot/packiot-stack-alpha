@@ -18,6 +18,10 @@ services:
   # POSTGRES_DB on first boot.
   postgres:
     image: ${DEVDB_IMAGE:-timescale/timescaledb:2.27.0-pg15@sha256:3f77046809de51aacf70719c3662f05e0bf9d29c0c7f9d8bda6bb57a0c6fe400}
+    # Server flags staging sets on its postmaster (terraform/staging/user_data/db_init.sh) that change what a developer
+    # observes: job_history logs every TimescaleDB job run (ADR-0063 A5, 2026-10-14). Telemetry off as in the seed
+    # image. Set here (not only in the seed's CMD) so a plain DEVDB_IMAGE and a seed older than 2026-10-14 match too.
+    command: ["postgres", "-c", "timescaledb.telemetry_level=off", "-c", "timescaledb.enable_job_execution_logging=on"]
     environment:
       DEVDB_EXPECT_SEED: ${DEVDB_EXPECT_SEED:-1}   # healthcheck: require seed data (0 = plain DB)
       POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}

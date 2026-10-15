@@ -24,6 +24,9 @@ type Job struct {
 	Timeout time.Duration
 }
 
+// slowTick: a successful tick at least this long is logged ("job tick slow").
+const slowTick = 10 * time.Second
+
 // Observer receives one call per tick with outcome "ok" | "error" |
 // "timeout" | "panic" — wired to the jobs_ticks_total CounterVec.
 type Observer func(job, outcome string)
@@ -79,14 +82,22 @@ func runOne(ctx context.Context, j Job, logger *slog.Logger) (outcome string) {
 				slog.String("job", j.Name), slog.String("panic", fmt.Sprint(r)))
 		}
 	}()
-	if err := j.Run(tctx); err != nil {
+	start := time.Now()
+	err := j.Run(tctx)
+	elapsed := time.Since(start)
+	if err != nil {
 		if tctx.Err() != nil {
 			logger.Error("job tick TIMED OUT (killed — terminate_long_proc_runtime lesson)",
-				slog.String("job", j.Name), slog.Duration("timeout", timeout))
+				slog.String("job", j.Name), slog.Duration("timeout", timeout), slog.Duration("elapsed", elapsed))
 			return "timeout"
 		}
-		logger.Warn("job tick failed", slog.String("job", j.Name), slog.String("err", err.Error()))
+		logger.Warn("job tick failed", slog.String("job", j.Name), slog.String("err", err.Error()), slog.Duration("elapsed", elapsed))
 		return "error"
+	}
+	// Slow ticks only (steady state logs nothing): how close a job runs to its
+	// timeout is the early warning the TIMED OUT line comes too late for.
+	if elapsed >= slowTick {
+		logger.Info("job tick slow", slog.String("job", j.Name), slog.Duration("elapsed", elapsed), slog.Duration("timeout", timeout))
 	}
 	return "ok"
 }

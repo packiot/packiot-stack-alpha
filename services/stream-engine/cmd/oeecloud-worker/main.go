@@ -181,6 +181,33 @@ func main() {
 	logger.Info("background-job destinations resolved",
 		slog.Int("dest_count", len(bgDests)))
 
+	// dedicatedDests gives one job its own long-lived pool for the shadow DB
+	// (db.NewDedicated, ADR-0063 A3): the jobs below keep session temp tables, and
+	// their statements keep one pg_stat_statements queryid only on a stable
+	// backend. Without a shadow pool (single-flow deploys, via pgbouncer) or if the
+	// pool cannot open, the job uses the shared destinations — correct either way
+	// (every transaction re-creates/clears what it uses), only the stats churn.
+	dedicatedDests := func(job string) []flows.Dest {
+		if analyticsPool == nil {
+			return bgDests
+		}
+		p, err := db.NewDedicated(ctx, dbCreds, cfg.PGAnalyticsDBName, "oeecloud-worker-"+job, logger)
+		if err != nil {
+			logger.Warn("dedicated pool unavailable — the job uses the shared pool",
+				slog.String("job", job), slog.String("err", err.Error()))
+			return bgDests
+		}
+		go func() { <-ctx.Done(); p.Close() }()
+		out := make([]flows.Dest, len(bgDests))
+		copy(out, bgDests)
+		for i := range out {
+			if out[i].Pool == analyticsPool {
+				out[i].Pool = p
+			}
+		}
+		return out
+	}
+
 	// Topic → equipment resolver. 5 min TTL on positive hits (packml_register
 	// changes rarely — CS Admin re-onboards). 30 s negative TTL so unknown
 	// topics don't hammer the DB on noisy publishers.
@@ -399,9 +426,10 @@ func main() {
 
 	// ADR-0014 P3b — runtime-rollup (grain cascade: week+month).
 	if cfg.RuntimeRollupEnabled {
-		go rollup.LoopGrains(ctx, bgDests,
+		go rollup.LoopGrains(ctx, dedicatedDests("rollup"),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
+			time.Duration(cfg.RollupShiftBudgetSeconds)*time.Second,
 			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
 			countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Minute, logger, jobObs)
@@ -411,9 +439,10 @@ func main() {
 	// work before it's safe to run against F2/F3. Passes countersAvail so its OEE
 	// finalize matches the live path (previously it ran NO finalize → identity break).
 	if cfg.RuntimeRollupEnabled && cfg.RollupBackfillEnabled {
-		go rollup.LoopHourBackfill(ctx, bgDests,
+		go rollup.LoopHourBackfill(ctx, dedicatedDests("hour-backfill"),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
-			cfg.RollupBackfillLimit, countersAvail, cfg.ChangeoverAvailabilityEnabled,
+			cfg.RollupBackfillLimit, time.Duration(cfg.RollupBackfillBudgetSeconds)*time.Second,
+			countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
 	}
 
@@ -444,7 +473,7 @@ func main() {
 
 	// ADR-0014 P3c — UNS provisioner + equipment week/month refreshers.
 	if cfg.UnsRefreshEnabled {
-		go uns.Loop(ctx, bgDests,
+		go uns.Loop(ctx, dedicatedDests("uns"),
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			time.Duration(cfg.UnsIntervalMinutes)*time.Minute, logger, jobObs)
 	}
@@ -472,7 +501,7 @@ func main() {
 	// ADR-0014 P3a — events deriver for the shadow flows. Deployed
 	// DISABLED; enabled at the Jul-9 close-out (one bake at a time).
 	if cfg.EventsDeriverEnabled {
-		go events.Loop(ctx, bgDests, config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
+		go events.Loop(ctx, dedicatedDests("events-deriver"), config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.EventsWiderowStateEnterprises),
 			time.Duration(cfg.EventsDeriverIntervalMin)*time.Minute, logger, jobObs)
 	}

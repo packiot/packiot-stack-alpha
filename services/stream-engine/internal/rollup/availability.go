@@ -50,6 +50,8 @@ package rollup
 import (
 	"strconv"
 	"strings"
+
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
 )
 
 // CountersAvail configures the counters-only Availability fallback (see
@@ -150,6 +152,10 @@ func pgIntArrayLiteral(ids []int) string {
 // statement slices without repeating an anonymous struct type.
 type rollupStep struct {
 	name, sql string
+	// pass, when set, is how the ENGINE runs the step (session snapshot table +
+	// COPY, cagg_split.go); sql is then the equivalent self-contained text that
+	// psql scripts and the parity accessors run.
+	pass *caggsplit.Pass
 }
 
 // hourCountsAvailSQL — the hour-grain fallback. %[1]s = EvSchema, %[2]s =
@@ -415,14 +421,14 @@ const hourOeeReconcileSQL = `
 // HourStatementsForParity / ShiftStatementsForParity (those are diffed against
 // the prod engine, which has no counters-only fallback). The golden test drives
 // these directly against a hand-built state-less fixture.
-func HourCountsAvailSQLForParity() string  { return hourCountsAvailSQL }
-func ShiftCountsAvailSQLForParity() string { return shiftCountsAvailSQL }
+func HourCountsAvailSQLForParity() string  { return hourCountsAvailSplitSQL }
+func ShiftCountsAvailSQLForParity() string { return shiftCountsAvailSplitSQL }
 
 // ADR-0048 accessors (used by the reconcile/floor golden tests + port-parity).
 func ShiftOeeReconcileSQLForParity() string { return shiftOeeReconcileSQL }
 func HourOeeReconcileSQLForParity() string  { return hourOeeReconcileSQL }
-func ShiftAvailFloorSQLForParity() string   { return shiftAvailFloorSQL }
-func HourAvailFloorSQLForParity() string    { return hourAvailFloorSQL }
+func ShiftAvailFloorSQLForParity() string   { return shiftAvailFloorSplitSQL }
+func HourAvailFloorSQLForParity() string    { return hourAvailFloorSplitSQL }
 
 // ── ADR-0037 finding (c) (medallion R3c): changeover vs Availability ─────────
 //
