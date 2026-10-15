@@ -138,7 +138,9 @@ services:
       PGPORT: "5432"
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB}
+      # `postgres`, not ${POSTGRES_DB}: this init only creates the cluster-level superset role + database, and on
+      # staging POSTGRES_DB still names the F1 `packiot` database dropped on 2026-10-15 (exit 2 on the next deploy).
+      PGDATABASE: postgres
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
