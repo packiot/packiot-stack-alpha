@@ -183,7 +183,10 @@ BEGIN
   FOR r IN SELECT DISTINCT dc.oid AS v FROM pg_depend d JOIN pg_rewrite rw ON rw.oid = d.objid JOIN pg_class dc ON dc.oid = rw.ev_class
             WHERE d.classid = 'pg_rewrite'::regclass AND d.refobjid = p_rel AND dc.oid <> p_rel AND dc.relkind = 'v'
               AND dc.relnamespace::regnamespace::text NOT LIKE '\_timescaledb%' LOOP
-    views := views || r.v::regclass::text;
+    -- schema-qualified ALWAYS (2026-10-15): regclass::text drops the schema when it is on the search_path,
+    -- and an unqualified CREATE OR REPLACE VIEW then CREATES a new view in the first search_path schema
+    -- (staging: gold) instead of replacing the original — 4 views stayed on the old table for ~11 minutes.
+    views := views || (SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = r.v);
     vdefs := vdefs || pg_get_viewdef(r.v, true);
     vopts := vopts || coalesce((SELECT ' WITH (' || array_to_string(reloptions, ', ') || ')' FROM pg_class WHERE oid = r.v AND reloptions IS NOT NULL), '');
   END LOOP;
@@ -248,6 +251,12 @@ BEGIN
     EXECUTE format('CREATE OR REPLACE VIEW %s%s AS %s', views[i], vopts[i], vdefs[i]);
   END LOOP;
 
+  -- nothing may still read the old table (catches any variant of the view bug above)
+  IF EXISTS (SELECT 1 FROM pg_depend d JOIN pg_rewrite rw ON rw.oid = d.objid
+              WHERE d.refobjid = format('%I.%I', sch, old)::regclass AND rw.ev_class <> format('%I.%I', sch, old)::regclass
+                AND (SELECT relnamespace::regnamespace::text FROM pg_class WHERE oid = rw.ev_class) NOT LIKE '\_timescaledb%') THEN
+    RAISE EXCEPTION 'pc_swap %: views still read the old table % after the re-issue — aborted', s.rel, old;
+  END IF;
   EXECUTE format('DROP TABLE %s', s.capture);
   EXECUTE format('DROP FUNCTION IF EXISTS %I.%I()', sch, 'pc_capture_' || nm);
   -- retention is no longer a TimescaleDB policy: partition_maintain drops whole partitions, and
