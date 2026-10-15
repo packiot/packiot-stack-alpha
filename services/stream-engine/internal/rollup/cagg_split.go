@@ -20,7 +20,15 @@
 // path and every parity/golden accessor uses the *Split* forms below.
 package rollup
 
-import "github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
+import (
+	"context"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
+)
 
 // lineLeadTail joins the three CTEs the line-lead UPDATE reads into one row per
 // (line_id, ts_value). lines_p has exactly one row per hour_elig/shift_elig row
@@ -41,18 +49,87 @@ const countsAvailTail = `SELECT b.*, a.raw_running
 	  LEFT JOIN active a ON a.id_equipment = b.id_equipment AND a.ts_value = b.ts_value`
 
 var (
-	hourValuesSplitSQL   = caggsplit.Spec{Temp: "hour_vals_snap", Tail: "SELECT * FROM sums", Feeds: []string{"sums"}}.MustSplit(hourValuesSQL)
-	hourEventsSplitSQL   = caggsplit.Spec{Temp: "hour_ev_snap", Tail: "SELECT * FROM ev", Feeds: []string{"ev"}}.MustSplit(hourEventsSQL)
-	hourLineLeadSplitSQL = caggsplit.Spec{Temp: "hour_ll_snap", Tail: lineLeadTail,
-		Feeds: []string{"lines_p", "reconciled", "active"}}.MustSplit(hourLineLeadSQL)
-	hourCountsAvailSplitSQL = caggsplit.Spec{Temp: "hour_ca_snap", Tail: countsAvailTail,
-		Feeds: []string{"bounds", "active"}}.MustSplit(hourCountsAvailSQL)
-	hourAvailFloorSplitSQL = caggsplit.Spec{Temp: "hour_af_snap", Tail: "SELECT * FROM active", Feeds: []string{"active"}}.MustSplit(hourAvailFloorSQL)
+	hourValuesPass   = caggsplit.Spec{Temp: "hour_vals_snap", Tail: "SELECT * FROM sums", Feeds: []string{"sums"}}.MustPass(hourValuesSQL)
+	hourEventsPass   = caggsplit.Spec{Temp: "hour_ev_snap", Tail: "SELECT * FROM ev", Feeds: []string{"ev"}}.MustPass(hourEventsSQL)
+	hourLineLeadPass = caggsplit.Spec{Temp: "hour_ll_snap", Tail: lineLeadTail,
+		Feeds: []string{"lines_p", "reconciled", "active"}}.MustPass(hourLineLeadSQL)
+	hourCountsAvailPass = caggsplit.Spec{Temp: "hour_ca_snap", Tail: countsAvailTail,
+		Feeds: []string{"bounds", "active"}}.MustPass(hourCountsAvailSQL)
+	hourAvailFloorPass = caggsplit.Spec{Temp: "hour_af_snap", Tail: "SELECT * FROM active", Feeds: []string{"active"}}.MustPass(hourAvailFloorSQL)
 
-	shiftValuesSplitSQL   = caggsplit.Spec{Temp: "shift_vals_snap", Tail: "SELECT * FROM sums", Feeds: []string{"sums"}}.MustSplit(shiftValuesSQL)
-	shiftLineLeadSplitSQL = caggsplit.Spec{Temp: "shift_ll_snap", Tail: lineLeadTail,
-		Feeds: []string{"lines_p", "reconciled", "active"}}.MustSplit(shiftLineLeadSQL)
-	shiftCountsAvailSplitSQL = caggsplit.Spec{Temp: "shift_ca_snap", Tail: countsAvailTail,
-		Feeds: []string{"bounds", "active"}}.MustSplit(shiftCountsAvailSQL)
-	shiftAvailFloorSplitSQL = caggsplit.Spec{Temp: "shift_af_snap", Tail: "SELECT * FROM active", Feeds: []string{"active"}}.MustSplit(shiftAvailFloorSQL)
+	shiftValuesPass   = caggsplit.Spec{Temp: "shift_vals_snap", Tail: "SELECT * FROM sums", Feeds: []string{"sums"}}.MustPass(shiftValuesSQL)
+	shiftLineLeadPass = caggsplit.Spec{Temp: "shift_ll_snap", Tail: lineLeadTail,
+		Feeds: []string{"lines_p", "reconciled", "active"}}.MustPass(shiftLineLeadSQL)
+	shiftCountsAvailPass = caggsplit.Spec{Temp: "shift_ca_snap", Tail: countsAvailTail,
+		Feeds: []string{"bounds", "active"}}.MustPass(shiftCountsAvailSQL)
+	shiftAvailFloorPass = caggsplit.Spec{Temp: "shift_af_snap", Tail: "SELECT * FROM active", Feeds: []string{"active"}}.MustPass(shiftAvailFloorSQL)
+
+	// The #1775 hour speed split and the shift events bank were already
+	// CREATE TEMP TABLE … AS forms; as Passes they get the session-table engine
+	// form too (ADR-0063 A3).
+	hourSpeedPass   = mustParseCTASPass(hourSpeedSQL, "hour_sp")
+	shiftEventsPass = caggsplit.MustCTASPass(shiftEventsSQL, "shift_ev")
+
+	// The self-contained text forms (psql scripts, parity/golden accessors).
+	hourValuesSplitSQL       = hourValuesPass.SQL()
+	hourEventsSplitSQL       = hourEventsPass.SQL()
+	hourLineLeadSplitSQL     = hourLineLeadPass.SQL()
+	hourCountsAvailSplitSQL  = hourCountsAvailPass.SQL()
+	hourAvailFloorSplitSQL   = hourAvailFloorPass.SQL()
+	shiftValuesSplitSQL      = shiftValuesPass.SQL()
+	shiftLineLeadSplitSQL    = shiftLineLeadPass.SQL()
+	shiftCountsAvailSplitSQL = shiftCountsAvailPass.SQL()
+	shiftAvailFloorSplitSQL  = shiftAvailFloorPass.SQL()
 )
+
+// mustParseCTASPass reads a hand-written `DROP …; CREATE TEMP TABLE <t> ON COMMIT
+// DROP AS <read>; <apply>` string (hourSpeedSQL) into a Pass, and checks that the
+// Pass renders back to exactly that string.
+func mustParseCTASPass(sql, table string) caggsplit.Pass {
+	drop := "\n\tDROP TABLE IF EXISTS pg_temp." + table + ";"
+	create := "\n\tCREATE TEMP TABLE " + table + " ON COMMIT DROP AS\n\t"
+	if !strings.HasPrefix(sql, drop+create) {
+		panic("mustParseCTASPass " + table + ": unexpected prefix")
+	}
+	rest := strings.TrimPrefix(sql, drop+create)
+	i := strings.LastIndex(rest, ";\n\t")
+	if i < 0 {
+		panic("mustParseCTASPass " + table + ": no apply")
+	}
+	p := caggsplit.Pass{Table: table, Read: rest[:i], Apply: rest[i+len(";\n\t"):]}
+	if p.SQL() != sql {
+		panic("mustParseCTASPass " + table + ": does not round-trip")
+	}
+	return p
+}
+
+// rd returns a mapper that formats a template for d (fmtRD) with extras, for Pass.Map.
+func rd(d flows.Dest, extra ...any) func(string) string {
+	return func(s string) string { return fmtRD(s, d, extra...) }
+}
+
+// passStep is a rollup step backed by a Pass: the engine runs p.Run (session
+// snapshot table + COPY), psql scripts and parity run sql (= p.SQL()).
+func passStep(name string, p caggsplit.Pass) rollupStep {
+	return rollupStep{name: name, sql: p.SQL(), pass: &p}
+}
+
+// execStep runs one step on tx in the engine form.
+func execStep(ctx context.Context, tx pgx.Tx, s rollupStep) error {
+	if s.pass != nil {
+		_, err := s.pass.Run(ctx, tx)
+		return err
+	}
+	_, err := tx.Exec(ctx, s.sql)
+	return err
+}
+
+// fillElig (re)fills a session eligible table from its CREATE TEMP TABLE … AS
+// template and returns the row count (ADR-0063 A3; see caggsplit.Pass).
+func fillElig(ctx context.Context, tx pgx.Tx, table, ctas string, args ...any) (int64, error) {
+	sel, err := caggsplit.CTASSelect(ctas, table)
+	if err != nil {
+		return 0, err
+	}
+	return caggsplit.Fill(ctx, tx, table, sel, args...)
+}

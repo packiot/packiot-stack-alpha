@@ -359,12 +359,11 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	} else if !got {
 		return 0, tx.Commit(ctx)
 	}
-	tag, err := tx.Exec(ctx, fmtRD(shiftEligibleSQL, d, limit),
+	n, err := fillElig(ctx, tx, "shift_elig", fmtRD(shiftEligibleSQL, d, limit),
 		exclAreas, exclEnterprises, machineLevelEnterprises)
 	if err != nil {
 		return 0, fmt.Errorf("shift eligible: %w", err)
 	}
-	n := tag.RowsAffected()
 	if shiftBatchHook != nil {
 		if err := shiftBatchHook(ctx, tx, n); err != nil {
 			return 0, fmt.Errorf("shift batch hook: %w", err)
@@ -373,14 +372,14 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	// Drive the value/event passes from this bounded batch via index seeks rather
 	// than seq-scanning the big ca_agg/events tables (same rationale as
 	// backfill.go: an un-analyzed temp table gives the planner no row estimate).
-	if _, err := tx.Exec(ctx, `CREATE INDEX ON shift_elig (id_equipment, ts_value)`); err != nil {
+	if _, err := tx.Exec(ctx, `CREATE INDEX IF NOT EXISTS shift_elig_key ON shift_elig (id_equipment, ts_value)`); err != nil {
 		return 0, fmt.Errorf("shift elig index: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `ANALYZE shift_elig`); err != nil {
 		return 0, fmt.Errorf("shift elig analyze: %w", err)
 	}
 	for _, s := range shiftSteps(d, ca, changeoverAvailability) {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
+		if err := execStep(ctx, tx, s); err != nil {
 			return 0, fmt.Errorf("shift %s: %w", s.name, err)
 		}
 	}
@@ -404,49 +403,48 @@ var shiftBatchHook func(ctx context.Context, tx pgx.Tx, n int64) error
 // Shared with the history-recompute renderer (history.go).
 func shiftSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
 	steps := []rollupStep{
-		{"values", fmtRD(shiftValuesSplitSQL, d)},
-		{"cascade-area", fmtRD(shiftCascadeAreaSQL, d)},
-		{"events-bank", fmtRD(shiftEventsSQL, d, plannedDowntimeExpr(changeoverAvailability))},
-		{"events-update", fmtRD(shiftEventsUpdateSQL, d)},
+		passStep("values", shiftValuesPass.Map(rd(d))),
+		{name: "cascade-area", sql: fmtRD(shiftCascadeAreaSQL, d)},
+		passStep("events-bank", shiftEventsPass.Map(rd(d, plannedDowntimeExpr(changeoverAvailability)))),
+		{name: "events-update", sql: fmtRD(shiftEventsUpdateSQL, d)},
 	}
 	// Counters-only Availability fallback — flag + opt-in gated, positioned
 	// after events-update (shift_ev exists → the NOT-EXISTS state-less anti-
 	// join resolves) and before oee-p. Inert (not appended) when not engaged.
 	if ca.engaged() {
-		steps = append(steps, rollupStep{"counters-avail",
-			fmtRD(shiftCountsAvailSplitSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+		steps = append(steps, passStep("counters-avail", shiftCountsAvailPass.Map(rd(d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec))))
 	}
 	// Line-from-lead derivation — flag + enterprise gated, same region as the
 	// counters-avail fallback (before oee-p; shift back-solves oee_p inline).
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
-		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(withPlannedPred(shiftLineLeadSplitSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
+		steps = append(steps, passStep("line-lead", shiftLineLeadPass.Map(func(s string) string {
+			return fmtRD(withPlannedPred(s, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)
+		})))
 	}
 	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
 	// count-active time for opted-in equipment where the state stream had gaps.
 	// After every state/counter running writer, before the oee finalize so the
 	// reconcile/oee-p reads the healed running. Inert when not engaged.
 	if ca.engagedFloor() {
-		steps = append(steps, rollupStep{"avail-floor",
-			fmtRD(shiftAvailFloorSplitSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+		steps = append(steps, passStep("avail-floor", shiftAvailFloorPass.Map(rd(d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec))))
 	}
 	// Availability exclusions (out of service + PLC no data) — after EVERY
 	// available_time writer, before the finalize. Inert when off.
 	if ca.engagedExclusions() {
-		steps = append(steps, rollupStep{"exclusions", fmtRD(shiftExclusionsSQL, d, d.ConfigSchema)})
+		steps = append(steps, rollupStep{name: "exclusions", sql: fmtRD(shiftExclusionsSQL, d, d.ConfigSchema)})
 	}
 	// ADR-0048 §Fault-3: canonical A·P·Q reconcile (whole batch) REPLACES the
 	// legacy event-row-scoped oee-p residual when engaged; otherwise the legacy
 	// residual runs (byte-identical). Either way targets + stamp follow.
 	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmtRD(shiftOeeReconcileSQL, d)})
+		steps = append(steps, rollupStep{name: "oee-reconcile", sql: fmtRD(shiftOeeReconcileSQL, d)})
 	} else {
-		steps = append(steps, rollupStep{"oee-p", fmtRD(shiftOeePSQL, d)})
+		steps = append(steps, rollupStep{name: "oee-p", sql: fmtRD(shiftOeePSQL, d)})
 	}
 	steps = append(steps,
-		rollupStep{"targets", fmtRD(withOosTarget(shiftTargetsSQL, ca.engagedExclusions(), shiftOosTargetTerm), d, d.ConfigSchema)},
-		rollupStep{"stamp", fmtRD(shiftStampSQL, d)},
+		rollupStep{name: "targets", sql: fmtRD(withOosTarget(shiftTargetsSQL, ca.engagedExclusions(), shiftOosTargetTerm), d, d.ConfigSchema)},
+		rollupStep{name: "stamp", sql: fmtRD(shiftStampSQL, d)},
 	)
 	return steps
 }

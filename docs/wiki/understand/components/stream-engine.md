@@ -237,6 +237,17 @@ The statement-by-statement walkthrough is in
   0.68 s), and from the 2026-10-14 21:47 deploy every runtime-rollup tick timed out. The golden tests
   (`TestGoldenCaggSplit*`, `TestGoldenUnsRefreshSplit`, `TestGoldenDeriverSplit`) compare old and new
   row for row and check every read's plan.
+- **Temp tables live for the session, not the transaction** (ADR-0063 A3). The eligible sets
+  (`hour_elig`, `shift_elig`, `day_elig`) and every cagg snapshot are `CREATE TEMP TABLE IF NOT EXISTS
+  … ON COMMIT DELETE ROWS` tables, filled each tick by `INSERT … SELECT` (eligible sets) or
+  `COPY (read) TO STDOUT` → `COPY … FROM STDIN` in binary (snapshots: COPY's query is planned as a
+  `SELECT`, so the watermark stays constant). The runtime-rollup, hour-backfill, events-deriver and
+  uns jobs each run on their own 2-connection pool with 30-day connection lifetime
+  (`db.NewDedicated`). Why: PG15 `pg_stat_statements` jumbles DML by relation OID, so a per-transaction
+  temp table gave every statement reading it a new queryid every tick. On 2026-10-14, 6,245 of the
+  ~9,500 entries were such one-call statements, the view was full (10,000) and had deallocated 2,782
+  times. `TestGoldenEngineFormKeepsQueryID` checks the queryid stays the same across transactions;
+  `TestSQLTextRatchet` fails on a new per-transaction temp table or a timestamp formatted into SQL text.
 - Flag-gated passes: counters-only availability (listed machines), **line-lead** (listed
   enterprises and lines), availability floor, **availability exclusions**, canonical A·P·Q
   reconcile.

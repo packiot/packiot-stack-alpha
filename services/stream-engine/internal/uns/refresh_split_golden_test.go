@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 )
 
 func TestGoldenUnsRefreshSplit(t *testing.T) {
@@ -120,6 +121,28 @@ func TestGoldenUnsRefreshSplit(t *testing.T) {
 		t.Errorf("split differs from inline:\n got  %v\n want %v", got, want)
 	}
 	t.Logf("%d rows; e.g. %s", len(got), got[0])
+
+	// the ENGINE form (ADR-0063 A3): the pass RefreshEquipment runs — session
+	// snapshot table + binary COPY, arrays inlined — writes the same rows.
+	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT a"); err != nil {
+		t.Fatal(err)
+	}
+	d := flows.Dest{EvSchema: s, RefSchema: s, GrainSchema: s}
+	p, err := refreshEquipmentPassFor(d, g.grain, g.unsTable, g.span, []int{99}, []int{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run := 1; run <= 2; run++ {
+		if _, err := p.Run(ctx, tx); err != nil {
+			t.Fatalf("engine form run %d: %v", run, err)
+		}
+	}
+	if engine := dump(tx); !sameRows(engine, want) {
+		t.Errorf("engine form differs from inline:\n got  %v\n want %v", engine, want)
+	}
+	if strings.Contains(p.Read, "$") || strings.Contains(p.Apply, "$") {
+		t.Errorf("engine form still carries bind parameters (COPY takes none)")
+	}
 
 	// plans: the original trips the watermark trap, the split read does not, the
 	// apply reads no cagg.

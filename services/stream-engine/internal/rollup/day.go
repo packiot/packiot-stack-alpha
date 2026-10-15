@@ -205,11 +205,11 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 	} else if !got {
 		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(dayEligibleSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
+	if _, err := fillElig(ctx, tx, "day_elig", fmt.Sprintf(dayEligibleSQL, d.GoldSchema, d.RefSchema), exclAreas, exclEnterprises); err != nil {
 		return fmt.Errorf("day eligible: %w", err)
 	}
 	for _, s := range daySteps(d, ca) {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
+		if err := execStep(ctx, tx, s); err != nil {
 			return fmt.Errorf("day %s: %w", s.name, err)
 		}
 	}
@@ -223,19 +223,19 @@ func RunDay(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int,
 // Shared with the history-recompute renderer (history.go).
 func daySteps(d flows.Dest, ca CountersAvail) []rollupStep {
 	steps := []rollupStep{
-		{"rollup", fmt.Sprintf(dayRollupSQL, d.GoldSchema)},
+		{name: "rollup", sql: fmt.Sprintf(dayRollupSQL, d.GoldSchema)},
 	}
 	// ADR-0048 §Fault-3 canonical A·P·Q reconcile — overwrites the four oee
 	// columns factors-first (oee = a·p·q) so the identity holds by construction,
 	// exactly as hour/shift/week/month do. Inert (legacy back-solve in dayRollupSQL
 	// stands) when not engaged. Runs right after rollup, before the cascades.
 	if ca.engagedCanonical() {
-		steps = append(steps, rollupStep{"oee-reconcile", fmt.Sprintf(dayOeeReconcileSQL, d.GoldSchema)})
+		steps = append(steps, rollupStep{name: "oee-reconcile", sql: fmt.Sprintf(dayOeeReconcileSQL, d.GoldSchema)})
 	}
 	steps = append(steps,
-		rollupStep{"cascade-month", fmt.Sprintf(dayCascadeMonthSQL, d.GoldSchema)},
-		rollupStep{"cascade-week", fmt.Sprintf(dayCascadeWeekSQL, d.GoldSchema)},
-		rollupStep{"stamp", fmt.Sprintf(dayStampSQL, d.GoldSchema)},
+		rollupStep{name: "cascade-month", sql: fmt.Sprintf(dayCascadeMonthSQL, d.GoldSchema)},
+		rollupStep{name: "cascade-week", sql: fmt.Sprintf(dayCascadeWeekSQL, d.GoldSchema)},
+		rollupStep{name: "stamp", sql: fmt.Sprintf(dayStampSQL, d.GoldSchema)},
 	)
 	return steps
 }

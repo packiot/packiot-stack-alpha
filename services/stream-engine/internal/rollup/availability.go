@@ -50,6 +50,8 @@ package rollup
 import (
 	"strconv"
 	"strings"
+
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
 )
 
 // CountersAvail configures the counters-only Availability fallback (see
@@ -150,6 +152,10 @@ func pgIntArrayLiteral(ids []int) string {
 // statement slices without repeating an anonymous struct type.
 type rollupStep struct {
 	name, sql string
+	// pass, when set, is how the ENGINE runs the step (session snapshot table +
+	// COPY, cagg_split.go); sql is then the equivalent self-contained text that
+	// psql scripts and the parity accessors run.
+	pass *caggsplit.Pass
 }
 
 // hourCountsAvailSQL — the hour-grain fallback. %[1]s = EvSchema, %[2]s =

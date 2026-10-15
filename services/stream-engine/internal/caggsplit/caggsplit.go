@@ -64,37 +64,57 @@ var dmlStart = regexp.MustCompile(`(?m)^[ \t]*(UPDATE|INSERT|DELETE)\b`)
 
 var ident = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
-// Split returns the read+apply text for stmt (see the package comment).
-func (s Spec) Split(stmt string) (string, error) {
+// Pass returns the split as its three parts (see exec.go for how the engine runs
+// them; SQL renders the single-string form).
+func (s Spec) Pass(stmt string) (Pass, error) {
 	if !ident.MatchString(s.Temp) {
-		return "", fmt.Errorf("caggsplit: temp table %q is not a plain identifier", s.Temp)
+		return Pass{}, fmt.Errorf("caggsplit: temp table %q is not a plain identifier", s.Temp)
 	}
 	if len(s.Feeds) == 0 || strings.TrimSpace(s.Tail) == "" {
-		return "", fmt.Errorf("caggsplit %s: Tail and Feeds are required", s.Temp)
+		return Pass{}, fmt.Errorf("caggsplit %s: Tail and Feeds are required", s.Temp)
 	}
 	locs := dmlStart.FindAllStringIndex(stmt, -1)
 	if len(locs) != 1 {
-		return "", fmt.Errorf("caggsplit %s: want exactly one line starting with UPDATE/INSERT/DELETE, found %d", s.Temp, len(locs))
+		return Pass{}, fmt.Errorf("caggsplit %s: want exactly one line starting with UPDATE/INSERT/DELETE, found %d", s.Temp, len(locs))
 	}
 	head := strings.TrimSpace(stmt[:locs[0][0]])
 	dml := strings.TrimLeft(stmt[locs[0][0]:], " \t")
 	if !strings.HasPrefix(head, "WITH ") {
-		return "", fmt.Errorf("caggsplit %s: statement does not start with a WITH clause", s.Temp)
+		return Pass{}, fmt.Errorf("caggsplit %s: statement does not start with a WITH clause", s.Temp)
 	}
 	feeds := make([]string, len(s.Feeds))
 	for i, f := range s.Feeds {
 		if !ident.MatchString(f) {
-			return "", fmt.Errorf("caggsplit %s: feed %q is not a plain identifier", s.Temp, f)
+			return Pass{}, fmt.Errorf("caggsplit %s: feed %q is not a plain identifier", s.Temp, f)
 		}
 		if !regexp.MustCompile(`\b` + f + `\s+AS\s+(MATERIALIZED\s+)?\(`).MatchString(head) {
-			return "", fmt.Errorf("caggsplit %s: feed %q is not a CTE of the statement", s.Temp, f)
+			return Pass{}, fmt.Errorf("caggsplit %s: feed %q is not a CTE of the statement", s.Temp, f)
 		}
 		feeds[i] = f + " AS (SELECT * FROM " + s.Temp + ")"
 	}
-	return "\n\tDROP TABLE IF EXISTS pg_temp." + s.Temp + ";" +
-		"\n\tCREATE TEMP TABLE " + s.Temp + " ON COMMIT DROP AS\n\t" + head +
-		"\n\t" + strings.TrimSpace(s.Tail) + ";" +
-		"\n\tWITH " + strings.Join(feeds, ", ") + "\n\t" + dml, nil
+	return Pass{
+		Table: s.Temp,
+		Read:  head + "\n\t" + strings.TrimSpace(s.Tail),
+		Apply: "WITH " + strings.Join(feeds, ", ") + "\n\t" + dml,
+	}, nil
+}
+
+// MustPass is Pass for package-level statement templates.
+func (s Spec) MustPass(stmt string) Pass {
+	p, err := s.Pass(stmt)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+// Split returns the read+apply text for stmt (see the package comment).
+func (s Spec) Split(stmt string) (string, error) {
+	p, err := s.Pass(stmt)
+	if err != nil {
+		return "", err
+	}
+	return p.SQL(), nil
 }
 
 // MustSplit is Split for package-level statement templates: a shape mismatch is a

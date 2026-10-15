@@ -39,6 +39,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 
@@ -120,29 +122,60 @@ DELETE FROM %[3]s.equipment_events ev
 // transitions CTE reads the REAL-TIME ca_discrete_changes_1s cagg, whose
 // watermark TimescaleDB constifies only in a SELECT; inside the DELETE/INSERT it
 // priced the raw tail of every chunk (staging 2026-10-14: 4.0 s mean, 48 s max,
-// 5,033 s of DB time). Each Exec runs its read and apply as one implicit
-// transaction (one simple-protocol query), exactly as the single statement ran;
-// the command tag pgx returns is the last statement's, so RowsAffected still
-// counts the deleted / upserted events.
+// 5,033 s of DB time). The engine runs each as a caggsplit.Pass (session
+// snapshot table, binary COPY — ADR-0063 A3) in its own transaction, as the single
+// statement ran; RowsAffected is the apply's, so it still counts the deleted /
+// upserted events. The *SplitSQL texts are the self-contained equivalents.
 var (
-	correctSplitSQL = caggsplit.Spec{Temp: "der_trans_snap", Tail: "SELECT * FROM trans", Feeds: []string{"trans"}}.MustSplit(correctSQL)
-	upsertSplitSQL  = caggsplit.Spec{Temp: "der_final_snap", Tail: "SELECT * FROM final", Feeds: []string{"final"}}.MustSplit(upsertSQL)
+	correctPass     = caggsplit.Spec{Temp: "der_trans_snap", Tail: "SELECT * FROM trans", Feeds: []string{"trans"}}.MustPass(correctSQL)
+	upsertPass      = caggsplit.Spec{Temp: "der_final_snap", Tail: "SELECT * FROM final", Feeds: []string{"final"}}.MustPass(upsertSQL)
+	correctSplitSQL = correctPass.SQL()
+	upsertSplitSQL  = upsertPass.SQL()
 )
+
+// deriverPassFor renders p for d with the scope arrays inlined (COPY takes no
+// bind parameters).
+func deriverPassFor(d Dest, p caggsplit.Pass, exclAreas, exclEnterprises, widerowEnterprises []int) (caggsplit.Pass, error) {
+	var inlineErr error
+	p = p.Map(func(s string) string {
+		out, err := caggsplit.InlineIntArrays(fmt.Sprintf(s, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
+		if err != nil {
+			inlineErr = err
+		}
+		return out
+	})
+	return p, inlineErr
+}
+
+// runDeriverPass runs one rendered deriver pass in its own transaction.
+func runDeriverPass(ctx context.Context, d Dest, p caggsplit.Pass, exclAreas, exclEnterprises, widerowEnterprises []int) (int64, error) {
+	p, err := deriverPassFor(d, p, exclAreas, exclEnterprises, widerowEnterprises)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	err = pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		tag, err := p.Run(ctx, tx)
+		n = tag.RowsAffected()
+		return err
+	})
+	return n, err
+}
 
 // RunOnce derives events for one destination: correct, then upsert.
 // widerowEnterprises ($3) opts extra enterprises' machines (tp=1) into the
 // derivation for the wide-row-state tenants that carry no StateCurrent leaf
 // topic — see the transitionsCTE scope note. Empty = native status_type=4 only.
 func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises, widerowEnterprises []int) (deleted, upserted int64, err error) {
-	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSplitSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
+	del, err := runDeriverPass(ctx, d, correctPass, exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return 0, 0, fmt.Errorf("correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSplitSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
+	ups, err := runDeriverPass(ctx, d, upsertPass, exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
-		return del.RowsAffected(), 0, fmt.Errorf("upsert pass: %w", err)
+		return del, 0, fmt.Errorf("upsert pass: %w", err)
 	}
-	return del.RowsAffected(), ups.RowsAffected(), nil
+	return del, ups, nil
 }
 
 // Loop runs the deriver on a fixed cadence for every destination
