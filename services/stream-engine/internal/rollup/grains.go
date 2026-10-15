@@ -275,8 +275,17 @@ func GrainOeeReconcileSQLForParity(evSchema, table string) string {
 
 // LoopGrains schedules runtime-rollup (the cascade tier; steps grow
 // as hour/day/shift are ported).
-func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, dqEnabled, clampEnabled bool, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
-	logger.Info("runtime-rollup started (P3b cascade: week+month; more grains as ported)")
+//
+// shiftBudget bounds the shift pass alone (see batch.go): an over-budget shift
+// batch rolls back by itself, the passes after it still run in the same tick,
+// and the next tick's batch is halved. 0 → defaultShiftBudget.
+func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises, machineLevelEnterprises []int, shiftLimit int, shiftBudget time.Duration, dqEnabled, clampEnabled bool, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	if shiftBudget <= 0 {
+		shiftBudget = defaultShiftBudget
+	}
+	shiftBatch := newBatchSizer("runtime-rollup-shift", shiftLimit)
+	logger.Info("runtime-rollup started (P3b cascade: week+month; more grains as ported)",
+		slog.Int("shift_limit", shiftLimit), slog.Duration("shift_budget", shiftBudget))
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
@@ -294,12 +303,20 @@ func LoopGrains(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterpri
 					firstErr = err
 				}
 			}
-			if n, err := RunShift(ctx, d, exclAreas, exclEnterprises, machineLevelEnterprises, shiftLimit, ca, changeoverAvailability); err != nil {
+			limit, n, over, err := runAdaptive(ctx, shiftBatch, d.Name, shiftBudget, logger, func(c context.Context, limit int) (int64, error) {
+				return RunShift(c, d, exclAreas, exclEnterprises, machineLevelEnterprises, limit, ca, changeoverAvailability)
+			})
+			if over {
+				// Rolled back ALONE (batch.go): the passes below still run in this
+				// tick, and the next tick's batch is half this one.
+				logger.Warn("runtime-rollup-shift over budget (rolled back; next batch halved)", slog.String("dest", d.Name),
+					slog.Int("batch", limit), slog.Duration("budget", shiftBudget))
+			} else if err != nil {
 				logger.Warn("runtime-rollup-shift failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {
 					firstErr = err
 				}
-			} else if n >= int64(shiftLimit) {
+			} else if n >= int64(limit) {
 				// Batch came back full → a backlog is still draining; surface it so
 				// the drain is observable (steady state logs nothing).
 				logger.Info("runtime-rollup-shift draining backlog", slog.String("dest", d.Name), slog.Int64("batch", n))

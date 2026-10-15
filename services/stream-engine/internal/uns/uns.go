@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
@@ -113,10 +114,19 @@ const refreshEquipmentSQL = `
 	  FROM prod p
 	 WHERE u.id_equipment = p.id_equipment`
 
+// refreshEquipmentSplitSQL is refreshEquipmentSQL as a read planned as a SELECT
+// plus the unchanged UPDATE (ADR-0063 A2, internal/caggsplit): the prod CTE reads
+// the REAL-TIME agg_equipment_values_1hour cagg, whose watermark TimescaleDB
+// constifies only in a SELECT — inside the UPDATE it priced the raw tail of every
+// equipment_values chunk (staging 2026-10-14: 6.6 s mean, 30 s max per call). One
+// Exec runs both statements as one implicit transaction (simple protocol), so the
+// ON COMMIT DROP temp table lives exactly as long as the UPDATE needs it.
+var refreshEquipmentSplitSQL = caggsplit.Spec{Temp: "uns_prod_snap", Tail: "SELECT * FROM prod", Feeds: []string{"prod"}}.MustSplit(refreshEquipmentSQL)
+
 // RefreshEquipment runs the CAgg-sourced grains for one destination.
 func RefreshEquipment(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises []int) error {
 	for _, g := range equipmentGrains {
-		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshEquipmentSQL,
+		if _, err := d.Pool.Exec(ctx, fmt.Sprintf(refreshEquipmentSplitSQL,
 			d.EvSchema, d.RefSchema, g.grain, g.unsTable, g.span, d.GrainSchema),
 			exclAreas, exclEnterprises); err != nil {
 			return fmt.Errorf("refresh %s: %w", g.grain, err)

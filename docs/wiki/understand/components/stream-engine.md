@@ -224,7 +224,19 @@ The statement-by-statement walkthrough is in
   takes 107 ms (`TestGoldenHourSpeedCaggReadIsPlannedAsSelect`).
 - **Day** sums hour rows by production day. **Week/month** sum day rows. **Area/site** sum lines.
 - **Shift** is computed from the hourly cagg and events, at most `ROLLUP_SHIFT_LIMIT` rows per tick,
-  ordered `computed_at NULLS FIRST, ts_value` (fair order, #1467).
+  ordered `computed_at NULLS FIRST, ts_value` (fair order, #1467). The shift pass has its own
+  deadline (`ROLLUP_SHIFT_BUDGET_SECONDS`, 120 s) inside the 300 s tick: an over-budget batch rolls
+  back alone, the passes after it still run, and the next batch is half the size; a full batch that
+  finishes in under a quarter of the budget doubles back to the limit (`rollup/batch.go`). The hour
+  backfill uses the same rule (`ROLLUP_BACKFILL_BUDGET_SECONDS`).
+- **Every pass that reads a real-time cagg inside DML is split** into `CREATE TEMP TABLE … AS`
+  (planned as a `SELECT`, so TimescaleDB constifies the watermark) and the unchanged DML reading
+  that table (`internal/caggsplit`, `rollup/cagg_split.go`): hour and shift values, events,
+  line-lead, counters-only availability, count floor, the uns month refresh and the native events
+  deriver. On staging the shift values `UPDATE` ran 250–296 s for 63 rows (its read as a `SELECT`:
+  0.68 s), and from the 2026-10-14 21:47 deploy every runtime-rollup tick timed out. The golden tests
+  (`TestGoldenCaggSplit*`, `TestGoldenUnsRefreshSplit`, `TestGoldenDeriverSplit`) compare old and new
+  row for row and check every read's plan.
 - Flag-gated passes: counters-only availability (listed machines), **line-lead** (listed
   enterprises and lines), availability floor, **availability exclusions**, canonical A·P·Q
   reconcile.

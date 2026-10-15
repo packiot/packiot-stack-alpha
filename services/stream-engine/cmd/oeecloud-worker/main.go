@@ -402,6 +402,7 @@ func main() {
 		go rollup.LoopGrains(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
 			config.CSVInts(cfg.RollupMachineLevelEnterprises), cfg.RollupShiftLimit,
+			time.Duration(cfg.RollupShiftBudgetSeconds)*time.Second,
 			cfg.DQAlarmsEnabled, cfg.SilverClampEnabled,
 			countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Minute, logger, jobObs)
@@ -413,7 +414,8 @@ func main() {
 	if cfg.RuntimeRollupEnabled && cfg.RollupBackfillEnabled {
 		go rollup.LoopHourBackfill(ctx, bgDests,
 			config.CSVInts(cfg.EventsExcludedAreas), config.CSVInts(cfg.EventsExcludedEnterprises),
-			cfg.RollupBackfillLimit, countersAvail, cfg.ChangeoverAvailabilityEnabled,
+			cfg.RollupBackfillLimit, time.Duration(cfg.RollupBackfillBudgetSeconds)*time.Second,
+			countersAvail, cfg.ChangeoverAvailabilityEnabled,
 			time.Duration(cfg.RollupBackfillIntervalSeconds)*time.Second, logger, jobObs)
 	}
 

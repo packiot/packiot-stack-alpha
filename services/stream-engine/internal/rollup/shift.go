@@ -38,6 +38,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
 )
 
@@ -363,6 +365,11 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 		return 0, fmt.Errorf("shift eligible: %w", err)
 	}
 	n := tag.RowsAffected()
+	if shiftBatchHook != nil {
+		if err := shiftBatchHook(ctx, tx, n); err != nil {
+			return 0, fmt.Errorf("shift batch hook: %w", err)
+		}
+	}
 	// Drive the value/event passes from this bounded batch via index seeks rather
 	// than seq-scanning the big ca_agg/events tables (same rationale as
 	// backfill.go: an un-analyzed temp table gives the planner no row estimate).
@@ -387,12 +394,17 @@ func RunShift(ctx context.Context, d flows.Dest, exclAreas, exclEnterprises, mac
 	return n, tx.Commit(ctx)
 }
 
+// shiftBatchHook, when set (tests only), runs right after shift_elig is built with
+// the batch size — the backlog golden test uses it to give each batch a cost
+// proportional to its size.
+var shiftBatchHook func(ctx context.Context, tx pgx.Tx, n int64) error
+
 // shiftSteps is the ordered statement list RunShift executes after shift_elig is
 // built (the reflag that follows is NOT a step — it re-flags the live tail).
 // Shared with the history-recompute renderer (history.go).
 func shiftSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
 	steps := []rollupStep{
-		{"values", fmtRD(shiftValuesSQL, d)},
+		{"values", fmtRD(shiftValuesSplitSQL, d)},
 		{"cascade-area", fmtRD(shiftCascadeAreaSQL, d)},
 		{"events-bank", fmtRD(shiftEventsSQL, d, plannedDowntimeExpr(changeoverAvailability))},
 		{"events-update", fmtRD(shiftEventsUpdateSQL, d)},
@@ -402,14 +414,14 @@ func shiftSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []r
 	// join resolves) and before oee-p. Inert (not appended) when not engaged.
 	if ca.engaged() {
 		steps = append(steps, rollupStep{"counters-avail",
-			fmtRD(shiftCountsAvailSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+			fmtRD(shiftCountsAvailSplitSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
 	// Line-from-lead derivation — flag + enterprise gated, same region as the
 	// counters-avail fallback (before oee-p; shift back-solves oee_p inline).
 	// Inert (not appended) when not engaged. See line_lead.go.
 	if ca.engagedLineLead() {
 		steps = append(steps, rollupStep{"line-lead",
-			fmtRD(withPlannedPred(shiftLineLeadSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
+			fmtRD(withPlannedPred(shiftLineLeadSplitSQL, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec)})
 	}
 	// ADR-0048 §Fault-2: availability count-floor — raise running_time to the
 	// count-active time for opted-in equipment where the state stream had gaps.
@@ -417,7 +429,7 @@ func shiftSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []r
 	// reconcile/oee-p reads the healed running. Inert when not engaged.
 	if ca.engagedFloor() {
 		steps = append(steps, rollupStep{"avail-floor",
-			fmtRD(shiftAvailFloorSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
+			fmtRD(shiftAvailFloorSplitSQL, d, pgIntArrayLiteral(ca.Equipments), ca.IdleTimeoutSec)})
 	}
 	// Availability exclusions (out of service + PLC no data) — after EVERY
 	// available_time writer, before the finalize. Inert when off.
@@ -450,7 +462,7 @@ const parityShiftLimit = 1 << 31 // ~2.1e9 rows — never binds in parity
 func ShiftStatementsForParity(evSchema, refSchema string) []struct{ Name, SQL string } {
 	return []struct{ Name, SQL string }{
 		{"eligible", fmtRP(shiftEligibleSQL, evSchema, parityShiftLimit)},
-		{"values", fmtRP(shiftValuesSQL, evSchema)},
+		{"values", fmtRP(shiftValuesSplitSQL, evSchema)},
 		{"cascade-area", fmtRP(shiftCascadeAreaSQL, evSchema)},
 		// Parity accessor frozen to the prod-verbatim (off) classification —
 		// diffed against prod (F2), which has no changeover reclassification.

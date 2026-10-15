@@ -39,6 +39,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/caggsplit"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/flows"
@@ -114,16 +115,30 @@ DELETE FROM %[3]s.equipment_events ev
         WHERE t.id_equipment = ev.id_equipment
           AND t.ts_event = ev.ts_event AND t.status = ev.status)`
 
+// correctSplitSQL / upsertSplitSQL: the two passes as a read planned as a SELECT
+// plus the unchanged DELETE / INSERT (ADR-0063 A2, internal/caggsplit). The
+// transitions CTE reads the REAL-TIME ca_discrete_changes_1s cagg, whose
+// watermark TimescaleDB constifies only in a SELECT; inside the DELETE/INSERT it
+// priced the raw tail of every chunk (staging 2026-10-14: 4.0 s mean, 48 s max,
+// 5,033 s of DB time). Each Exec runs its read and apply as one implicit
+// transaction (one simple-protocol query), exactly as the single statement ran;
+// the command tag pgx returns is the last statement's, so RowsAffected still
+// counts the deleted / upserted events.
+var (
+	correctSplitSQL = caggsplit.Spec{Temp: "der_trans_snap", Tail: "SELECT * FROM trans", Feeds: []string{"trans"}}.MustSplit(correctSQL)
+	upsertSplitSQL  = caggsplit.Spec{Temp: "der_final_snap", Tail: "SELECT * FROM final", Feeds: []string{"final"}}.MustSplit(upsertSQL)
+)
+
 // RunOnce derives events for one destination: correct, then upsert.
 // widerowEnterprises ($3) opts extra enterprises' machines (tp=1) into the
 // derivation for the wide-row-state tenants that carry no StateCurrent leaf
 // topic — see the transitionsCTE scope note. Empty = native status_type=4 only.
 func RunOnce(ctx context.Context, d Dest, exclAreas, exclEnterprises, widerowEnterprises []int) (deleted, upserted int64, err error) {
-	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
+	del, err := d.Pool.Exec(ctx, fmt.Sprintf(correctSplitSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return 0, 0, fmt.Errorf("correct pass: %w", err)
 	}
-	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
+	ups, err := d.Pool.Exec(ctx, fmt.Sprintf(upsertSplitSQL, d.EvSchema, d.RefSchema, d.SilverSchema), exclAreas, exclEnterprises, widerowEnterprises)
 	if err != nil {
 		return del.RowsAffected(), 0, fmt.Errorf("upsert pass: %w", err)
 	}
