@@ -120,6 +120,33 @@ func TestGoldenDeriverSplit(t *testing.T) {
 	}
 	wantDel, wantUps, want := run(correctSQL, upsertSQL)
 	gotDel, gotUps, got := run(correctSplitSQL, upsertSplitSQL)
+
+	// the ENGINE form (ADR-0063 A3): the passes RunOnce runs — session snapshot
+	// tables + binary COPY, scope arrays inlined — delete/upsert the same rows.
+	d := Dest{EvSchema: s, RefSchema: s, SilverSchema: s}
+	engine := func(p caggsplit.Pass) int64 {
+		t.Helper()
+		rp, err := deriverPassFor(d, p, []int{99}, []int{}, []int{8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tag, err := rp.Run(ctx, tx)
+		if err != nil {
+			t.Fatalf("engine form %s: %v", p.Table, err)
+		}
+		return tag.RowsAffected()
+	}
+	if _, err := tx.Exec(ctx, "SAVEPOINT e"); err != nil {
+		t.Fatal(err)
+	}
+	engDel, engUps := engine(correctPass), engine(upsertPass)
+	if engRows := dump(tx); engDel != wantDel || engUps != wantUps || !reflect.DeepEqual(engRows, want) {
+		t.Errorf("engine form differs: deleted %d upserted %d (%d events) vs inline %d / %d (%d events)",
+			engDel, engUps, len(engRows), wantDel, wantUps, len(want))
+	}
+	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT e"); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("inline: deleted %d, upserted %d, %d events; split: deleted %d, upserted %d, %d events",
 		wantDel, wantUps, len(want), gotDel, gotUps, len(got))
 	if wantDel == 0 || wantUps == 0 {

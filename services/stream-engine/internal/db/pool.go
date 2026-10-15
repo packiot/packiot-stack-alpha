@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
@@ -35,7 +36,32 @@ func NewForDatabase(ctx context.Context, creds *secrets.DBCreds, dbName, appName
 	return newWithDBName(ctx, creds, dbName, appName, maxConns, true, logger)
 }
 
+// DedicatedConnLifetime keeps a dedicated pool's connections for the life of the
+// process (deploys restart it far more often than this).
+const DedicatedConnLifetime = 30 * 24 * time.Hour
+
+// NewDedicated returns a small DIRECT pool for ONE background job whose
+// connections live as long as the process (ADR-0063 A3). The rollup / deriver /
+// uns jobs keep their eligible sets and cagg snapshots in SESSION temp tables
+// (caggsplit.Pass): a temp table's OID is fixed for its backend's life, and
+// pg_stat_statements (PG15) jumbles DML by relation OID, so the job's statements
+// keep ONE queryid only while the job keeps meeting the same backend. A shared
+// pool hands a job any of its connections and recycles them hourly (pgxpool's
+// default MaxConnLifetime), which would multiply every statement by connections ×
+// hours. maxConns 2 = one in use + one spare; no job holds two at once.
+func NewDedicated(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, logger *slog.Logger) (*pgxpool.Pool, error) {
+	return newPool(ctx, creds, dbName, appName, 2, true, func(pc *pgxpool.Config) {
+		pc.MaxConnLifetime = DedicatedConnLifetime
+		pc.MaxConnLifetimeJitter = time.Hour
+		pc.MaxConnIdleTime = DedicatedConnLifetime
+	}, logger)
+}
+
 func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, maxConns int, directConn bool, logger *slog.Logger) (*pgxpool.Pool, error) {
+	return newPool(ctx, creds, dbName, appName, maxConns, directConn, nil, logger)
+}
+
+func newPool(ctx context.Context, creds *secrets.DBCreds, dbName, appName string, maxConns int, directConn bool, tune func(*pgxpool.Config), logger *slog.Logger) (*pgxpool.Pool, error) {
 	pc, err := pgxpool.ParseConfig(creds.URLForDatabase(appName, dbName))
 	if err != nil {
 		return nil, fmt.Errorf("parse pg url: %w", err)
@@ -93,6 +119,9 @@ func newWithDBName(ctx context.Context, creds *secrets.DBCreds, dbName, appName 
 		}
 	}
 
+	if tune != nil {
+		tune(pc)
+	}
 	p, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)

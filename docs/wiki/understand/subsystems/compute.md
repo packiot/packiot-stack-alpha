@@ -180,6 +180,7 @@ The full list with defaults is on the [stream-engine](../components/stream-engin
 | 2026-10-13 | Day time columns stored raw (no production-day-length cap, like P and Q); invariant K7 reports days above their length |
 | 2026-10-13 | Hour rows' production day no longer depends on when provisioning runs (engine-owned `provisionHourlySQL`, bucket + 59 min rule); day cascade follows the label; invariant K8 counts hour rows per day |
 | 2026-10-14 | Every runtime-rollup tick timed out in shift values (cagg read inside an `UPDATE`, 250–296 s) → all cagg-reading DML split into read + apply; per-pass budget + adaptive batch |
+| 2026-10-14 | `pg_stat_statements` full of one-call engine statements (per-transaction temp tables → new OID → new queryid every tick) → session temp tables + COPY snapshots + dedicated pools |
 
 ## Go deeper
 
