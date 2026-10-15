@@ -86,7 +86,6 @@ SELECT 'after', w.lo, count(*) FILTER (WHERE v.id_enterprise = 2000003) twin, co
    AND (w.eqs IS NULL OR (v.id_equipment % 2000000) = ANY (w.eqs))
  GROUP BY 2 ORDER BY 2;
 
-CALL refresh_continuous_aggregate('silver.ca_discrete_changes_1s',     '2026-08-27 17:00+00', '2026-09-30 00:00+00');
 CALL refresh_continuous_aggregate('silver.ca_equipment_boxes_1s',      '2026-08-27 17:00+00', '2026-09-30 00:00+00');
 CALL refresh_continuous_aggregate('silver.agg_equipment_values_1min',  '2026-08-27 17:00+00', '2026-09-30 00:00+00');
 CALL refresh_continuous_aggregate('silver.equipment_metrics_1min',     '2026-08-27 17:00+00', '2026-09-30 00:00+00');

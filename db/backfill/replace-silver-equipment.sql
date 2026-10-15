@@ -36,7 +36,6 @@ SELECT 'after', id_equipment, count(*), round(sum(gross_production_incr)) gross,
   FROM silver.equipment_values WHERE id_equipment IN (:eqs) AND ts_value >= :from_ts AND ts_value < :to_ts GROUP BY 2 ORDER BY 2;
 COMMIT;
 SELECT date_trunc('hour', :from_ts::timestamptz) AS rf, date_trunc('hour', :to_ts::timestamptz) + interval '1 hour' AS rt \gset
-CALL refresh_continuous_aggregate('silver.ca_discrete_changes_1s',     :'rf', :'rt');
 CALL refresh_continuous_aggregate('silver.ca_equipment_boxes_1s',      :'rf', :'rt');
 CALL refresh_continuous_aggregate('silver.agg_equipment_values_1min',  :'rf', :'rt');
 CALL refresh_continuous_aggregate('silver.equipment_metrics_1min',     :'rf', :'rt');
