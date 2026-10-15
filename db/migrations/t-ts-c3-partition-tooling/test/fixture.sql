@@ -37,5 +37,5 @@ CREATE TABLE bronze.equipment_values_raw (id_equipment int NOT NULL, ts_value ti
   PRIMARY KEY (id_equipment, ts_value, source_seq));
 SELECT create_hypertable('bronze.equipment_values_raw', 'ts_value', chunk_time_interval => interval '7 days');
 CREATE FUNCTION bronze.no_mutate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'bronze is immutable'; END $$;
-CREATE TRIGGER trg_no_mutate BEFORE UPDATE OR DELETE ON bronze.equipment_values_raw FOR EACH ROW EXECUTE FUNCTION bronze.no_mutate();
+CREATE TRIGGER trg_equipment_values_raw_no_mutate BEFORE DELETE OR UPDATE ON bronze.equipment_values_raw FOR EACH ROW EXECUTE FUNCTION bronze.no_mutate();
 INSERT INTO bronze.equipment_values_raw SELECT 1, t, row_number() OVER (), 1 FROM generate_series(now() - interval '20 days', now(), interval '10 minutes') t;

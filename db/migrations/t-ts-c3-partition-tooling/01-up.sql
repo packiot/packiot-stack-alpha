@@ -80,6 +80,9 @@ BEGIN
            ORDER BY i.indisprimary DESC, i.indexrelid LIMIT 1) ix,
          unnest(ix.indkey) WITH ORDINALITY k(attnum, ord) JOIN pg_attribute a ON a.attrelid = p_rel AND a.attnum = k.attnum;
   IF keys IS NULL THEN RAISE EXCEPTION '% has no unique index containing %', p_rel, tcol; END IF;
+  IF EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = p_rel AND a.attname = ANY (keys) AND NOT a.attnotnull) THEN
+    RAISE EXCEPTION '% key (%) has a nullable column: the swap replays by = and would miss NULL keys', p_rel, array_to_string(keys, ', ');
+  END IF;
   twin := format('%I.%I', sch, nm || '__p');
   cc   := format('%I.%I', sch, nm || '__cc');
 
@@ -87,6 +90,9 @@ BEGIN
                  'INCLUDING STORAGE INCLUDING COMMENTS INCLUDING INDEXES) PARTITION BY RANGE (%I)', twin, p_rel, tcol);
   EXECUTE format('SELECT min(%I) FROM %s', tcol, p_rel) INTO mn;
   n := ops.pc_add_partitions(twin::regclass, p_step, coalesce(mn, now()), now() + p_ahead);
+  -- a DEFAULT partition catches rows outside every range (clock-skewed PLC, an old backfill): without it
+  -- such an insert fails, and the writer's whole transaction (silver included) with it (2026-10-15)
+  EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %s DEFAULT', sch, nm || '_pdefault', twin);
 
   -- change capture: the key of every row touched from now on
   EXECUTE format('CREATE TABLE %s AS SELECT %s FROM %s WITH NO DATA', cc,
@@ -125,7 +131,7 @@ BEGIN
            (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS hi
       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = s.twin::regclass ORDER BY 1
   LOOP
-    CONTINUE WHEN part.lo = ANY (s.copied);
+    CONTINUE WHEN part.lo IS NULL OR part.lo = ANY (s.copied);   -- NULL = the DEFAULT partition
     EXECUTE format('INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM %s WHERE %I >= $1 AND %I < $2 ON CONFLICT DO NOTHING',
                    s.twin, p_rel, s.time_col, s.time_col) USING part.lo, part.hi;
     GET DIAGNOSTICS n = ROW_COUNT; total := total + n;
@@ -154,12 +160,15 @@ BEGIN
   FOR r IN SELECT (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\)'))[1]::timestamptz AS lo,
                   (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS hi
              FROM pg_inherits ih JOIN pg_class c ON c.oid = ih.inhrelid WHERE ih.inhparent = tw LOOP
-    CONTINUE WHEN r.lo = ANY (s.copied);
+    CONTINUE WHEN r.lo IS NULL OR r.lo = ANY (s.copied);   -- NULL = the DEFAULT partition
     EXECUTE format('INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM %s WHERE %I >= $1 AND %I < $2 ON CONFLICT DO NOTHING',
                    tw, p_rel, s.time_col, s.time_col) USING r.lo, r.hi;
   END LOOP;
   keyl := (SELECT string_agg(quote_ident(k), ', ') FROM unnest(s.key_cols) k);
-  joincond := (SELECT string_agg(format('t.%1$I IS NOT DISTINCT FROM c.%1$I', k), ' AND ') FROM unnest(s.key_cols) k);
+  -- plain = (2026-10-15): IS NOT DISTINCT FROM cannot use an index or a hash join, so the replay became a
+  -- nested loop (667 keys x 461k rows held the canary's ACCESS EXCLUSIVE lock ~5 minutes; on bronze,
+  -- 26k keys x 26M rows, it would have been hours). The keys come from a unique index of NOT NULL columns.
+  joincond := (SELECT string_agg(format('t.%1$I = c.%1$I', k), ' AND ') FROM unnest(s.key_cols) k);
   EXECUTE format('DELETE FROM %s t USING (SELECT DISTINCT %s FROM %s) c WHERE %s', tw, keyl, s.capture, joincond);
   EXECUTE format('INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT t.* FROM %s t JOIN (SELECT DISTINCT %s FROM %s) c ON %s',
                  tw, p_rel, keyl, s.capture, joincond);
@@ -197,7 +206,12 @@ BEGIN
   END LOOP;
   FOR r IN SELECT tgname, pg_get_triggerdef(oid) AS def FROM pg_trigger
             WHERE tgrelid = p_rel AND NOT tgisinternal AND tgname <> 'pc_capture' AND tgname NOT LIKE 'ts\_%' LOOP
-    EXECUTE replace(r.def, ' ON ' || p_rel::text || ' ', ' ON ' || tw::text || ' ');
+    -- pg_get_triggerdef prints the table schema-qualified; regclass::text drops the schema when it is on
+    -- the search_path (staging: silver, bronze) — so match the qualified name explicitly (2026-10-15).
+    IF position(' ON ' || format('%I.%I', sch, nm) || ' ' in r.def) = 0 THEN
+      RAISE EXCEPTION 'pc_swap %: trigger % definition does not name the table as expected: %', s.rel, r.tgname, r.def;
+    END IF;
+    EXECUTE replace(r.def, ' ON ' || format('%I.%I', sch, nm) || ' ', ' ON ' || s.twin || ' ');
   END LOOP;
   EXECUTE format('COMMENT ON TABLE %s IS %L', tw, obj_description(p_rel, 'pg_class'));
   FOR r IN SELECT a.attname FROM pg_attribute a WHERE a.attrelid = p_rel AND a.attidentity <> '' AND NOT a.attisdropped LOOP
@@ -261,7 +275,7 @@ BEGIN
       FOR r IN SELECT c.oid::regclass AS part,
                       (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS hi
                  FROM pg_inherits ih JOIN pg_class c ON c.oid = ih.inhrelid WHERE ih.inhparent = s.rel::regclass LOOP
-        IF r.hi <= now() - keep THEN
+        IF r.hi IS NOT NULL AND r.hi <= now() - keep THEN   -- never drop the DEFAULT partition
           EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', s.rel, r.part);
           EXECUTE format('DROP TABLE %s', r.part);
           dropped := dropped + 1;

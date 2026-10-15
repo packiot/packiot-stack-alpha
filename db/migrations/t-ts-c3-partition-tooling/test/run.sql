@@ -1,4 +1,6 @@
 \set ON_ERROR_STOP 1
+-- staging's search_path (2026-10-15: with silver/bronze on it, regclass::text drops the schema; the swap must not care)
+SET search_path = "$user", gold, silver, bronze, identity, config, ops, serving, customer_reports, core, public;
 \pset format unaligned
 CALL ops.pc_prepare('silver.equipment_events', interval '1 month');
 CALL ops.pc_copy('silver.equipment_events');
@@ -46,3 +48,8 @@ CALL ops.pc_copy('bronze.equipment_values_raw');
 BEGIN; SELECT 'SWAP', ops.pc_swap('bronze.equipment_values_raw'); COMMIT;
 DO $$ BEGIN UPDATE bronze.equipment_values_raw SET v = 2 WHERE true; RAISE NOTICE 'X1 FAIL: update allowed'; EXCEPTION WHEN raise_exception THEN RAISE NOTICE 'X1 ok: immutability trigger carried over (%)', SQLERRM; END $$;
 SELECT 'state', rel, swapped_at IS NOT NULL, old_name FROM ops.pc_state ORDER BY rel;
+-- an out-of-range timestamp must land in the DEFAULT partition, not fail the writer (2026-10-15)
+SET ROLE lp_writer;
+INSERT INTO silver.equipment_events (id_equipment, ts_event, status) VALUES (11, now() + interval '400 days', 1);
+RESET ROLE;
+SELECT 'T14 far-future row went to the DEFAULT partition (want 1)', count(*) FROM silver.equipment_events_pdefault;
