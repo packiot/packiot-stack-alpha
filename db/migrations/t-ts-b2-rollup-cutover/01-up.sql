@@ -26,7 +26,8 @@ BEGIN
     RAISE NOTICE 'twins already renamed: nothing to do';
     RETURN;
   END IF;
-  SELECT count(DISTINCT run_at), count(*) FILTER (WHERE NOT ok) INTO hours, failing
+  -- distinct hour WINDOWS, not run_at: a stream-engine restart re-records an hour (t-ts-b1-shadow-record-idempotent)
+  SELECT count(DISTINCT substring(detail from '\d{4}-\d{2}-\d{2} \d{2}:\d{2}')), count(*) FILTER (WHERE NOT ok) INTO hours, failing
     FROM ops.data_invariant_result
    WHERE source = 'rollup-shadow' AND check_id = 'R1_rollup_twin_vs_truth' AND run_at > now() - interval '7 days';
   IF (hours < 160 OR failing > 0) AND coalesce(current_setting('adr0063.b2_gate_override', true), '') <> 'on' THEN
