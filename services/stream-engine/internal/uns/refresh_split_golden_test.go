@@ -14,7 +14,9 @@ package uns
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -81,7 +83,7 @@ func TestGoldenUnsRefreshSplit(t *testing.T) {
 	args := []any{[]int{99}, []int{}} // exclude area 99
 
 	dump := func(tx pgx.Tx) []string {
-		rows, err := tx.Query(ctx, `SELECT t::text FROM `+s+`.equipment_live_month t ORDER BY id_equipment`)
+		rows, err := tx.Query(ctx, `SELECT to_jsonb(t)::text FROM `+s+`.equipment_live_month t ORDER BY id_equipment`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +116,7 @@ func TestGoldenUnsRefreshSplit(t *testing.T) {
 	if reflect.DeepEqual(before, want) {
 		t.Fatal("the inline refresh changed nothing — the comparison proves nothing")
 	}
-	if !reflect.DeepEqual(got, want) {
+	if !sameRows(got, want) {
 		t.Errorf("split differs from inline:\n got  %v\n want %v", got, want)
 	}
 	t.Logf("%d rows; e.g. %s", len(got), got[0])
@@ -148,4 +150,43 @@ func TestGoldenUnsRefreshSplit(t *testing.T) {
 	if strings.Contains(st[2], "agg_equipment_values_1hour") {
 		t.Errorf("the apply reads the cagg:\n%s", st[2])
 	}
+}
+
+// sameRows compares jsonb rows: every value exactly, except non-integral numbers,
+// which may differ in their last bits (relative 1e-12). speed = avg(float8) is
+// order-dependent, and the split's read is a different plan than the UPDATE's
+// (the same rule as the rollup golden tests' gcsSame).
+func sameRows(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] == b[i] {
+			continue
+		}
+		var ma, mb map[string]any
+		da, db := json.NewDecoder(strings.NewReader(a[i])), json.NewDecoder(strings.NewReader(b[i]))
+		da.UseNumber()
+		db.UseNumber()
+		if da.Decode(&ma) != nil || db.Decode(&mb) != nil || len(ma) != len(mb) {
+			return false
+		}
+		for k, va := range ma {
+			na, aNum := va.(json.Number)
+			nb, bNum := mb[k].(json.Number)
+			if !aNum || !bNum {
+				if !reflect.DeepEqual(va, mb[k]) {
+					return false
+				}
+				continue
+			}
+			fa, e1 := na.Float64()
+			fb, e2 := nb.Float64()
+			if na != nb && (e1 != nil || e2 != nil || fa == math.Trunc(fa) && fb == math.Trunc(fb) ||
+				math.Abs(fa-fb) > 1e-12*math.Max(math.Abs(fa), math.Abs(fb))) {
+				return false
+			}
+		}
+	}
+	return true
 }
