@@ -23,7 +23,10 @@ postgres:15-alpine on the stack network.
   provision-db-role.py --service barcode-service --check         # verify only (steps 1 + 4)
   provision-db-role.py --service barcode-service --rotate        # new password; then recreate the service
   provision-db-role.py --service barcode-service --env production --db-host <h> --admin-host <h>
-  (services: operator-gateway, barcode-service, stream-engine, legacy-replicator)
+  (services: operator-gateway, barcode-service, stream-engine, legacy-replicator, prod-reflector, prod-reflector-ro)
+  provision-db-role.py --service prod-reflector-ro --env production --db-name packiot \
+      --db-host 10.20.10.89 --admin-host 10.20.10.89   # ADR-0064, on the PRODUCTION app host; the staging
+      # reflector reads the resulting secret packiot/production/prod-reflector-ro-db-creds over the VPC peering
 """
 import argparse
 import base64
@@ -61,6 +64,21 @@ ROLES = {
         "role": "legacy_replicator",
         "staging_host": STAGING_DB_HOST,   # direct: pgbouncer's static db list excludes packiot_analytics
         "settings": {},   # no tenant default: each instance stamps app.tenant_id=DST_ENTERPRISE at connect
+    },
+    # ADR-0064 prod-reflector. Two logins in two databases (db/migrations/t-prod-reflector-roles):
+    "prod-reflector": {                    # STAGING destination; run on the staging app host
+        "role": "prod_reflector",
+        "migration": "t-prod-reflector-roles",
+        "staging_host": STAGING_DB_HOST,   # direct (pgbouncer's static db list excludes packiot_analytics)
+        "settings": {},   # no tenant default: the reflector stamps app.tenant_id=<mirrored enterprise> at connect
+    },
+    # PRODUCTION source; run on the PRODUCTION app host with --env production --db-name packiot
+    # --db-host/--admin-host <prod DB private IP>. Never provisioned on staging (that role has no password).
+    "prod-reflector-ro": {
+        "role": "prod_reflector_ro",
+        "migration": "t-prod-reflector-roles",
+        "staging_host": STAGING_DB_HOST,
+        "settings": {"default_transaction_read_only": "on", "statement_timeout": "120s"},
     },
 }
 
@@ -166,7 +184,7 @@ def main():
                  f"SELECT rolcanlogin, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = '{role}';")
     if attrs != "t|f|f":
         die(f"role {role} missing or wrong attributes ({attrs or 'absent'}; want login t, super f, bypassrls f): "
-            f"apply db/migrations/t-{a.service}-role/01-up.sql first")
+            f"apply db/migrations/{spec.get('migration', f't-{a.service}-role')}/01-up.sql first")
     print(f"1. role {role}: LOGIN, NOSUPERUSER, NOBYPASSRLS")
 
     if not a.check:

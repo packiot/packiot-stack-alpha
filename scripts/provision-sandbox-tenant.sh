@@ -188,9 +188,13 @@ SET session_replication_role = replica;  -- suppress the "Create packml topics" 
 -- pg_temp.sbx_keep before the delete) so operator-sbx's configured
 -- OPERATOR_SBX_EDGE_API_KEY stays valid — re-minting it every heal would 403 the
 -- sandbox operator. Only a true first --create (empty sbx_keep) mints a fresh uuid.
+-- code (t-enterprise-codes, UNIQUE + immutable): the twin gets its OWN code, 'sandbox-' + the
+-- source's code — copying the source's code would violate UNIQUE and fail every heal (the
+-- 10-08 po_uuid lesson: to_jsonb(row) clones future UNIQUE columns). Only when the column exists.
 INSERT INTO enterprises SELECT (json_populate_record(NULL::enterprises,
   (to_jsonb(e) || jsonb_build_object('id_enterprise',$SENT)
    || jsonb_build_object('nm_enterprise','SANDBOX-CPACK')
+   || CASE WHEN to_jsonb(e) ? 'code' THEN jsonb_build_object('code', 'sandbox-' || (to_jsonb(e)->>'code')) ELSE '{}'::jsonb END
    || jsonb_build_object('api_key', COALESCE((SELECT api_key FROM pg_temp.sbx_keep LIMIT 1), gen_random_uuid()::text)))::json)).*
 FROM enterprises e WHERE id_enterprise=$SRC_ENT;
 

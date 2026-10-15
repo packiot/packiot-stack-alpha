@@ -217,6 +217,31 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "legacy-replicator: zero-row UPDATEs on {{ $labels.table }} for 30m — CPACK operator-action replay gap (topology drift / unresolved id-map; see 2026-08-23 twin-drop finding)"
+      # ── prod-reflector (ADR-0064): a staging tenant mirrors production ──────────────────────────
+      # Data divergence is also covered by MR1–MR5 (ops.data_invariant_result → DataInvariant*); these
+      # page on the mechanism: stale, guarded, failing, or something on staging writing mirrored rows.
+      - alert: ProdMirrorStale
+        expr: prod_reflector_enabled == 1 and on() (time() - max(prod_reflector_last_converged_timestamp_seconds) > 900 or absent(prod_reflector_last_converged_timestamp_seconds))
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "prod-reflector: staging has not been equal to production for >15 min — docker logs prod-reflector (guards, permission denied, peering); runbook docs/runbooks/staging-mirror-of-production.md"
+      - alert: ProdMirrorGuarded
+        expr: sum by (enterprise, table, reason) (increase(prod_reflector_guarded_total[30m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "prod-reflector refused deletes on {{ $labels.table }} ({{ $labels.reason }}): production looks empty or too much would be deleted — check the production login/RLS stamp before raising PROD_REFLECT_MAX_DELETES"
+      - alert: ProdMirrorStagingWrites
+        expr: sum by (enterprise, table) (increase(prod_reflector_staging_writes_total[30m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "something on STAGING wrote mirrored rows of enterprise {{ $labels.enterprise }} ({{ $labels.table }}) — a write surface the mirror block misses; the reflector undid it (production wins). Find the writer (user_logs, docker logs)"
+      - alert: ProdMirrorUnclassifiedTables
+        expr: prod_reflector_unclassified_tables > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} tenant-keyed staging table(s) are neither reflected nor local — decide them in services/analytics-sync/internal/mirror/spec.go (MR5 lists them)"
 
   # Host + DB rules (need the 2026-07-07 exporters; extend as the
   # CAgg-invalidation/queue-depth backlog items land).

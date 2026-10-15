@@ -9,6 +9,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -433,10 +434,18 @@ type Config struct {
 	// *_total counter columns. Default OFF → byte-identical. Enable only after
 	// db/migrations/t-counter-totals-float8-public is applied to that DB (the columns must exist).
 	CounterTotalsPublic bool
+
+	// ProdMirrorEnterprises (PROD_MIRROR_ENTERPRISES, ADR-0064) — csv of tenants THIS environment mirrors from
+	// production (staging, after a tenant's production go-live; empty everywhere else). prod-reflector copies
+	// those tenants' events, PO runtime, OEE and live views from production every minute, so the engine must not
+	// write them here: Load folds the list into every enterprise scope that writes a reflected table (see
+	// applyProdMirror). The raw ingest (silver.equipment_values from this environment's own PLC reader) is NOT
+	// affected. Empty = no change.
+	ProdMirrorEnterprises []int
 }
 
 func Load() (*Config, error) {
-	return &Config{
+	cfg := &Config{
 		AWSRegion:                        getenv("AWS_REGION", "us-east-1"),
 		PGSecretID:                       getenv("PG_SECRET_ID", ""), // no default: never fall back to the admin packiot/staging/db; compose sets it
 		RabbitMQSecretID:                 getenv("RABBITMQ_SECRET_ID", "packiot/staging/rabbitmq-stream-engine-creds"),
@@ -551,7 +560,85 @@ func Load() (*Config, error) {
 		BronzeRawAppend: getenv("BRONZE_RAW_APPEND", "false") == "true",
 		// float8 *_total on the public route (prod forward-port) — default OFF.
 		CounterTotalsPublic: getenv("COUNTER_TOTALS_PUBLIC", "false") == "true",
-	}, nil
+	}
+	if err := cfg.applyProdMirror(os.Getenv("PROD_MIRROR_ENTERPRISES")); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// applyProdMirror makes a mirrored tenant (ADR-0064) invisible to every job that would WRITE one of its reflected
+// tables on this environment, so the engine never fights prod-reflector (production wins every minute anyway; this
+// keeps staging from churning and keeps the reflector's staging-write detector quiet):
+//
+//	EVENTS_EXCLUDED_ENTERPRISES   += mirror  hour/day/shift/grain rollups, hour backfill, UNS live views, events deriver
+//	PO_RECALC_EXCLUDED_ENTERPRISES += mirror  PO runtime recompute (production's PO numbers are copied)
+//	CPAC_EVENT_LIVE_ENTERPRISES   -= mirror  live stop minting (production's stops are copied, with their justifications)
+//	CPAC_EVENT_ENTERPRISES        -= mirror  shadow stop minting
+//	EVENTS_CLOSE_STALE_ENTERPRISES -= mirror  closing open stops (production closes its own)
+//	po-control (PLC 30800+)       skips mirror tenants (ProdMirrorEnterprises → pocontrol.Handler)
+//
+// A typo fails the boot: it must never silently turn the mirror's protection off.
+func (c *Config) applyProdMirror(raw string) error {
+	var ids []int
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("PROD_MIRROR_ENTERPRISES: invalid enterprise id %q", p)
+		}
+		ids = append(ids, n)
+	}
+	c.ProdMirrorEnterprises = ids
+	if len(ids) == 0 {
+		return nil
+	}
+	c.EventsExcludedEnterprises = csvUnion(c.EventsExcludedEnterprises, ids)
+	c.PORecalcExcludedEnterprises = csvUnion(c.PORecalcExcludedEnterprises, ids)
+	c.CPACEventLiveEnterprises = csvMinus(c.CPACEventLiveEnterprises, ids)
+	c.CPACEventEnterprises = csvMinus(c.CPACEventEnterprises, ids)
+	c.EventsCloseStaleEnterprises = csvMinus(c.EventsCloseStaleEnterprises, ids)
+	return nil
+}
+
+func csvUnion(csv string, ids []int) string {
+	have := CSVInts(csv)
+	seen := map[int]bool{}
+	for _, n := range have {
+		seen[n] = true
+	}
+	for _, n := range ids {
+		if !seen[n] {
+			have = append(have, n)
+			seen[n] = true
+		}
+	}
+	return joinInts(have)
+}
+
+func csvMinus(csv string, ids []int) string {
+	drop := map[int]bool{}
+	for _, n := range ids {
+		drop[n] = true
+	}
+	var keep []int
+	for _, n := range CSVInts(csv) {
+		if !drop[n] {
+			keep = append(keep, n)
+		}
+	}
+	return joinInts(keep)
+}
+
+func joinInts(ns []int) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ",")
 }
 
 // getenvFloat parses a float env var, falling back on empty/invalid.

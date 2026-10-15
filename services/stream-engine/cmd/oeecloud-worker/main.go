@@ -591,6 +591,7 @@ func main() {
 
 	if cfg.POControlEnabled {
 		pc := pocontrol.NewHandler(resolver, logger)
+		pc.SetProdMirror(cfg.ProdMirrorEnterprises) // ADR-0064: a production mirror's POs come from production
 		sparkplugHandler.SetPOControl(pc)
 		mx.RegisterPOControlCollector(func() metrics.POControlSnapshot {
 			s := pc.Stats()
