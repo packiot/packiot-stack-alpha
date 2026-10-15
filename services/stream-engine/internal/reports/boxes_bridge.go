@@ -35,7 +35,7 @@ const bridgeSQL = `
 	       AND child.id_enterprise = $3
 	),
 	prod_bucketed AS (
-	    SELECT time_bucket($4::interval, b.ts_value) AS ts_value,
+	    SELECT date_bin($4::interval, b.ts_value, timestamptz '2000-01-03 00:00:00+00') AS ts_value,
 	           sum(b.net_production) AS net
 	      FROM customer_reports.boxes b
 	      JOIN %[2]s.equipments e ON e.id_equipment = b.id_equipment

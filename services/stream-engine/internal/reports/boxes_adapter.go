@@ -72,7 +72,7 @@ const deliverySQL = `
 const counterSQL = `
 	INSERT INTO customer_reports.boxes
 	       (customer_id, label_key, ts_value, id_order, id_equipment, id_area, id_site, net_production, qty)
-	SELECT $2::int, $1::text, time_bucket($3::interval, ts_value),
+	SELECT $2::int, $1::text, date_bin($3::interval, ts_value, timestamptz '2000-01-03 00:00:00+00'),
 	       (analogs -> $1::text ->> $4::text),
 	       id_equipment, id_area, id_site,
 	       sum((analogs -> $1::text ->> $5::text)::double precision), count(*)
