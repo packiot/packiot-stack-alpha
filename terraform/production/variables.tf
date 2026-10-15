@@ -226,6 +226,22 @@ variable "client_ingest_egress_cidrs" {
   default = ["179.162.112.58/32"]
 }
 
+variable "shared_ingest_port" {
+  description = "Shared multi-tenant reader front-door (nginx TLS → sparkplug-agent-shared :9104). Same port as staging's ingest.staging:8449."
+  type        = number
+  default     = 8449
+}
+
+variable "shared_ingest_egress_cidrs" {
+  description = <<-EOT
+    Factory-box PUBLIC egress /32s allowed to POST raw tags to https://ingest.<prod domain>:8449/v1/tags (the thin-reader
+    path, ADR-0049; Bispharma go-live 2026-10). Same gate as staging's 8449 rule. Auth is the per-box X-Ingest-Key; the /32
+    is defence in depth. Bispharma SP box (mi-0114, packiot-edge) egresses from 200.153.25.2 (staging admits the same).
+  EOT
+  type        = list(string)
+  default     = ["200.153.25.2/32"]
+}
+
 # ── SSH access ────────────────────────────────────────────────────────────────
 
 variable "ops_ssh_public_key" {

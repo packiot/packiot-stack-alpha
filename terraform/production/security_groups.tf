@@ -66,6 +66,16 @@ resource "aws_security_group" "app" {
   #
   # NOTE: staging's world-open AMQPS 5671 rule is deliberately NOT copied —
   # prod's factory uplink is mTLS-CN-scoped 8883, not an open AMQP broker.
+  # Bispharma go-live (2026-10): the thin-reader front-door, ingest.<prod>:8449 → nginx TLS → sparkplug-agent-shared.
+  # Mirrors staging's 8449 rule: per-box egress /32 only (var.shared_ingest_egress_cidrs), never world-open.
+  ingress {
+    description = "Shared multi-tenant reader front-door v1 tags (per-box egress /32 allowlist)"
+    from_port   = var.shared_ingest_port
+    to_port     = var.shared_ingest_port
+    protocol    = "tcp"
+    cidr_blocks = var.shared_ingest_egress_cidrs
+  }
+
   ingress {
     description = "ADR-0042 mTLS SparkPlug uplink (client-edge #624 to mosquitto :8883; client egress /32 only)"
     from_port   = var.ingest_mqtts_port

@@ -134,13 +134,25 @@ ROLES = {  # name: (attributes, connection limit, {setting: value})
                           {'default_transaction_read_only': 'on', 'statement_timeout': '5s'}),
     'barcode_service':   ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 15, {'statement_timeout': '30s'}),
 }
+# CLEAN-SERVER roles (Bispharma go-live 2026-10-15: production starts on a NEW, empty server). The old prod server already has
+# these two (they came with prod's own history), so they were never in ROLES; a clean server has neither, and build.py stopped
+# here. Created ONLY IF MISSING and never ALTERed: on a server that has them (the old prod) this is a no-op.
+#   bi_owner    — NOLOGIN owner of the `bi` schema and its 12 views (Superset's RLS-gated surface; staging: NOINHERIT).
+#   superset_ro — Superset's login to the analytics DB (staging: LOGIN NOINHERIT, no settings). LOGIN WITHOUT a password
+#                 until the go-live sets one (runbook go-live-bispharma.md §4).
+CLEAN_SERVER_ROLES = {
+    'bi_owner':    'NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT',
+    'superset_ro': 'LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT',
+}
 # every role staging's schema grants to / owns with must exist on the target after `roles`, or the build stops here
 _referenced = set(re.findall(r'^(?:GRANT|REVOKE)\b.*?\b(?:TO|FROM) ([^;]+);', pre_sql + views_sql, flags=re.M))
 _referenced = {r.strip().replace(' WITH GRANT OPTION', '') for x in _referenced for r in x.split(',')}
 _referenced |= set(re.findall(r'OWNER TO ([\w"@.]+);', pre_sql + views_sql))
-_missing = sorted(r.strip('"') for r in _referenced if r != 'PUBLIC' and r.strip('"') not in set(P['roles']) | set(ROLES))
+_missing = sorted(r.strip('"') for r in _referenced if r != 'PUBLIC' and r.strip('"') not in set(P['roles']) | set(ROLES) | set(CLEAN_SERVER_ROLES))
 assert not _missing, f'staging grants/owners reference roles the target lacks and `roles` does not create: {_missing}'
 rl = ["\\set ON_ERROR_STOP 1", "BEGIN;", "SET LOCAL lock_timeout = '5s';"]
+for r, attrs in CLEAN_SERVER_ROLES.items():   # create-if-missing only: never touch an existing role's shape
+    rl.append(f"DO $r$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{r}') THEN CREATE ROLE {r} {attrs}; END IF; END $r$;")
 for r, (attrs, limit, settings) in ROLES.items():
     rl.append(f"DO $r$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{r}') THEN CREATE ROLE {r} NOLOGIN; END IF; END $r$;")
     rl.append(f"ALTER ROLE {r} {attrs} CONNECTION LIMIT {limit};")
@@ -150,7 +162,7 @@ rl += ["COMMIT;",
        "SELECT 'role', r.rolname, r.rolcanlogin AS login, r.rolpassword IS NULL AS no_password, r.rolbypassrls AS bypassrls, r.rolinherit,",
        "       r.rolconnlimit, coalesce(array_to_string(s.setconfig, ';'), '') AS settings",
        "  FROM pg_authid r LEFT JOIN pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0",
-       f" WHERE r.rolname IN ({', '.join(repr(r) for r in ROLES)}) ORDER BY 2;"]
+       f" WHERE r.rolname IN ({', '.join(repr(r) for r in list(ROLES) + list(CLEAN_SERVER_ROLES))}) ORDER BY 2;"]
 write('00-roles.sql', '\n'.join(rl) + '\n')
 write('00-joblog.sql', "\\set ON_ERROR_STOP 1\n"
       "ALTER SYSTEM SET timescaledb.enable_job_execution_logging = 'on';\nSELECT pg_reload_conf();\n"
@@ -202,7 +214,8 @@ write('post.sql', blocks[0] + ''.join(rest) + _restore)
 
 # ── 4. data copy from the old DB via postgres_fdw. CHECKs dropped first (re-added NOT VALID + VALIDATE after repairs).
 #       production_orders does ADR-0062 P1 inline (text backfill, D5 by business key, po_uuid from ts_creation).
-pt = {t['n']: t for t in P['tables'] if t['s'] == 'public'}
+# `or []`: a CLEAN target server (Bispharma go-live) has no tables — 04-data-copy is then unused (the tenant load replaces it)
+pt = {t['n']: t for t in (P['tables'] or []) if t['s'] == 'public'}
 checks = [c for c in S['constraints'] if c['type'] == 'c' and not staging_only(c['s'], c['tbl'])]
 out = ["\\set ON_ERROR_STOP 0", "CREATE EXTENSION IF NOT EXISTS postgres_fdw;", "DROP SERVER IF EXISTS old_db CASCADE;",
        "CREATE SERVER old_db FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname 'packiot', fetch_size '50000');",
@@ -307,6 +320,16 @@ SELECT 'raw retention policies (want 0)', count(*)
   FROM timescaledb_information.jobs j JOIN ops.retention_policy p ON p.relation = j.hypertable_schema || '.' || j.hypertable_name
  WHERE j.proc_name = 'policy_retention' AND p.tier = 'hot_raw';
 """
+# TRANSPLANT_MODE=tenant (Bispharma go-live 2026-10-15: a CLEAN prod + ONE tenant copied from staging by
+# scripts/promotion/bispharma/tenant_extract.py). The tenant's rows ARE staging's — every business backfill above already
+# ran on them there, and re-running it here CHANGES curated config: the rehearsal's fingerprint diff caught
+# t-ideal-speed-best-demonstrated re-deriving one Bispharma machine's production_speed (110 → 241) and, through it, its
+# line's production_targets. The t244 descriptor INSERTs would add OTHER tenants' rows. So tenant mode keeps only the
+# platform catalogs the tenant copy does not carry (ops.retention_policy) and drops everything else.
+TRANSPLANT_MODE = os.environ.get('TRANSPLANT_MODE', 'prod').strip().lower()
+assert TRANSPLANT_MODE in ('prod', 'tenant'), f'TRANSPLANT_MODE must be prod|tenant, got {TRANSPLANT_MODE!r}'
+if TRANSPLANT_MODE == 'tenant':
+    PHASE_D = [f for f in PHASE_D if f.startswith(('t-plc-link-minutes-retention/', 't-retention-catalog/'))]
 parts = ["\\set ON_ERROR_STOP 0"]
 for f in PHASE_D:
     body = subprocess.run(['git', 'show', f'origin/staging:db/migrations/{f}'], check=True, capture_output=True, text=True).stdout
@@ -321,8 +344,9 @@ for f in PHASE_D:
     parts += [f"\\echo ===== {f}", body]
 t244 = subprocess.run(['git', 'show', 'origin/staging:db/migrations/t244-enterprise-0613-parameterize/01-expand.sql'],
                       check=True, capture_output=True, text=True).stdout
-parts.append("\\echo ===== t244 client descriptors (data statements only)")
-parts += re.findall(r'^INSERT INTO core\.client_descriptors.*?;\s*$', t244, flags=re.M | re.S)
+if TRANSPLANT_MODE == 'prod':   # tenant mode: the tenant's own descriptor travels with its data; no other tenant's
+    parts.append("\\echo ===== t244 client descriptors (data statements only)")
+    parts += re.findall(r'^INSERT INTO core\.client_descriptors.*?;\s*$', t244, flags=re.M | re.S)
 write('07-data.sql', '\n'.join(parts) + '\n')
 assert '\x1b' not in open(os.path.join(OUT, '07-data.sql')).read(), 'ESC byte in 07-data.sql'
 

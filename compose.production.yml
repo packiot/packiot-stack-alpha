@@ -82,6 +82,7 @@ volumes:
   rabbitmq-data:
   mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
+  edge_transformer_agent_outbox:   # sparkplug-agent-shared outbox (Bispharma go-live)
   hist_gateway_data:         # D3: pg_duckdb gateway state (fdw defs + hist cutover cache)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
@@ -913,9 +914,10 @@ services:
       # COUNTERS_ONLY_AVAILABILITY for a line-metered tenant, or lines double-write).
       COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
       # Greenfield: tenant list stays minimal — each line-metered client is added
-      # to this list at ITS onboarding (staging pattern). Do NOT pre-bake staging's
-      # tenants (e.g. ent 5).
-      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
+      # to this list at ITS onboarding (staging pattern). Bispharma (ent 5) is added
+      # at ITS production go-live (2026-10, docs/runbooks/go-live-bispharma.md):
+      # counters-only, every tp=3 line metered from its lead (staging: 3,5,2000003).
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3,5"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
       # PROMOTION 2026-10 parity: staging runs the counters-only availability pass
       # for the CPACK L6 members (counters-only Modbus line, SPEED:NO). Ids 68-72 =
@@ -960,14 +962,16 @@ services:
       OEE_CANONICAL_APQ_ENABLED: "true"
       # FU#8 PO-grain availability (available_time/planned_downtime on PO runtime).
       PO_AVAILABILITY_ENABLED: "true"
-      # Stale-open stop closer — CPACK only (staging: 3,4,5,2000003).
+      # Stale-open stop closer — CPACK + Bispharma (staging: 3,4,5,2000003). ent 5 was
+      # missing on staging once and its stale opens read as running (2026-09-24).
       EVENTS_CLOSE_STALE_ENABLED: "true"
-      EVENTS_CLOSE_STALE_ENTERPRISES: "3"
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3,5"
       # ADR-0010 §10.4 CPAC (status_type=0) stop deriver. NOTE: for ent 3 this
       # writes the SHADOW comparison table (CPAC_EVENT_TARGET_TABLE default
       # equipment_events_cpac_shadow), exactly like staging — it does NOT mint
-      # live CPACK downtimes. CPAC_EVENT_LIVE_ENTERPRISES stays EMPTY: CPACK must
-      # not get a second live writer (the #456 double-write class). See doc §8.
+      # live CPACK downtimes. CPAC_EVENT_LIVE_ENTERPRISES must never list ent 3: CPACK
+      # must not get a second live writer (the #456 double-write class). See doc §8.
+      # (It lists ent 5 since the Bispharma go-live — see the pass-through below.)
       CPAC_EVENT_DERIVATION_ENABLED: "true"
       CPAC_EVENT_ENTERPRISES: "3"
       CPAC_STOP_THRESHOLD_DEFAULT_SEC: "600"
@@ -1006,7 +1010,10 @@ services:
       CHANGEOVER_AVAILABILITY_ENABLED: ${CHANGEOVER_AVAILABILITY_ENABLED:-}
       COUNTER_TOTALS_PUBLIC: ${COUNTER_TOTALS_PUBLIC:-}
       CPAC_EVENT_DERIVATION_INTERVAL_MINUTES: ${CPAC_EVENT_DERIVATION_INTERVAL_MINUTES:-}
-      CPAC_EVENT_LIVE_ENTERPRISES: ${CPAC_EVENT_LIVE_ENTERPRISES:-}
+      # Bispharma go-live: ent 5 is counters-only with NO other event writer, so its
+      # stops are LIVE-minted by the 2nd CPAC deriver instance (staging: "5", #1384).
+      # CPACK (ent 3) stays shadow-only and must never be listed here (#456 class).
+      CPAC_EVENT_LIVE_ENTERPRISES: ${CPAC_EVENT_LIVE_ENTERPRISES:-5}
       CPAC_EVENT_TARGET_TABLE: ${CPAC_EVENT_TARGET_TABLE:-}
       DQ_ALARMS_ENABLED: ${DQ_ALARMS_ENABLED:-}
       EVENTS_CLOSE_STALE_HORIZON_HOURS: ${EVENTS_CLOSE_STALE_HORIZON_HOURS:-}
@@ -1179,6 +1186,12 @@ services:
       # only covered 18 of 42 machines → G5). CS-Admin speed edits now flow through.
       COUNTERS_ONLY_OEE_ENABLED: "true"
       COUNTERS_ONLY_FROM_DB: "true"
+      # The decoder's DB loaders (countersrate, oeeprofile: pgx with its prepared-statement cache) must reach the DB
+      # DIRECTLY, never through pgbouncer's transaction pool: through pgbouncer every periodic reload fails with
+      # `prepared statement "stmtcache_…" does not exist` and the decoder keeps an EMPTY snapshot from boot (counters-only
+      # rates + OEE margins never load). Found by the Bispharma go-live rehearsal (2026-10-15); staging's decoder already
+      # goes direct (POSTGRES_URL → the DB host), so this is parity, not a new path.
+      POSTGRES_HOST: ${POSTGRES_HOST_UPSTREAM}
     volumes:
       # ⚠ FILL AT DEPLOY: replace with the real per-client client.yaml
       # (docs/clients/<client>.yaml, ADR-0004). The example is mounted so the
@@ -1218,6 +1231,63 @@ services:
   #
   # Secrets: AMQP via packiot/production/rabbitmq-sparkplug-decoder-creds
   # (publish-perm on `oee`). INGEST_API_KEY + TLS cert/key are deploy-filled.
+  # ── sparkplug-agent-shared (Bispharma go-live 2026-10 — the thin-reader front-door) ─
+  # Same binary/config as staging's `sparkplug-agent-shared`: ONE process, one
+  # pipeline per tenant file, fed over HTTPS by each factory box's thin reader
+  # (edge-api reader bundle, ADR-0049): box → https://ingest.prod.packiot.app:8449
+  # /v1/tags (nginx TLS, app SG admits the box egress /32 only) → this agent :9104
+  # → SparkPlug B on the internal mosquitto → sparkplug-decoder → `oee` →
+  # stream-engine. CPACK's prod feed is a different path (mTLS :8883) and is
+  # untouched. ONLY bispharma.yaml is mounted (single-file mounts, not the whole
+  # tenants dir): a cpack pipeline here would NBIRTH CPACK metrics into prod.
+  # Auth fails CLOSED: the agent refuses to serve without AGENT_INGEST_API_KEY or a
+  # per-tenant key map. Key in /opt/packiot/.env (never echoed); the same value is
+  # the box's INGEST_KEY in /opt/packiot-prod/.env (runbook go-live-bispharma.md §4).
+  sparkplug-agent-shared:
+    build:
+      context: ./services/sparkplug-decoder
+    container_name: sparkplug-agent-shared
+    entrypoint: ["/usr/local/bin/sparkplug-agent"]   # multi mode via AGENT_TENANTS_DIR (no --config)
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      HEALTH_PORT: "9103"
+      AGENT_TENANTS_DIR: /etc/packiot/tenants
+      AGENT_OUTBOX_DIR: /var/lib/edge-transformer/outbox
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      AGENT_HTTP_INGEST_ENABLED: "true"
+      AGENT_INGEST_PORT: "9104"
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:-}
+      AGENT_INGEST_KEYS_SECRET_ID: ${AGENT_INGEST_KEYS_SECRET_ID:-}
+      AGENT_INGEST_LEGACY_KEY_ALLOWED: "${AGENT_INGEST_LEGACY_KEY_ALLOWED:-true}"
+      AWS_REGION: us-east-1
+      AGENT_BIRTH_ALL_MAPPED: "true"
+      # Capture (onboarding evidence) stays OFF on prod: no AGENT_REGISTER_DSN.
+      AGENT_CAPTURE_ENABLED: "false"
+      AGENT_TENANTS_PROFILE_DIR: /etc/packiot/tenant-profiles
+    volumes:
+      - ./docs/clients/tenants/bispharma.yaml:/etc/packiot/tenants/bispharma.yaml:ro
+      - ./docs/clients/tenant-profiles/bispharmastaging.yaml:/etc/packiot/tenant-profiles/bispharmastaging.yaml:ro
+      - edge_transformer_agent_outbox:/var/lib/edge-transformer
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.44   # = staging's slot; nginx_setup.sh 8449 → 172.18.0.44:9104
+        aliases: ["edge-agent-shared"]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 192m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   ingest-shim:
     build: ./services/ingest-shim
     container_name: ingest-shim

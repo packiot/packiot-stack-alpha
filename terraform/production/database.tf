@@ -123,13 +123,19 @@ resource "aws_instance" "db" {
     DB_PASS=$(aws secretsmanager get-secret-value \
       --secret-id packiot/production/db --region ${var.aws_region} \
       --query SecretString --output text | jq -r .password)
+    # Image = staging's TimescaleDB 2.27.0 on PostgreSQL 16, digest-pinned (ADR-0063 §7 step 1, decided for the
+    # Bispharma go-live 2026-10-15). The image still ships the 2.25.2 libraries, so a database created under the old
+    # 2.25.2 pin (the pre-promotion DB) keeps working unchanged (rehearsed on a prod-AMI clone). Flags = staging's
+    # db_init.sh minus pg_cron (not used by the F3 schema): pg_stat_statements/auto_explain + 200 connections.
+    # lifecycle.ignore_changes = [user_data]: the RUNNING box is switched by the go-live runbook, not by apply.
     docker run -d --name timescaledb --restart unless-stopped \
       -p ${var.db_private_ip}:5432:5432 \
       -e POSTGRES_DB=${var.db_name} \
       -e POSTGRES_USER=${var.db_user} \
       -e POSTGRES_PASSWORD="$DB_PASS" \
       -v /opt/packiot/pgdata:/var/lib/postgresql/data \
-      timescale/timescaledb:2.25.2-pg16
+      timescale/timescaledb:2.27.0-pg16@sha256:51eb3bcdfc41f481c797026813d9d457fb5cbc8ea370a65640d8cda13a4040c1 \
+      postgres -c shared_preload_libraries=timescaledb,pg_stat_statements,auto_explain -c max_connections=200
   USERDATA
   )
 
