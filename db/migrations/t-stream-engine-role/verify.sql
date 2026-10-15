@@ -24,7 +24,7 @@ WITH want(rel, privs) AS (VALUES
   ('config.equipment_out_of_service','r'),
   ('silver.equipment_categorical_1min','r'),('silver.equipment_categorical_1hour','r'),
   ('silver.agg_equipment_values_1min','r'),('silver.agg_equipment_values_1hour','r'),
-  ('silver.ca_discrete_changes_1s','r'),('silver.ca_equipment_boxes_1s','r'),
+  ('silver.ca_discrete_changes_1s','r'),
   ('silver.plc_endpoint_equipment','r'),('silver.plc_link_minutes','r'),
   ('core.equipments','rw'),('core.topic_routing','rw'),('core.packml_register','rw'),
   ('core.production_orders','arw'),('core.products','arw'),('core.product_families','arw'),('core.clients','arw'),
