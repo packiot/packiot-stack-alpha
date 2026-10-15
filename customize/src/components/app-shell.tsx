@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { useEnterpriseFromUrl } from "@/hooks/use-enterprise-from-url";
 import { useEnterpriseStore } from "@/stores/enterprise-store";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { MirrorBanner } from "@/components/mirror-banner";
 import { cn } from "@/lib/utils";
 
 // Minimal fixed nav — the Customization Hub is a focused three-surface app
@@ -97,6 +98,7 @@ export function AppShell() {
           </button>
         </div>
       </header>
+      <MirrorBanner />
 
       <div className="flex flex-1 overflow-hidden">
         <nav className="flex w-56 flex-none flex-col gap-[3px] overflow-y-auto bg-chrome p-3">

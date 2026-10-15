@@ -180,7 +180,7 @@ jobs:
           # RabbitMQ (or their next timer tick) instead of failing against a DB that
           # is mid-rename. Request/response APIs stay up and retry on reconnect.
           case "$IN_DATABASE" in
-            analytics) cands="stream-engine analytics-sync legacy-replicator legacy-replicator-sbx" ;;
+            analytics) cands="stream-engine analytics-sync legacy-replicator legacy-replicator-sbx prod-reflector" ;;
             superset)  cands="superset superset-worker" ;;
             historian) cands="" ;;
           esac
@@ -226,7 +226,7 @@ jobs:
           for t in ${{ steps.stop.outputs.timers }}; do systemctl start "$t"; done
           # hist-gateway / pgbouncer clients reconnect by name; give them a moment.
           sleep 30
-          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'stream-engine|analytics-sync|legacy-replicator|superset|hist-gateway|read-api|stack-edge-api' || true
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'stream-engine|analytics-sync|legacy-replicator|prod-reflector|superset|hist-gateway|read-api|stack-edge-api' || true
 
       - name: Summary
         if: always()

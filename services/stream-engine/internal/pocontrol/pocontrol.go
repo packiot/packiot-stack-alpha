@@ -21,6 +21,10 @@ import (
 type Handler struct {
 	resolver *sparkplug.Resolver
 	logger   *slog.Logger
+	// mirror: tenants this environment mirrors from production (PROD_MIRROR_ENTERPRISES, ADR-0064). Their POs are
+	// copied from production by prod-reflector; a PLC command read by THIS environment's reader is not acted on
+	// (production's reader acts on the same command), or both environments would mint the PO.
+	mirror map[int]bool
 
 	started  atomic.Uint64
 	topology atomic.Uint64
@@ -396,14 +400,26 @@ func (h *Handler) Stats() Stats {
 	return Stats{h.started.Load(), h.topology.Load(), h.created.Load(), h.events.Load(), h.ended.Load(), h.noops.Load(), h.dropped.Load()}
 }
 
+// SetProdMirror marks tenants whose PO lifecycle this environment must not act on (ADR-0064).
+func (h *Handler) SetProdMirror(ids []int) {
+	h.mirror = map[int]bool{}
+	for _, id := range ids {
+		h.mirror[id] = true
+	}
+}
+
+// SkipsEnterprise reports whether commands of this tenant are ignored here (a production mirror).
+func (h *Handler) SkipsEnterprise(id int) bool { return h.mirror[id] }
+
 // resolveOrNoop is the shared preamble of every executor: resolve the
-// topic; unregistered → count a noop and signal skip.
+// topic; unregistered → count a noop and signal skip. A production-mirror
+// tenant is a noop too (its POs come from production, ADR-0064).
 func (h *Handler) resolveOrNoop(ctx context.Context, m *sparkplug.Metric) (*sparkplug.EquipmentInfo, bool, error) {
 	info, err := h.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, false, fmt.Errorf("resolve: %w", err)
 	}
-	if info == nil {
+	if info == nil || h.mirror[info.IDEnterprise] {
 		h.noops.Add(1)
 		return nil, false, nil
 	}

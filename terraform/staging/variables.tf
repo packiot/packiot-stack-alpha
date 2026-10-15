@@ -144,3 +144,16 @@ variable "github_repo" {
   type        = string
   default     = "packiot/packiot-stack-alpha"
 }
+
+# ── ADR-0064: staging mirror of production ──────────────────────────────────────
+variable "prod_mirror_peering_id" {
+  description = "VPC peering id created by terraform/production (output staging_mirror_peering_id); empty = no route"
+  type        = string
+  default     = ""
+}
+
+variable "prod_mirror_db_cidr" {
+  description = "Production DB EC2 private address prod-reflector connects to (the only staging → production route)"
+  type        = string
+  default     = "10.20.10.89/32"
+}

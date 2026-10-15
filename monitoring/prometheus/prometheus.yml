@@ -120,6 +120,12 @@ scrape_configs:
     static_configs:
       - targets: ['legacy-replicator:9104']
 
+  # prod-reflector (ADR-0064) — staging tenant = read-only mirror of production. Idle until
+  # PROD_MIRROR_ENTERPRISES is set (then prod_reflector_enabled=1); ProdMirror* rules below.
+  - job_name: prod-reflector
+    static_configs:
+      - targets: ['prod-reflector:9124']
+
   # read-api (formerly refdata-api) / query-api — the read side (ADR-0015). Full RED on :9104:
   # http_request_duration_seconds{method,route,status} (rate=_count, errors=by
   # status, duration=histogram) plus Go runtime + process metrics.

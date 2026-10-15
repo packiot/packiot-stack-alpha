@@ -51,6 +51,9 @@ SERVICES = {
     # (LEGACY_DB_*) is a different database and out of scope. Not in dev (no legacy stand-in) or production yet.
     "legacy-replicator": ("legacy_replicator", ["compose.staging.yml"]),
     "legacy-replicator-sbx": ("legacy_replicator", ["compose.staging.yml"]),
+    # ADR-0064: the STAGING (destination) login; its production source login (prod_reflector_ro, SRC_SECRET_ID)
+    # is another database and SELECT-only. Staging only: production mirrors nothing.
+    "prod-reflector": ("prod_reflector", ["compose.staging.yml"]),
 }
 
 # service → (the env flag that would make it connect, the compose files it must appear in)

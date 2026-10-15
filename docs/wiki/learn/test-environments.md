@@ -16,6 +16,7 @@ last_verified: 2026-10-14
 |---|---|---|
 | **Pack4 production** | The real factories. C-PACK and every other client run here today. It is the source of truth for how the product must behave | the factories' operators; **never** tests |
 | **CPACK-Staging** | A **read-only mirror** of C-PACK production on the new platform. It shows how the new platform computes C-PACK's real data, so we can compare it with production | nobody: changes are copied in from production, and the apps refuse test writes |
+| **Bispharma (mirror)** | From Bispharma's **production go-live** on the new platform, staging's Bispharma becomes a **read-only mirror of production** (until then it is Bispharma's live system). It shows exactly what production shows, a minute behind | nobody: everything is copied from production; the apps show a "read-only mirror — use production" banner and refuse changes |
 | **SANDBOX-CPACK** | A **copy of CPACK-Staging** that anyone can change. QA, demos, training and automated tests happen here | QA, Customer Success, engineers, automated tests |
 
 "Staging" is the new platform before it serves clients. "Production" in these docs means the
