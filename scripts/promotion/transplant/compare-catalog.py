@@ -18,8 +18,8 @@ VAL = {'tables': lambda t: (t['kind'], t['rls'], t['force'], bool(t['ht']), tupl
        'policies': lambda p: 1, 'triggers': lambda t: norm(t['def'])}
 total = 0
 for sec, ks in KEYS.items():
-    a = {tuple(o[k] for k in ks): o for o in S.get(sec, []) if not sto(o['s'], o.get('tbl') or o['n']) and not sto(o['s'], o['n'])}
-    b = {tuple(o[k] for k in ks): o for o in N.get(sec, [])}
+    a = {tuple(o[k] for k in ks): o for o in (S.get(sec) or []) if not sto(o['s'], o.get('tbl') or o['n']) and not sto(o['s'], o['n'])}
+    b = {tuple(o[k] for k in ks): o for o in (N.get(sec) or [])}
     miss, extra = sorted(set(a) - set(b)), sorted(set(b) - set(a))
     diff = sorted(k for k in set(a) & set(b) if VAL[sec](a[k]) != VAL[sec](b[k]))
     total += len(miss) + (len(diff) if sec != 'views' else 0)

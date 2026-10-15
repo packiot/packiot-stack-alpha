@@ -64,6 +64,11 @@ TRANSPLANT_MODE=tenant python3 scripts/promotion/transplant/build.py <workdir>  
 python3 scripts/promotion/bispharma/tenant_extract.py <workdir>                     # writes out/04t-tenant-load.sql, 12t-tenant-verify.sql, seq-floor.sql
 PGC=timescaledb TENANT_DIR=/root/tenant5 xplant.sh roles joblog create pre hyper views tload repair post checks data logic grants tverify policies seqfloor
 ```
+- Before the window, on any machine with docker: `scripts/promotion/transplant/selftest-clean-server.sh` (~1 min, local
+  throwaway containers). It builds a mini staging with the real `t-enterprise-codes` + `t-prod-reflector-roles`
+  migrations, runs the phases above on a clean server and checks the catalog/ACL/tenant gates. `roles` creates
+  `prod_reflector_ro` (the production login) and `prod_reflector` (staging's login; on prod passwordless and unused — step 8a
+  applies the same migration anyway).
 - `TRANSPLANT_MODE=tenant` restricts phase `data` to the retention catalog.
   - The rehearsal's fingerprint diff caught the business backfills **rewriting Bispharma's curated config**:
     `t-ideal-speed-best-demonstrated` re-derived machine M682's `production_speed` from 110 to 241, and through it its

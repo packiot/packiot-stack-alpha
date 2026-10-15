@@ -133,6 +133,18 @@ ROLES = {  # name: (attributes, connection limit, {setting: value})
     'operator_gateway':  ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 10,
                           {'default_transaction_read_only': 'on', 'statement_timeout': '5s'}),
     'barcode_service':   ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 15, {'statement_timeout': '30s'}),
+    # ADR-0064 prod-reflector (db/migrations/t-prod-reflector-roles, same attributes/limits/settings). Once that migration is on
+    # staging, staging's dump GRANTs to both, so without them here the role gate below stops the build (go-live step 4).
+    #   prod_reflector_ro — the one that MATTERS on prod: the reflector's read-only login to production (SELECT on the
+    #                       reflected tables; password set on the prod app host by provision-db-role.py --service prod-reflector-ro).
+    #   prod_reflector    — staging's write login; on prod it is created too, passwordless and never provisioned. Created rather
+    #                       than its grants filtered because (a) go-live step 8a applies t-prod-reflector-roles to prod anyway
+    #                       (idempotent; it creates both), so filtering here would be undone minutes later; (b) the ACL gate
+    #                       (compare-acl.py) compares the target to staging and would then report every reflected table.
+    #                       A role with no password cannot authenticate with scram/md5; NOBYPASSRLS with no app.tenant_id.
+    'prod_reflector_ro': ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 6,
+                          {'default_transaction_read_only': 'on', 'statement_timeout': '120s'}),
+    'prod_reflector':    ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 8, {}),
 }
 # CLEAN-SERVER roles (Bispharma go-live 2026-10-15: production starts on a NEW, empty server). The old prod server already has
 # these two (they came with prod's own history), so they were never in ROLES; a clean server has neither, and build.py stopped

@@ -17,21 +17,21 @@ for sec in ('acl', 'fnacl', 'nspacl'):
     tot += len(miss) + len(diff); print(f"{sec:8s} staging={len(a)} next={len(b)} missing={len(miss)} different={len(diff)}")
     for k in miss[:8]: print('   MISSING', k)
     for k in diff[:8]: print('   DIFF', k, 'stg-only', sorted(set(a[k]) - set(b[k])), 'next-only', sorted(set(b[k]) - set(a[k])))
-a = {o['o']: (o['cmd'], sorted(o['roles']), o['qual'], o['chk']) for o in S['pol']}; b = {o['o']: (o['cmd'], sorted(o['roles']), o['qual'], o['chk']) for o in N['pol']}
+a = {o['o']: (o['cmd'], sorted(o['roles']), o['qual'], o['chk']) for o in S['pol'] or []}; b = {o['o']: (o['cmd'], sorted(o['roles']), o['qual'], o['chk']) for o in N['pol'] or []}
 d = [k for k in a if a[k] != b.get(k)]; tot += len(d); print(f"policies staging={len(a)} next={len(b)} different/missing={len(d)}", d[:5])
-a = {o['o']: (o['rls'], o['force']) for o in S['rls'] if not sto(o['o'])}; b = {o['o']: (o['rls'], o['force']) for o in N['rls']}
+a = {o['o']: (o['rls'], o['force']) for o in S['rls'] or [] if not sto(o['o'])}; b = {o['o']: (o['rls'], o['force']) for o in N['rls'] or []}
 d = [k for k in a if a[k] != b.get(k)]; tot += len(d); print(f"rls      staging={len(a)} next={len(b)} different/missing={len(d)}", d[:5], 'extra', sorted(set(b)-set(a))[:5])
-a = {o['r']: sorted(o['s']) for o in S['rolesettings']}; b = {o['r']: sorted(o['s']) for o in N['rolesettings']}
+a = {o['r']: sorted(o['s']) for o in S['rolesettings'] or []}; b = {o['r']: sorted(o['s']) for o in N['rolesettings'] or []}
 print('rolesettings', 'equal' if all(b.get(k) == v for k, v in a.items()) else f'DIFF stg={a} next={b}', 'next-extra', {k: v for k, v in b.items() if k not in a})
 key = lambda o: (o['proc'], o['ht'])
-a = {key(o): (o['every'], o['cfg']) for o in S['jobs']}; b = {key(o): (o['every'], o['cfg']) for o in N['jobs']}
+a = {key(o): (o['every'], o['cfg']) for o in S['jobs'] or []}; b = {key(o): (o['every'], o['cfg']) for o in N['jobs'] or []}
 print(f"jobs staging={len(a)} next={len(b)}")
 for k in sorted(set(a) | set(b)):
     if a.get(k) != b.get(k): print('   JOB', k, 'stg', a.get(k), 'next', b.get(k))
-a = {o['rel']: (o['tier'], o['keep']) for o in S['retention']}; b = {o['rel']: (o['tier'], o['keep']) for o in N['retention']}
+a = {o['rel']: (o['tier'], o['keep']) for o in S['retention'] or []}; b = {o['rel']: (o['tier'], o['keep']) for o in N['retention'] or []}
 print(f"retention catalog staging={len(a)} next={len(b)}")
 for k in sorted(set(a) | set(b)):
     if a.get(k) != b.get(k): print('   RET', k, 'stg', a.get(k), 'next', b.get(k))
-a = {o['ht']: o['on'] for o in S['compression']}; b = {o['ht']: o['on'] for o in N['compression']}
+a = {o['ht']: o['on'] for o in S['compression'] or []}; b = {o['ht']: o['on'] for o in N['compression'] or []}
 print('compression', 'equal' if a == b else f'stg={a} next={b}')
 print('TOTAL acl/policy/rls missing+different =', tot)
