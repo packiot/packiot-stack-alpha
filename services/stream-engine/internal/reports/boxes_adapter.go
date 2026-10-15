@@ -22,6 +22,12 @@ import (
 )
 
 // LabelFormat is one tenant descriptor (config.label_formats row).
+// reportBucketOrigin is TimescaleDB time_bucket's default origin (Monday 2000-01-03 UTC). The box
+// reports bucket with date_bin(bucket, ts, reportBucketOrigin), which equals time_bucket(bucket, ts)
+// for every interval without months (ADR-0063 C1; months are forbidden by CHECK on the configured
+// bucket columns). Bound as a parameter, not written into the SQL text (caggsplit ratchet).
+var reportBucketOrigin = time.Date(2000, time.January, 3, 0, 0, 0, 0, time.UTC)
+
 type LabelFormat struct {
 	Enterprise                                                      int
 	LabelKey, Archetype                                             string
@@ -72,7 +78,7 @@ const deliverySQL = `
 const counterSQL = `
 	INSERT INTO customer_reports.boxes
 	       (customer_id, label_key, ts_value, id_order, id_equipment, id_area, id_site, net_production, qty)
-	SELECT $2::int, $1::text, date_bin($3::interval, ts_value, timestamptz '2000-01-03 00:00:00+00'),
+	SELECT $2::int, $1::text, date_bin($3::interval, ts_value, $6::timestamptz),
 	       (analogs -> $1::text ->> $4::text),
 	       id_equipment, id_area, id_site,
 	       sum((analogs -> $1::text ->> $5::text)::double precision), count(*)
@@ -120,7 +126,7 @@ func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
 			tag = t.RowsAffected()
 		case "counter":
 			t, err := d.Pool.Exec(ctx, fmt.Sprintf(counterSQL, d.SilverSchema),
-				f.LabelKey, f.Enterprise, f.Bucket, f.OrderField, f.QtyField)
+				f.LabelKey, f.Enterprise, f.Bucket, f.OrderField, f.QtyField, reportBucketOrigin)
 			if err != nil {
 				return total, fmt.Errorf("counter %d/%s: %w", f.Enterprise, f.LabelKey, err)
 			}

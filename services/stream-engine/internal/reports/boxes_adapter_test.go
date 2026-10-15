@@ -21,7 +21,7 @@ func TestBoxesAdapterShape(t *testing.T) {
 		}
 	}
 	for _, m := range []string{
-		"date_bin($3::interval, ts_value, timestamptz '2000-01-03 00:00:00+00')", // = time_bucket (ADR-0063 C1)
+		"date_bin($3::interval, ts_value, $6::timestamptz)", // = time_bucket with reportBucketOrigin (ADR-0063 C1)
 		"GROUP BY 3, 4, id_equipment, id_area, id_site",
 		"ON CONFLICT (customer_id, label_key, ts_value, id_order)",
 	} {
@@ -44,7 +44,7 @@ func TestBoxesAdapterShape(t *testing.T) {
 func TestBoxesBridgeShape(t *testing.T) {
 	for _, m := range []string{
 		"child.cd_equipment = $1", "parent.cd_equipment = $2",
-		"date_bin($4::interval, b.ts_value, timestamptz '2000-01-03 00:00:00+00')", "label_key = $5",
+		"date_bin($4::interval, b.ts_value, $7::timestamptz)", "label_key = $5",
 		"ON CONFLICT (ts_value, id_equipment)",
 	} {
 		if !strings.Contains(bridgeSQL, m) {
