@@ -80,6 +80,9 @@ BEGIN
            ORDER BY i.indisprimary DESC, i.indexrelid LIMIT 1) ix,
          unnest(ix.indkey) WITH ORDINALITY k(attnum, ord) JOIN pg_attribute a ON a.attrelid = p_rel AND a.attnum = k.attnum;
   IF keys IS NULL THEN RAISE EXCEPTION '% has no unique index containing %', p_rel, tcol; END IF;
+  IF EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = p_rel AND a.attname = ANY (keys) AND NOT a.attnotnull) THEN
+    RAISE EXCEPTION '% key (%) has a nullable column: the swap replays by = and would miss NULL keys', p_rel, array_to_string(keys, ', ');
+  END IF;
   twin := format('%I.%I', sch, nm || '__p');
   cc   := format('%I.%I', sch, nm || '__cc');
 
@@ -162,7 +165,10 @@ BEGIN
                    tw, p_rel, s.time_col, s.time_col) USING r.lo, r.hi;
   END LOOP;
   keyl := (SELECT string_agg(quote_ident(k), ', ') FROM unnest(s.key_cols) k);
-  joincond := (SELECT string_agg(format('t.%1$I IS NOT DISTINCT FROM c.%1$I', k), ' AND ') FROM unnest(s.key_cols) k);
+  -- plain = (2026-10-15): IS NOT DISTINCT FROM cannot use an index or a hash join, so the replay became a
+  -- nested loop (667 keys x 461k rows held the canary's ACCESS EXCLUSIVE lock ~5 minutes; on bronze,
+  -- 26k keys x 26M rows, it would have been hours). The keys come from a unique index of NOT NULL columns.
+  joincond := (SELECT string_agg(format('t.%1$I = c.%1$I', k), ' AND ') FROM unnest(s.key_cols) k);
   EXECUTE format('DELETE FROM %s t USING (SELECT DISTINCT %s FROM %s) c WHERE %s', tw, keyl, s.capture, joincond);
   EXECUTE format('INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT t.* FROM %s t JOIN (SELECT DISTINCT %s FROM %s) c ON %s',
                  tw, p_rel, keyl, s.capture, joincond);
