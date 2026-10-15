@@ -441,6 +441,13 @@ set -e
 set +e; set -f; set -a; . /opt/packiot/.env 2>/dev/null; set +a; set +f; set -e
 tmp=\$(mktemp /tmp/sbx.XXXXXX.sql); trap 'rm -f "\$tmp"' EXIT
 echo $sqlb | base64 -d > "\$tmp"
+# the F1 `packiot` plane is being decommissioned (ADR-0063 follow-up, 2026-10-15): a target database that no
+# longer exists is skipped, not an error (csadmin/edge-api read packiot_analytics; nothing reads the F1 copy)
+dbn="$dbref"
+if [ "\$(docker run --rm --network stack_packiot-net -e PGPASSWORD="\$POSTGRES_PASSWORD" postgres:16-alpine \
+      psql -h "\$POSTGRES_HOST_UPSTREAM" -p 5432 -U "\$POSTGRES_USER" -d postgres -Atc "SELECT count(*) FROM pg_database WHERE datname = '\$dbn'" </dev/null)" = 0 ]; then
+  echo "skipped: database \$dbn does not exist"; exit 0
+fi
 docker run --rm -i --network stack_packiot-net -e PGPASSWORD="\$POSTGRES_PASSWORD" \
   -v "\$tmp":/q.sql:ro postgres:16-alpine \
   psql -h "\$POSTGRES_HOST_UPSTREAM" -p 5432 -U "\$POSTGRES_USER" -d "$dbref" \
