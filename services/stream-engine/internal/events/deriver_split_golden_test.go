@@ -1,10 +1,12 @@
 //go:build golden
 
 // Golden fixture for the native events deriver's read/apply split (ADR-0063 A2):
-// on a REAL real-time ca_discrete_changes_1s cagg, the correct (DELETE) and
-// upsert (INSERT … ON CONFLICT) passes write exactly what the single statements
-// wrote — same transaction, same now(), same deleted/upserted counts — the split
-// reads plan with a constant watermark, and the originals still show the trap.
+// the correct (DELETE) and upsert (INSERT … ON CONFLICT) passes write exactly what
+// the single statements wrote — same transaction, same now(), same deleted/upserted
+// counts. Since ADR-0063 B4 the stream reads equipment_values, not the
+// ca_discrete_changes_1s cagg, so the watermark trap A2 split around is gone; the
+// split stays (harmless, and the engine form is shared) and this test still pins
+// split == inline. Raw-vs-cagg equivalence: deriver_raw_golden_test.go.
 // They run with bind arguments over the simple protocol, as RunOnce runs them.
 //
 //	DATABASE_URL=postgres://postgres:golden@localhost:5432/golden?sslmode=disable \
@@ -50,22 +52,17 @@ func TestGoldenDeriverSplit(t *testing.T) {
 		// 1-3 native state machines (status_type 4); 4 a wide-row machine of enterprise 8
 		// (opted in via $3); 5 excluded by area; 6 not a state equipment.
 		`INSERT INTO ` + s + `.equipments VALUES (1,10,3,1,4),(2,10,3,1,4),(3,10,3,3,4),(4,10,8,1,0),(5,99,3,1,4),(6,10,3,1,0)`,
-		`CREATE TABLE ` + s + `.discrete (ts_value timestamptz NOT NULL, id_equipment int, id_enterprise int, state int)`,
-		`SELECT create_hypertable('` + s + `.discrete', 'ts_value', chunk_time_interval => interval '4 hours')`,
+		`CREATE TABLE ` + s + `.equipment_values (ts_value timestamptz NOT NULL, id_equipment int, id_enterprise int, state int)`,
+		`SELECT create_hypertable('` + s + `.equipment_values', 'ts_value', chunk_time_interval => interval '4 hours')`,
 		// a state sample every 20 s for 26 h; states change in runs of a few minutes,
 		// and some samples carry no state (the fill logic carries the last one).
-		`INSERT INTO ` + s + `.discrete
+		`INSERT INTO ` + s + `.equipment_values
 		   SELECT m, e, CASE WHEN e = 4 THEN 8 ELSE 3 END,
 		          CASE WHEN (extract(epoch FROM m)::bigint / 20 + e) % 13 = 0 THEN NULL
 		               ELSE (ARRAY[6, 6, 6, 5, 6, 10, 6, 11])[1 + ((extract(epoch FROM m)::bigint / (240 + 60 * e)) % 8)::int] END
 		     FROM generate_series(1, 6) e,
 		          generate_series(date_trunc('minute', now()) - interval '26 hours', now() - interval '5 seconds', interval '20 seconds') m`,
-		`CREATE MATERIALIZED VIEW ` + s + `.ca_discrete_changes_1s
-		   WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-		 SELECT time_bucket('1 second', ts_value) AS ts_value, id_equipment, id_enterprise, max(state) AS state
-		   FROM ` + s + `.discrete GROUP BY 1, 2, 3 WITH NO DATA`,
-		`CALL refresh_continuous_aggregate('` + s + `.ca_discrete_changes_1s', NULL, date_trunc('hour', now()) - interval '2 hours')`,
-		`ANALYZE ` + s + `.discrete`,
+		`ANALYZE ` + s + `.equipment_values`,
 		`CREATE TABLE ` + s + `.equipment_events (ts_event timestamptz, ts_end timestamptz, id_equipment int, status int,
 		    id_enterprise int, duration numeric, forced_creation_system boolean NOT NULL DEFAULT false,
 		    PRIMARY KEY (id_equipment, ts_event))`,
@@ -165,32 +162,13 @@ func TestGoldenDeriverSplit(t *testing.T) {
 		}
 	}
 
-	explain := func(sql string) string {
-		rows, err := tx.Query(ctx, "EXPLAIN "+sql, args...)
-		if err != nil {
-			t.Fatalf("explain: %v", err)
-		}
-		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			t.Fatal(err)
-		}
-		return strings.Join(lines, "\n")
-	}
-	for _, c := range []struct{ name, inline, split string }{
-		{"correct", correctSQL, correctSplitSQL}, {"upsert", upsertSQL, upsertSplitSQL},
-	} {
-		if !strings.Contains(explain(render(c.inline)), "cagg_watermark") {
-			t.Fatalf("%s: the original no longer shows an unconstified cagg_watermark() — re-check the premise", c.name)
-		}
+	for _, c := range []struct{ name, split string }{{"correct", correctSplitSQL}, {"upsert", upsertSplitSQL}} {
 		st := caggsplit.Statements(render(c.split))
 		if len(st) != 3 {
 			t.Fatalf("%s: want 3 statements, got %d", c.name, len(st))
 		}
-		if p := explain(st[1]); strings.Contains(p, "cagg_watermark") {
-			t.Errorf("%s: the split read plans with an unconstified watermark:\n%s", c.name, p)
-		}
-		if strings.Contains(st[2], "ca_discrete_changes_1s") {
-			t.Errorf("%s: the apply reads the cagg", c.name)
+		if strings.Contains(c.split, "ca_discrete_changes_1s") {
+			t.Errorf("%s: the deriver still reads the cagg (ADR-0063 B4)", c.name)
 		}
 	}
 }
