@@ -38,6 +38,15 @@ resource "aws_route_table" "public" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.staging.id
   }
+  # ADR-0064: prod-reflector (on the app EC2, this subnet) → production DB over the peering created by
+  # terraform/production (staging_mirror_enabled). Only the DB's /32; absent while prod_mirror_peering_id is empty.
+  dynamic "route" {
+    for_each = var.prod_mirror_peering_id == "" ? [] : [1]
+    content {
+      cidr_block                = var.prod_mirror_db_cidr
+      vpc_peering_connection_id = var.prod_mirror_peering_id
+    }
+  }
   tags = { Name = "packiot-staging-public-rt" }
 }
 

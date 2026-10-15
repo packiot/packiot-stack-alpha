@@ -1,7 +1,8 @@
 # analytics-sync
 
-Replays operator actions (`user_logs`) into the analytics DB: one Go module, two binaries —
-`analytics-sync` (idle on staging) and `legacy-replicator` (the CPACK twin feed, live on staging).
+Replays operator actions (`user_logs`) into the analytics DB: one Go module, three binaries —
+`analytics-sync` (idle on staging), `legacy-replicator` (the CPACK twin feed, live on staging) and
+`prod-reflector` (ADR-0064: a staging tenant as a read-only mirror of production; idle until switched on).
 
 ## What it does
 
@@ -278,17 +279,58 @@ leaves a host. The legacy side needs nothing.
 and redeploy, then run `rollback.sql`. **Rotate:** `provision-db-role.py --service legacy-replicator --rotate`,
 then recreate both containers. **Production** has no legacy-replicator.
 
+## prod-reflector (ADR-0064)
+
+After a tenant's production go-live, staging keeps it as a **read-only mirror of production**. `cmd/prod-reflector`
+(`internal/mirror`) is a **state reflector**, not an action replayer: both databases share the schema and the ids, so
+every minute it converges staging's rows of the tenant to production's, table by table, production always wins.
+
+- **What:** `internal/mirror/spec.go` — `Reflected` (production owns: hierarchy, topics, device keys, descriptors,
+  reasons, shifts, products, targets, users/roles, POs + runtime, events + justifications, box scans, samples, gold,
+  live views; FK order) and `Local` (staging keeps: its own reader's raw series, its audit log, invariants, customer
+  exports). A tenant-keyed table in neither list is reported (MR5), never touched.
+- **How:** per table and UTC-day bucket, `count + md5` of the tenant's rows on both sides (production in one REPEATABLE
+  READ READ ONLY snapshot); only differing buckets are fetched; upsert by primary key (self-references set after the
+  rows exist), delete what production no longer has (children first, literal keys), replace whole buckets for tables
+  without a key; then read back in the same transaction. Hot passes look 35 days back, a full pass every 6 h.
+  Only columns present on both sides are mirrored. `core.enterprises.api_key` is never copied; the name becomes
+  production's + `" (mirror)"`. `bronze.box_scans` is append-only.
+- **Guards:** a production without the enterprise aborts the pass; `empty_source` (production returns no rows for a
+  table staging has) and `max_deletes` refuse deletes; each table converges in its own savepoint.
+- **Detector:** a row the reflector wrote that changed again on staging while production did not →
+  `prod_reflector_staging_writes_total` (a write surface the block missed).
+- **Invariants** every 15 min into `ops.data_invariant_result` (source `prod-reflector`): MR1 config equal, MR2 POs equal,
+  MR3 lag, MR4 id blocks (production ≥ `PROD_ID_BLOCK`, staging below), MR5 unclassified tables.
+
+| Name | Default | Effect |
+|---|---|---|
+| `PROD_MIRROR_ENTERPRISES` | — | the switch (shared with edge-api, barcode-service, stream-engine); empty = idle, no DB connection |
+| `PROD_REFLECT_DRY_RUN` | `false` | full passes, then ROLLBACK; invariants logged, not recorded |
+| `SRC_SECRET_ID` / `PG_SECRET_ID` | — | production login (`prod_reflector_ro`) / staging login (`prod_reflector`), Secrets Manager; `CREDS_SOURCE=env` reads `SRC_DB_*` / `DEST_DB_*` (dev/tests) |
+| `PROD_REFLECT_INTERVAL_SEC` / `_FULL_EVERY_HOURS` / `_LOOKBACK_DAYS` | `60` / `6` / `35` | pacing |
+| `PROD_REFLECT_MAX_DELETES` | `2000` | per table per pass |
+| `PROD_REFLECT_NAME_SUFFIX` | `" (mirror)"` | staging enterprise name suffix |
+| `PROD_ID_BLOCK` | `1000000000` | MR4 threshold |
+| `PROD_REFLECT_INVARIANT_EVERY_MIN` / `_MAX_LAG_SEC` | `15` / `600` | MR cadence / MR3 bound |
+| `HEALTH_PORT` / `HEALTHCHECK_MAX_AGE_SEC` | `9124` / `0` | `/healthz` (503 when no pass completed in N s), `/metrics` |
+
+Roles: `db/migrations/t-prod-reflector-roles` (both sides). Runbook: `docs/runbooks/staging-mirror-of-production.md`.
+Tests: `go test ./internal/mirror/` (unit; includes the spec ↔ migration grant list check) and
+`-tags golden` (two real databases, the real migration's roles: convergence, api key kept, name suffix, self-FK order,
+other tenant untouched, serving refresh, staging-write detector, append-only, dry run, empty-source guard, MR4).
+
 ## Code layout
 
 | Path | What |
 |---|---|
 | `cmd/shadow-mirror/` | `analytics-sync` entrypoint (idle mode, handler registration, HTTP) |
 | `cmd/legacy-replicator/` | `legacy-replicator` entrypoint (pools, handlers, reconcilers, DLQ retrier) |
+| `cmd/prod-reflector/`, `internal/mirror/` | `prod-reflector` (ADR-0064): config, spec (reflected/local tables), catalog, plan (SQL), diff, pass, invariants |
 | `internal/config/` | analytics-sync env config |
 | `internal/replay/` | cursor, dispatcher, loop; `handlers/` per `user_logs` category |
 | `internal/replicate/` | legacy-replicator: config, resolver (id map), handlers, loop, cursor, `dlq.go`, `reconcile*.go` (POs), `enrich.go`, `manual_reconcile.go`, `base_reconcile.go`, `hold.go`, `flexnum.go` |
 | `internal/db/`, `internal/health/`, `internal/log/`, `internal/metrics/` | pgx pools, liveness, slog, Prometheus registry |
-| `Dockerfile`, `Dockerfile.replicator` | one image per binary |
+| `Dockerfile`, `Dockerfile.replicator`, `Dockerfile.reflector` | one image per binary |
 | `scripts/` | one-off legacy backfill |
 
 ## Related docs

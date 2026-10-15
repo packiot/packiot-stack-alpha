@@ -635,6 +635,14 @@ services:
       # STAGING ONLY — unset in prod/dev (block is off when unset).
       OPERATOR_WRITE_BLOCKED_ENTERPRISES: "3"
       OPERATOR_WRITE_BLOCK_SANDBOX_ENTERPRISE: "2000003"
+      # ── Production mirror (ADR-0064) — THE go-live switch, OFF until the window ─
+      # PROD_MIRROR_ENTERPRISES (in /opt/packiot/.env, e.g. "5" at Bispharma's production go-live):
+      # every mutating /api route of that tenant → 403 MIRROR_TENANT_WRITE_BLOCKED with a "use
+      # production" message (reads stay open); GET /api/environment/mirror-status tells the SPAs to
+      # show their read-only banner. The same variable switches barcode-service, stream-engine and
+      # prod-reflector below. Rollback: remove the line from .env, recreate those four services.
+      PROD_MIRROR_ENTERPRISES: ${PROD_MIRROR_ENTERPRISES:-}
+      PROD_MIRROR_PRODUCTION_URL: ${PROD_MIRROR_PRODUCTION_URL:-https://front.prod.packiot.app}
       # Distributed tracing → Tempo (OTLP/gRPC). Present = tracing on (src/
       # tracing.ts starts the NodeSDK). Completes the operator → operator-adapter
       # → edge-api → DB trace: the adapter's outbound traceparent continues into
@@ -2244,6 +2252,9 @@ services:
       CHANGEOVER_AVAILABILITY_ENABLED: ${CHANGEOVER_AVAILABILITY_ENABLED:-}
       COUNTER_TOTALS_PUBLIC: ${COUNTER_TOTALS_PUBLIC:-}
       CPAC_EVENT_DERIVATION_ENABLED: ${CPAC_EVENT_DERIVATION_ENABLED:-}
+      # ADR-0064: a production-mirror tenant is folded out of every job that writes a table prod-reflector
+      # copies (rollups, UNS views, PO recalc, stop minting/closing, po-control). Empty = no change.
+      PROD_MIRROR_ENTERPRISES: ${PROD_MIRROR_ENTERPRISES:-}
       CPAC_EVENT_DERIVATION_INTERVAL_MINUTES: ${CPAC_EVENT_DERIVATION_INTERVAL_MINUTES:-}
       CPAC_EVENT_ENTERPRISES: ${CPAC_EVENT_ENTERPRISES:-}
       CPAC_EVENT_TARGET_TABLE: ${CPAC_EVENT_TARGET_TABLE:-}
@@ -3145,6 +3156,8 @@ services:
       COGNITO_ISSUER: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt"
       COGNITO_CLIENT_ID: "2ckuoa0ov598rdpdn3uv039h6e"
       LOG_LEVEL: info
+      # ADR-0064: scans of a production-mirror tenant → 403 MIRROR_TENANT_WRITE_BLOCKED (empty = off).
+      PROD_MIRROR_ENTERPRISES: ${PROD_MIRROR_ENTERPRISES:-}
     networks:
       packiot-net:
         ipv4_address: 172.18.0.36
@@ -3557,6 +3570,54 @@ services:
       start_period: 30s
     mem_limit: 128m
     cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── prod-reflector (ADR-0064) — staging tenant = read-only mirror of production ──────────────
+  # IDLE (no DB connection, no secret read) until PROD_MIRROR_ENTERPRISES is set in /opt/packiot/.env —
+  # the same one-line switch as edge-api / barcode-service / stream-engine. Then, every minute, it
+  # converges that tenant's staging rows (configuration, users, POs + runtime, events + justifications,
+  # box scans, samples, OEE, live views) to PRODUCTION's, production always wins; staging's own PLC
+  # reader keeps feeding silver.equipment_values (two independent readers). Source: production DB as
+  # the SELECT-only role prod_reflector_ro (secret packiot/production/prod-reflector-ro-db-creds, read
+  # over the staging↔production VPC peering, terraform/production/mirror_peering.tf); destination:
+  # staging as prod_reflector (db/migrations/t-prod-reflector-roles). Invariants MR1–MR5 →
+  # ops.data_invariant_result every 15 min. Runbook: docs/runbooks/staging-mirror-of-production.md.
+  prod-reflector:
+    build:
+      context: ./services/analytics-sync
+      dockerfile: Dockerfile.reflector
+    container_name: prod-reflector
+    restart: unless-stopped
+    # No env_file: .env carries the admin login and every other secret.
+    environment:
+      LOG_LEVEL: info
+      PROD_MIRROR_ENTERPRISES: ${PROD_MIRROR_ENTERPRISES:-}
+      # PROD_REFLECT_DRY_RUN=true in .env: full passes, then ROLLBACK (the T-1 rehearsal against production).
+      PROD_REFLECT_DRY_RUN: ${PROD_REFLECT_DRY_RUN:-false}
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: ${PROD_REFLECTOR_PG_SECRET_ID:-packiot/staging/prod-reflector-db-creds}
+      SRC_SECRET_ID: ${PROD_REFLECTOR_SRC_SECRET_ID:-packiot/production/prod-reflector-ro-db-creds}
+      PROD_REFLECT_INTERVAL_SEC: "60"
+      PROD_REFLECT_FULL_EVERY_HOURS: "6"
+      PROD_REFLECT_LOOKBACK_DAYS: "35"
+      PROD_REFLECT_MAX_DELETES: ${PROD_REFLECT_MAX_DELETES:-2000}
+      PROD_REFLECT_NAME_SUFFIX: " (mirror)"
+      PROD_ID_BLOCK: "1000000000"
+      HEALTH_PORT: "9124"
+      # /healthz 503 when no pass completed for 10 min (a wedged loop, not divergence: MR1–MR3 cover that).
+      HEALTHCHECK_MAX_AGE_SEC: "600"
+    networks:
+      packiot-net:
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/prod-reflector", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}

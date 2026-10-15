@@ -39,6 +39,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -330,6 +331,31 @@ type scanServer struct {
 	store  scanStore
 	broker *sseBroker
 	logger logger
+	// mirror: tenants this environment mirrors from production (PROD_MIRROR_ENTERPRISES, ADR-0064). Their scans
+	// are recorded in production and copied here by prod-reflector; a scan accepted here would never reach
+	// production and would be undone by the next reflect pass, so it is refused up front with 403.
+	mirror map[int]bool
+}
+
+// mirrorWriteBlocked is the 403 body for a production-mirror tenant (same reason code as edge-api).
+const mirrorWriteBlocked = `{"error":"mirror_tenant_write_blocked","reason":"MIRROR_TENANT_WRITE_BLOCKED",` +
+	`"message":"This enterprise is a read-only mirror of production on this environment. Scan in production."}`
+
+// parseProdMirror parses PROD_MIRROR_ENTERPRISES. A typo fails the boot: it must never silently re-open writes.
+func parseProdMirror(raw string) (map[int]bool, error) {
+	out := map[int]bool{}
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("PROD_MIRROR_ENTERPRISES: invalid enterprise id %q", p)
+		}
+		out[n] = true
+	}
+	return out, nil
 }
 
 // logger is the minimal slog surface the server uses (an interface so tests can
@@ -344,6 +370,11 @@ func (s *scanServer) handlePostScan(w http.ResponseWriter, r *http.Request) {
 	if !ok { // unreachable behind auth middleware; fail-closed anyway
 		failed.Add(1)
 		writeJSON(w, http.StatusUnauthorized, `{"error":"missing tenant"}`)
+		return
+	}
+	if s.mirror[enterpriseID] {
+		failed.Add(1)
+		writeJSON(w, http.StatusForbidden, mirrorWriteBlocked)
 		return
 	}
 

@@ -60,7 +60,7 @@ an engineer on the platform team to give you the password or create a personal l
 | `qa-sandbox-staging@packiot.com` | SANDBOX-CPACK | Operator on `operator-sbx`, front4 on the sandbox |
 | `qa-cpack-staging@packiot.com` | CPACK-Staging | read-only checks on `operator.staging` and front4 |
 | `qa-csadmin-staging@packiot.com` | CS Admin team (all enterprises) | CS Admin and Customize |
-| `qa-bispharma-staging@packiot.com` | Bispharma | Bispharma demos (a real client box; read-only habits apply) |
+| `qa-bispharma-staging@packiot.com` | Bispharma | Bispharma demos (a real client box; read-only habits apply). **After Bispharma's production go-live it is read-only** ("Bispharma (mirror)", [ADR-0064](../adr/0064-staging-mirror-of-production-after-go-live.md)): every change is refused with a link to production |
 
 The barcode app has no login of its own: the staff sign-in page in front of it (any account
 in the CS Admin group) is the gate, and every scan goes to the sandbox.

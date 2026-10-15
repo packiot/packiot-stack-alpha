@@ -113,7 +113,15 @@ func main() {
 	store := newPgScanStore(pool)
 	broker := newSSEBroker()
 
-	srv := &scanServer{store: store, broker: broker, logger: logger}
+	mirror, err := parseProdMirror(os.Getenv("PROD_MIRROR_ENTERPRISES"))
+	if err != nil {
+		logger.Error("config", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	if len(mirror) > 0 {
+		logger.Warn("production-mirror tenants: scans refused with 403 (ADR-0064)", slog.Any("enterprises", mirror))
+	}
+	srv := &scanServer{store: store, broker: broker, logger: logger, mirror: mirror}
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, auth, srv, pool)

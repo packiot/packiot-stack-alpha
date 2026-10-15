@@ -1,0 +1,14 @@
+# prod-reflector — keeps a staging tenant a read-only mirror of production (ADR-0064).
+# Shares the module; builds the ./cmd/prod-reflector entrypoint.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download 2>/dev/null || true
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
+    -o /out/prod-reflector ./cmd/prod-reflector
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/prod-reflector /usr/local/bin/prod-reflector
+EXPOSE 9124
+ENTRYPOINT ["/usr/local/bin/prod-reflector"]
