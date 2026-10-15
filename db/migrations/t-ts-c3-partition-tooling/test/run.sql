@@ -25,6 +25,8 @@ SELECT 'T4 deleted stays deleted (want same as old)', (SELECT count(*) FROM silv
 SELECT 'T5 new + old-dated inserts present (want 2)', count(*) FROM silver.equipment_events WHERE id_equipment IN (7, 8);
 SELECT 'T6 view reads the NEW table (want t)', EXISTS (SELECT 1 FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid WHERE r.ev_class = 'silver.v_events'::regclass AND d.refobjid = 'silver.equipment_events'::regclass);
 SELECT 'T6b view does not read the old table (want f)', EXISTS (SELECT 1 FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid WHERE r.ev_class = 'silver.v_events'::regclass AND d.refobjid = 'silver.equipment_events__ts'::regclass);
+SELECT 'T6c views still on the old table (want 0)', count(DISTINCT r.ev_class) FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid WHERE d.refobjid = 'silver.equipment_events__ts'::regclass AND r.ev_class <> 'silver.equipment_events__ts'::regclass;
+SELECT 'T6d stray views created in gold (want 0)', count(*) FROM pg_class WHERE relnamespace = 'gold'::regnamespace AND relkind = 'v';
 SELECT 'T7 grant kept (want t)', has_table_privilege('readapi_ro', 'silver.equipment_events', 'SELECT');
 SELECT 'T8 comments', obj_description('silver.equipment_events'::regclass, 'pg_class'), col_description('silver.equipment_events'::regclass, 5);
 INSERT INTO silver.equipment_events (id_equipment, ts_event, status) VALUES (9, now(), 1);
