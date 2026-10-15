@@ -125,6 +125,25 @@ resource "aws_iam_policy" "app_custom" {
         ]
       },
       {
+        # BISPHARMA GO-LIVE T-1 (2026-10-15): the host env step runs ON the app host and creates/updates exactly these three
+        # secrets, so keys are generated there and never leave it: agent-ingest-key (created if absent), the ent-5 key added
+        # to refdata-query-keys, and onboard_api_key merged into app. Exact names only; ?????? = the 6-char suffix AWS
+        # appends (a `packiot/production/app-foo-XXXXXX` would NOT match). DescribeSecret/GetSecretValue come from
+        # ReadProductionSecrets. AUTHORED, NOT APPLIED (terraform apply on production is the user's).
+        Sid    = "WriteProductionGoLiveSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:TagResource",
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/production/agent-ingest-key-??????",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/production/refdata-query-keys-??????",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/production/app-??????",
+        ]
+      },
+      {
         Sid      = "ReadInitScript"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
