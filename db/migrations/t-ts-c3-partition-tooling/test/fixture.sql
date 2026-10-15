@@ -1,6 +1,8 @@
 \set ON_ERROR_STOP 1
 CREATE SCHEMA silver; CREATE SCHEMA bronze; CREATE SCHEMA ops;
 CREATE ROLE readapi_ro; CREATE ROLE tenant_reader LOGIN;
+-- a least-privilege WRITER like stream_engine: may write the tables, has no grant on anything the tooling creates
+CREATE ROLE lp_writer LOGIN;
 CREATE FUNCTION current_tenant() RETURNS int LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('app.tenant_id', true), '')::int $$;
 CREATE TABLE ops.retention_policy (relation text PRIMARY KEY, kind text NOT NULL CHECK (kind IN ('hypertable','cagg','plain')), time_expr text, keep interval, updated_at timestamptz);
 CREATE SEQUENCE silver.ev_source_seq;
@@ -17,7 +19,8 @@ SELECT e, t, t + interval '3 minutes', (extract(epoch from t)::int / 600) % 4 FR
 ALTER TABLE silver.equipment_events SET (timescaledb.compress, timescaledb.compress_segmentby = 'id_equipment');
 SELECT count(compress_chunk(c)) AS compressed FROM show_chunks('silver.equipment_events', older_than => now() - interval '30 days') c;
 CREATE VIEW silver.v_events AS SELECT id_equipment, ts_event, status FROM silver.equipment_events WHERE status <> 3;
-GRANT SELECT ON silver.equipment_events TO readapi_ro; GRANT SELECT ON silver.v_events TO readapi_ro;
+GRANT SELECT ON silver.equipment_events TO readapi_ro;
+GRANT USAGE ON SCHEMA silver TO lp_writer; GRANT SELECT, INSERT, UPDATE, DELETE ON silver.equipment_events TO lp_writer; GRANT USAGE ON SEQUENCE silver.ev_source_seq TO lp_writer; GRANT SELECT ON silver.v_events TO readapi_ro;
 COMMENT ON TABLE silver.equipment_events IS 'events table comment';
 COMMENT ON COLUMN silver.equipment_events.status IS 'status column comment';
 INSERT INTO ops.retention_policy VALUES ('silver.equipment_events', 'hypertable', 'ts_event', '60 days', now());

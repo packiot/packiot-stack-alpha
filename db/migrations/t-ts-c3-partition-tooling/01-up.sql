@@ -91,7 +91,11 @@ BEGIN
   -- change capture: the key of every row touched from now on
   EXECUTE format('CREATE TABLE %s AS SELECT %s FROM %s WITH NO DATA', cc,
                  (SELECT string_agg(quote_ident(k), ', ') FROM unnest(keys) k), p_rel);
-  EXECUTE format($t$CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $b$
+  -- SECURITY DEFINER (2026-10-15 incident): the trigger runs in the WRITER's transaction. As the
+  -- writing role, least-privilege writers (stream_engine) had no INSERT on the new capture table, so
+  -- every ingest transaction failed for ~10 minutes. As the owner, any writer can be captured.
+  EXECUTE format($t$CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $b$
     BEGIN
       IF TG_OP IN ('UPDATE', 'DELETE') THEN INSERT INTO %s VALUES (%s); END IF;
       IF TG_OP IN ('INSERT', 'UPDATE') THEN INSERT INTO %s VALUES (%s); END IF;

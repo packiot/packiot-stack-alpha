@@ -2,11 +2,14 @@
 \pset format unaligned
 CALL ops.pc_prepare('silver.equipment_events', interval '1 month');
 CALL ops.pc_copy('silver.equipment_events');
--- changes AFTER the copy: must reach the new table through the capture/replay
+-- changes AFTER the copy: must reach the new table through the capture/replay. As the least-privilege
+-- writer: the capture trigger must not require it to have rights on the capture table (2026-10-15 incident).
+SET ROLE lp_writer;
 UPDATE silver.equipment_events SET ts_end = '2001-01-01', status = 9 WHERE id_equipment = 2 AND ts_event = (SELECT min(ts_event) FROM silver.equipment_events WHERE id_equipment = 2);
 DELETE FROM silver.equipment_events WHERE id_equipment = 3 AND ts_event = (SELECT min(ts_event) FROM silver.equipment_events WHERE id_equipment = 3);
 INSERT INTO silver.equipment_events (id_equipment, ts_event, status) VALUES (7, now() - interval '5 minutes', 1);
 INSERT INTO silver.equipment_events (id_equipment, ts_event, status) VALUES (8, now() - interval '70 days', 2);
+RESET ROLE;
 SELECT 'captured keys', count(*) FROM silver.equipment_events__cc;
 SELECT 'source rows', count(*) FROM silver.equipment_events;
 BEGIN;
