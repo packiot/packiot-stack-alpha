@@ -37,6 +37,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollup"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollupshadow"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/sparkplug"
@@ -491,6 +492,12 @@ func main() {
 	// obd port — the box→production bridge (descriptor-driven).
 	if cfg.BoxesBridgeEnabled {
 		go reports.LoopBoxesBridge(ctx, bgDests, time.Minute, logger, jobObs)
+	}
+
+	// ADR-0063 Phase B — keep the plain-table twins of the caggs current (shadow; nothing reads
+	// them until the cutover migration). SQL: db/migrations/t-ts-b1-rollup-shadow.
+	if cfg.RollupShadowEnabled {
+		go rollupshadow.Loop(ctx, bgDests, time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 — the label-adapter boxes pipeline (descriptor-driven).
