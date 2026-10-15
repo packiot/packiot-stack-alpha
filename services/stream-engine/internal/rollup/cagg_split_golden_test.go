@@ -165,13 +165,15 @@ func setupGCS(t *testing.T, pool *pgxpool.Pool) {
 		    (204, now() - interval '55 minutes', NULL, 6, false, false),
 		    (204, now() - interval '9 hours', NULL, 5, false, false),
 		    (204, now() - interval '8 hours', NULL, 6, false, false),
-		    -- inside an eligible hour bucket whatever the minute (the hour window is
-		    -- 65 min): 204 stops unplanned while its meter keeps counting (the count
-		    -- floor raises it), 201 takes a planned stop (line-lead planned time).
-		    (204, now() - interval '20 minutes', NULL, 10, false, false),
-		    (204, now() - interval '12 minutes', NULL, 6, false, false),
-		    (201, now() - interval '18 minutes', NULL, 5, true, false),
-		    (201, now() - interval '9 minutes', NULL, 6, false, false)`,
+		    -- inside an ELIGIBLE hour bucket at any minute of the hour: hour_elig takes
+		    -- buckets starting >= now() - 65 min, so the previous bucket is eligible
+		    -- only in the first 5 minutes — and then the last 6 minutes reach into it.
+		    -- 204 stops unplanned while its meter keeps counting (the count floor
+		    -- raises it), 201 takes a planned stop (line-lead planned time).
+		    (204, now() - interval '4 minutes', NULL, 10, false, false),
+		    (204, now() - interval '2 minutes', NULL, 6, false, false),
+		    (201, now() - interval '6 minutes', NULL, 5, true, false),
+		    (201, now() - interval '3 minutes', NULL, 6, false, false)`,
 		`CREATE TABLE ` + s + `.equipment_oee_hourly (id_equipment int, ts_value timestamptz, ts_value_production timestamptz,
 		    target_customized boolean, recalc_needed boolean,
 		    gross float8, net float8, scrap float8, speed float8, ideal_speed float8,
