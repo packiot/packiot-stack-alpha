@@ -125,6 +125,18 @@ resource "aws_security_group" "db" {
     security_groups = [aws_security_group.superset.id]
   }
 
+  # ADR-0064: staging's prod-reflector (SELECT-only role prod_reflector_ro) over the VPC peering; absent when off.
+  dynamic "ingress" {
+    for_each = var.staging_mirror_enabled ? [1] : []
+    content {
+      description = "PostgreSQL from staging prod-reflector (ADR-0064, read-only role) via VPC peering"
+      from_port   = 5432
+      to_port     = 5432
+      protocol    = "tcp"
+      cidr_blocks = var.staging_mirror_source_cidrs
+    }
+  }
+
   egress {
     description = "OS updates, SSM, Docker pulls, Secrets Manager via NAT"
     from_port   = 0
