@@ -194,7 +194,7 @@ cycle comes 19 s later (pip install of snap7).
 | 4 | `xplant.sh roles … seqfloor` (§2.2) | 155 s on r7g.large (of which `tload` 109 s, `seqfloor` 28 s) |
 | 5 | Gates (§2.3): fingerprint and purity diff, compare-catalog, compare-acl | ~1 min |
 | 6 | **Swap**: terminate connections; `packiot → packiot_pre_promotion`; `packiot_next → packiot`; `start_background_workers()` in both; read back `current_database()` and the extension versions | 68 ms SQL |
-| 7 | `XPLANT_DB=packiot xplant.sh refresh` in the background (the caggs are real-time meanwhile). Shred `/root/tenant5` | 438 s |
+| 7 | `XPLANT_DB=packiot xplant.sh refresh` in the background (the caggs are real-time meanwhile). Shred `/root/tenant5` | 438–563 s |
 | 8 | `provision-db-role.py --env production` for stream-engine, legacy-replicator and operator-gateway (10-14 item 7) | — |
 | 9 | Optional, recommended: **rotate ent 5's api key on prod** (`UPDATE core.enterprises SET api_key = gen_random_uuid()::text WHERE id_enterprise = 5`, on the host), so staging's key is not valid on prod. Put it in `OPERATOR_EDGE_API_KEY` | — |
 | 10 | Merge release → `production`: the deploy runs the one-shots, then the services | one-shots 2 + 1 + 3 + 17 s; services healthy in 10 s |
@@ -215,9 +215,9 @@ Bispharma never left staging: staging's box instance, staging's cloud and the st
 
 | Scope | Action | Rehearsed |
 |---|---|---|
-| Box | `uninstall-prod.sh` (stops `packiot-prod` only) | yes (local) |
+| Box | `uninstall-prod.sh` (stops `packiot-prod` only) | yes: 10.4 s; staging instance untouched |
 | Prod services | `docker compose -f compose.production.yml stop` | yes |
-| Prod DB | Rename `packiot → packiot_bispharma_rolled_back` and `packiot_pre_promotion → packiot`. Then, to restore the old runtime too, stop the 2.27 container and `docker start timescaledb-2252` | see the rehearsal report |
+| Prod DB | Rename `packiot → packiot_bispharma_rolled_back` and `packiot_pre_promotion → packiot`. Then, to restore the old runtime too, stop the 2.27 container and `docker start timescaledb-2252`. The rolled-back DB opens only under the 2.27 image | yes: 22 ms SQL, image back in 2.3 s, **5.9 s total**; old layout served, `authentik`/`superset` intact |
 | Users | Keep using the staging URLs (`front.staging`, `operator-bispharma.staging`). Nothing to tell them unless they were already switched | — |
 
 ## 8. User actions
