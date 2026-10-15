@@ -54,4 +54,21 @@ SELECT 'state', rel, swapped_at IS NOT NULL, old_name FROM ops.pc_state ORDER BY
 SET ROLE lp_writer;
 INSERT INTO silver.equipment_events (id_equipment, ts_event, status) VALUES (11, now() + interval '400 days', 1);
 RESET ROLE;
-SELECT 'T14 far-future row went to the DEFAULT partition (want 1)', count(*) FROM silver.equipment_events_pdefault;
+SELECT 'T14 far-future row went to the upper catch-all (want 1)', count(*) FROM silver.equipment_events_pmax;
+-- 2026-10-15: range catch-alls (not DEFAULT), maintenance moves the upper one, refuses to bury rows, stats exist
+SELECT 'T15 catch-alls, no DEFAULT (want 2|0)', (SELECT count(*) FROM pg_inherits i, LATERAL ops.pc_bounds(i.inhrelid) b WHERE i.inhparent = 'silver.equipment_events'::regclass AND (b.lo_min OR b.hi_max)),
+       (SELECT count(*) FROM pg_partitioned_table WHERE partrelid = 'silver.equipment_events'::regclass AND partdefid <> 0);
+SELECT 'T16 maintain 180 days ahead moves the upper catch-all (want >0)', created FROM ops.partition_maintain(interval '180 days') WHERE rel = 'silver.equipment_events';
+SELECT 'T16b still exactly one upper catch-all (want 1)', count(*) FROM pg_inherits i, LATERAL ops.pc_bounds(i.inhrelid) b WHERE i.inhparent = 'silver.equipment_events'::regclass AND b.hi_max;
+SELECT 'T17 copied partitions have statistics (want 0 unanalyzed)', count(*) FROM pg_stat_user_tables s JOIN pg_inherits i ON i.inhrelid = s.relid
+ WHERE i.inhparent = 'bronze.equipment_values_raw'::regclass AND s.n_live_tup > 0 AND s.last_analyze IS NULL AND s.last_autoanalyze IS NULL;
+DO $$ DECLARE plan text; BEGIN
+  EXECUTE 'EXPLAIN (COSTS OFF) SELECT ts_event FROM silver.equipment_events WHERE id_equipment = 1 AND ts_event < now() - interval ''1 day'' ORDER BY ts_event DESC LIMIT 1' INTO plan;
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT ts_event FROM silver.equipment_events WHERE id_equipment = 1 AND ts_event < now() - interval ''1 day'' ORDER BY ts_event DESC LIMIT 1' LOOP
+    IF plan ~ 'Merge Append' THEN RAISE NOTICE 'T18 FAIL: Merge Append (ordered Append lost)'; END IF;
+  END LOOP;
+  RAISE NOTICE 'T18 latest-before lookup plans without Merge Append (no FAIL line above = ok)';
+END $$;
+INSERT INTO silver.equipment_events (id_equipment, ts_event, status) VALUES (12, now() + interval '400 days', 1);
+DO $$ BEGIN PERFORM * FROM ops.partition_maintain(interval '450 days'); RAISE NOTICE 'T19 FAIL: maintain buried a row';
+  EXCEPTION WHEN raise_exception THEN RAISE NOTICE 'T19 ok: maintain refused to bury a catch-all row (%)', left(SQLERRM, 60); END $$;

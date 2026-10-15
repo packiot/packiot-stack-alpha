@@ -43,13 +43,41 @@ LANGUAGE sql IMMUTABLE AS $f$
 $f$;
 
 -- create the partitions of p_parent covering [p_from, p_to) (idempotent); returns how many were created
+-- Range catch-alls instead of a DEFAULT partition (2026-10-15): a DEFAULT partition makes PostgreSQL give up
+-- ordered Append (it can hold any value), so "latest row before T" lookups became a Merge Append probing every
+-- partition. [MINVALUE, first) and [last, MAXVALUE) catch the same out-of-range rows (no failed inserts) while
+-- keeping the partitions provably ordered.
+CREATE OR REPLACE FUNCTION ops.pc_bounds(p_part regclass) RETURNS TABLE (lo timestamptz, hi timestamptz, lo_min boolean, hi_max boolean)
+LANGUAGE sql STABLE AS $f$
+  SELECT (regexp_match(b, 'FROM \(''([^'']+)''\)'))[1]::timestamptz, (regexp_match(b, 'TO \(''([^'']+)''\)'))[1]::timestamptz,
+         b LIKE '%FROM (MINVALUE)%', b LIKE '%TO (MAXVALUE)%'
+    FROM (SELECT pg_get_expr(relpartbound, oid) AS b FROM pg_class WHERE oid = p_part) x
+$f$;
+
+-- create the partitions of p_parent covering [p_from, p_to) (idempotent), moving the upper catch-all up past
+-- them; refuses (changes nothing) if the upper catch-all already holds rows in the range being added.
 CREATE OR REPLACE FUNCTION ops.pc_add_partitions(p_parent regclass, p_step interval, p_from timestamptz, p_to timestamptz)
 RETURNS integer LANGUAGE plpgsql AS $f$
-DECLARE lo timestamptz := ops.pc_floor(p_from, p_step); hi timestamptz; nm text; n int := 0;
+DECLARE lo timestamptz := ops.pc_floor(p_from, p_step); hi timestamptz; nm text; n int := 0; held bigint;
         sch text := (SELECT nspname FROM pg_namespace WHERE oid = (SELECT relnamespace FROM pg_class WHERE oid = p_parent));
         base text := (SELECT replace(relname, '__p', '') FROM pg_class WHERE oid = p_parent);
+        tcol text := (SELECT a.attname FROM pg_partitioned_table pt JOIN pg_attribute a ON a.attrelid = pt.partrelid AND a.attnum = pt.partattrs[0] WHERE pt.partrelid = p_parent);
+        maxpart regclass; maxlo timestamptz; tend timestamptz;
 BEGIN
-  WHILE lo < p_to LOOP
+  -- the regular partitions end on a step boundary at or after p_to
+  tend := lo; WHILE tend < p_to LOOP tend := tend + p_step; END LOOP;
+  SELECT c.oid::regclass, b.lo INTO maxpart, maxlo FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid, LATERAL ops.pc_bounds(c.oid) b
+   WHERE i.inhparent = p_parent AND b.hi_max;
+  IF maxpart IS NOT NULL AND maxlo < tend THEN
+    EXECUTE format('SELECT count(*) FROM %s WHERE %I < $1', maxpart, tcol) INTO held USING tend;
+    IF held > 0 THEN
+      RAISE EXCEPTION 'pc_add_partitions %: the upper catch-all % holds % rows before % — move them first', p_parent, maxpart, held, tend;
+    END IF;
+    EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', p_parent, maxpart);
+    EXECUTE format('DROP TABLE %s', maxpart);
+    maxpart := NULL;
+  END IF;
+  WHILE lo < tend LOOP
     hi := lo + p_step;
     nm := base || '_p' || to_char(lo AT TIME ZONE 'UTC', 'YYYYMMDD');
     IF to_regclass(format('%I.%I', sch, nm)) IS NULL THEN
@@ -58,6 +86,10 @@ BEGIN
     END IF;
     lo := hi;
   END LOOP;
+  IF maxpart IS NULL THEN
+    SELECT max(b.hi) INTO tend FROM pg_inherits i, LATERAL ops.pc_bounds(i.inhrelid) b WHERE i.inhparent = p_parent AND NOT b.hi_max;
+    EXECUTE format('CREATE TABLE %I.%I PARTITION OF %s FOR VALUES FROM (%L) TO (MAXVALUE)', sch, base || '_pmax', p_parent, tend);
+  END IF;
   RETURN n;
 END $f$;
 
@@ -90,9 +122,19 @@ BEGIN
                  'INCLUDING STORAGE INCLUDING COMMENTS INCLUDING INDEXES) PARTITION BY RANGE (%I)', twin, p_rel, tcol);
   EXECUTE format('SELECT min(%I) FROM %s', tcol, p_rel) INTO mn;
   n := ops.pc_add_partitions(twin::regclass, p_step, coalesce(mn, now()), now() + p_ahead);
-  -- a DEFAULT partition catches rows outside every range (clock-skewed PLC, an old backfill): without it
-  -- such an insert fails, and the writer's whole transaction (silver included) with it (2026-10-15)
-  EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %s DEFAULT', sch, nm || '_pdefault', twin);
+  -- catch-alls (the upper one is created by pc_add_partitions): rows outside every range (clock-skewed PLC, an
+  -- old backfill) must land somewhere, or the writer's whole transaction (silver included) fails (2026-10-15)
+  EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %s FOR VALUES FROM (MINVALUE) TO (%L)', sch, nm || '_pmin', twin,
+                 ops.pc_floor(coalesce(mn, now()), p_step));
+
+  -- 2026-10-15: on a hypertable a time-only index was harmless (compressed chunks segmented by equipment); on
+  -- native partitions it lures "latest row of X before T" lookups into walking whole partitions backward
+  -- (staging: 4.86 billion tuples read in ~40 min; 51.5 s -> 0.57 s once dropped). Decide explicitly.
+  IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+              WHERE i.indrelid = p_rel AND NOT i.indisunique AND i.indnkeyatts = 1 AND a.attname = tcol) THEN
+    RAISE WARNING '%: has a time-only index on % next to the unique key (%) — on native partitions it can mislead per-key "latest before" lookups; consider DROP INDEX after the swap (see ADR-0063 §13)',
+      p_rel, tcol, array_to_string(keys, ', ');
+  END IF;
 
   -- change capture: the key of every row touched from now on
   EXECUTE format('CREATE TABLE %s AS SELECT %s FROM %s WITH NO DATA', cc,
@@ -131,7 +173,7 @@ BEGIN
            (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS hi
       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = s.twin::regclass ORDER BY 1
   LOOP
-    CONTINUE WHEN part.lo IS NULL OR part.lo = ANY (s.copied);   -- NULL = the DEFAULT partition
+    CONTINUE WHEN part.lo IS NULL OR part.hi IS NULL OR part.lo = ANY (s.copied);   -- NULL bound = a catch-all
     EXECUTE format('INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM %s WHERE %I >= $1 AND %I < $2 ON CONFLICT DO NOTHING',
                    s.twin, p_rel, s.time_col, s.time_col) USING part.lo, part.hi;
     GET DIAGNOSTICS n = ROW_COUNT; total := total + n;
@@ -139,7 +181,10 @@ BEGIN
     s.copied := s.copied || part.lo;
     COMMIT;
   END LOOP;
-  RAISE NOTICE '%: % rows copied', p_rel, total;
+  -- bulk-loaded partitions have no statistics until autovacuum reaches them; without them the planner misjudges
+  -- per-equipment lookups (2026-10-15: 39 partitions never analyzed). Analyze outside the swap's lock.
+  EXECUTE format('ANALYZE %s', s.twin);
+  RAISE NOTICE '%: % rows copied, twin analyzed', p_rel, total;
 END $p$;
 
 -- The swap: run in ONE transaction, writers stopped. Returns a short report.
@@ -160,7 +205,7 @@ BEGIN
   FOR r IN SELECT (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\)'))[1]::timestamptz AS lo,
                   (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS hi
              FROM pg_inherits ih JOIN pg_class c ON c.oid = ih.inhrelid WHERE ih.inhparent = tw LOOP
-    CONTINUE WHEN r.lo IS NULL OR r.lo = ANY (s.copied);   -- NULL = the DEFAULT partition
+    CONTINUE WHEN r.lo IS NULL OR r.hi IS NULL OR r.lo = ANY (s.copied);   -- NULL bound = a catch-all
     EXECUTE format('INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM %s WHERE %I >= $1 AND %I < $2 ON CONFLICT DO NOTHING',
                    tw, p_rel, s.time_col, s.time_col) USING r.lo, r.hi;
   END LOOP;
@@ -274,22 +319,37 @@ END $f$;
 CREATE OR REPLACE FUNCTION ops.partition_maintain(p_ahead interval DEFAULT interval '60 days')
 RETURNS TABLE (rel text, created integer, dropped integer)
 LANGUAGE plpgsql AS $f$
-DECLARE s record; r record; keep interval;
+DECLARE s record; r record; keep interval; first_lo timestamptz; minpart regclass; sch text; nm text;
 BEGIN
   FOR s IN SELECT * FROM ops.pc_state WHERE swapped_at IS NOT NULL LOOP
-    rel := s.rel; dropped := 0;
+    rel := s.rel; dropped := 0; sch := split_part(s.rel, '.', 1); nm := split_part(s.rel, '.', 2);
     created := ops.pc_add_partitions(s.rel::regclass, s.step, now(), now() + p_ahead);
     SELECT rp.keep INTO keep FROM ops.retention_policy rp WHERE rp.relation = s.rel;
     IF keep IS NOT NULL THEN
-      FOR r IN SELECT c.oid::regclass AS part,
-                      (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS hi
-                 FROM pg_inherits ih JOIN pg_class c ON c.oid = ih.inhrelid WHERE ih.inhparent = s.rel::regclass LOOP
-        IF r.hi IS NOT NULL AND r.hi <= now() - keep THEN   -- never drop the DEFAULT partition
+      -- regular partitions only: a catch-all (MINVALUE/MAXVALUE bound) is never dropped by retention
+      FOR r IN SELECT i.inhrelid::regclass AS part, b.hi FROM pg_inherits i, LATERAL ops.pc_bounds(i.inhrelid) b
+                WHERE i.inhparent = s.rel::regclass AND NOT b.lo_min AND NOT b.hi_max LOOP
+        IF r.hi <= now() - keep THEN
           EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', s.rel, r.part);
           EXECUTE format('DROP TABLE %s', r.part);
           dropped := dropped + 1;
         END IF;
       END LOOP;
+      IF dropped > 0 THEN
+        -- re-seat the lower catch-all at the oldest remaining partition, or old-dated inserts into the gap
+        -- would fail (2026-10-15); its rows are all older than anything kept, i.e. past retention as well
+        SELECT min(b.lo) INTO first_lo FROM pg_inherits i, LATERAL ops.pc_bounds(i.inhrelid) b
+         WHERE i.inhparent = s.rel::regclass AND NOT b.lo_min AND NOT b.hi_max;
+        SELECT i.inhrelid::regclass INTO minpart FROM pg_inherits i, LATERAL ops.pc_bounds(i.inhrelid) b
+         WHERE i.inhparent = s.rel::regclass AND b.lo_min;
+        IF minpart IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', s.rel, minpart);
+          EXECUTE format('DROP TABLE %s', minpart);
+        END IF;
+        IF first_lo IS NOT NULL THEN
+          EXECUTE format('CREATE TABLE %I.%I PARTITION OF %s FOR VALUES FROM (MINVALUE) TO (%L)', sch, nm || '_pmin', s.rel, first_lo);
+        END IF;
+      END IF;
     END IF;
     RETURN NEXT;
   END LOOP;
