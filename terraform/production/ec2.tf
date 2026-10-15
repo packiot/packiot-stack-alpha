@@ -109,6 +109,22 @@ resource "aws_iam_policy" "app_custom" {
         ]
       },
       {
+        # PROMOTION 2026-10 (least-privilege logins, user decision 2026-10-14): scripts/ops/provision-db-role.py
+        # --env production runs ON the app host and creates/rotates packiot/production/<svc>-db-creds there — the
+        # password never leaves the host. Narrower than staging's WriteStagingAppSecrets (packiot/staging/*): only the
+        # *-db-creds secrets. AUTHORED, NOT APPLIED (terraform apply on production is the user's).
+        Sid    = "WriteProductionDbRoleSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:TagResource",
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/production/*-db-creds*",
+        ]
+      },
+      {
         Sid      = "ReadInitScript"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]

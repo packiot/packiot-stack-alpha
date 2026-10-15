@@ -61,7 +61,7 @@ toc = subprocess.run(['docker', 'run', '--rm', '-v', f'{W}:/d', 'postgres:16-alp
 POST = {'INDEX', 'CONSTRAINT', 'FK CONSTRAINT', 'TRIGGER', 'ROW SECURITY', 'POLICY', 'DEFAULT ACL', 'INDEX ATTACH'}
 MULTI = ['FK CONSTRAINT', 'SEQUENCE OWNED BY', 'SEQUENCE SET', 'DEFAULT ACL', 'ROW SECURITY', 'COMMENT - SCHEMA', 'ACL - SCHEMA',
          'COMMENT - EXTENSION', 'EXTENSION -', 'SCHEMA -', 'MATERIALIZED VIEW', 'INDEX ATTACH', 'TABLE ATTACH', 'TABLE DATA']
-pre, views, post, fns = [], [], [], []
+pre, views, post, fns, cagg_acl = [], [], [], [], []
 for line in toc:
     m = re.match(r'^(\d+); \d+ \d+ (.+)$', line.rstrip('\n'))
     if not m:
@@ -79,6 +79,8 @@ for line in toc:
     if staging_only(sch, obj.strip('"')) or staging_only(sch, name.split(' ')[0].strip('"')):
         continue
     if (sch, obj) in CAGGS or (sch, name.split(' ')[0]) in CAGGS:
+        if typ in ('ACL', 'COMMENT'):
+            cagg_acl.append(line)   # 2026-10-14 rehearsal: skipping these lost every cagg GRANT (readapi_ro, stream_engine…)
         continue
     if typ in POST:
         post.append(line)
@@ -88,21 +90,84 @@ for line in toc:
         pre.append(line)
         if typ in ('FUNCTION', 'PROCEDURE'):
             fns.append(line)
-for n, lst in (('pre', pre), ('views', views), ('post', post), ('fn', fns)):
+for n, lst in (('pre', pre), ('views', views), ('post', post), ('fn', fns), ('cagg_acl', cagg_acl)):
     open(os.path.join(OUT, f'{n}.list'), 'w').writelines(lst)
     pg_restore(f'{n}.list', f'{n}.raw.sql')
 # drop grants to the personal staging account; split keeping line endings (CRLF bodies stay byte-identical)
 strip_personal = lambda s: ''.join(l for l in re.split(r'(?<=\n)', s) if not re.search(r'"?dev@packiot\.com"?', l))
+# staging-only tooling roles (CloudBeaver DB console): their grants never travel; the prod server has no such roles.
+STAGING_ONLY_ROLES = ('cloudbeaver_ro', 'cloudbeaver_rw')
+def _strip_tooling(sql):
+    """Drop STAGING_ONLY_ROLES from GRANT/REVOKE/ALTER DEFAULT PRIVILEGES grantee lists; drop the line if none remain."""
+    out = []
+    for l in re.split(r'(?<=\n)', sql):
+        m = re.match(r'^((?:GRANT|REVOKE|ALTER DEFAULT PRIVILEGES)\b.*?\b(?:TO|FROM) )([^;]+)(;.*)$', l, flags=re.S)
+        if m and re.search(r'\b(' + '|'.join(STAGING_ONLY_ROLES) + r')\b', m.group(2)):
+            keep = [r for r in m.group(2).split(',') if r.strip() not in STAGING_ONLY_ROLES]
+            if not keep:
+                continue
+            l = m.group(1) + ','.join(keep).strip() + m.group(3)
+        out.append(l)
+    return ''.join(out)
+_strip_personal = strip_personal
+strip_personal = lambda s: _strip_tooling(_strip_personal(s))
 pre_sql = strip_personal(open(os.path.join(OUT, 'pre.raw.sql'), newline='').read())
 write('pre.sql', pre_sql)
 views_sql = strip_personal(open(os.path.join(OUT, 'views.raw.sql'), newline='').read())
 write('views.sql', views_sql)
 
+# ── 0. SERVER-LEVEL prerequisites (promotion 2026-10-14 rehearsal). Both phases touch the LIVE prod SERVER (cluster-wide
+#       objects), BEFORE the swap, while the old DB still serves: they are additive and inert for the old DB.
+#   roles  (00-roles.sql)  — pg_dump --schema-only carries GRANTs/OWNERs to roles but never the roles themselves, nor their
+#          ALTER ROLE … SET settings. Without this phase every GRANT to these roles fails in pre/post/grants ("role does
+#          not exist") and the least-privilege services cannot log in. Idempotent (CREATE IF NOT EXISTS, ALTER to the target
+#          shape). LOGIN with NO password: nobody can log in until scripts/ops/provision-db-role.py sets one from the host.
+#          Attributes and settings = staging's live roles (pg_roles / pg_db_role_setting, 2026-10-14) = each role migration.
+#   joblog (00-joblog.sql) — ADR-0063 A5: timescaledb.enable_job_execution_logging = on (ALTER SYSTEM, sighup, no restart;
+#          t-timescale-job-execution-logging). Server-wide, so the transplant (one database) would never carry it.
+ROLES = {  # name: (attributes, connection limit, {setting: value})
+    'readapi_ro':        ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION INHERIT', -1, {}),
+    'histgw_ro':         ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', -1, {'app.tenant_id': '-1'}),
+    'stream_engine':     ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 40, {'app.tenant_id': '-1'}),
+    'legacy_replicator': ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 15, {}),
+    'operator_gateway':  ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 10,
+                          {'default_transaction_read_only': 'on', 'statement_timeout': '5s'}),
+    'barcode_service':   ('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT', 15, {'statement_timeout': '30s'}),
+}
+# every role staging's schema grants to / owns with must exist on the target after `roles`, or the build stops here
+_referenced = set(re.findall(r'^(?:GRANT|REVOKE)\b.*?\b(?:TO|FROM) ([^;]+);', pre_sql + views_sql, flags=re.M))
+_referenced = {r.strip().replace(' WITH GRANT OPTION', '') for x in _referenced for r in x.split(',')}
+_referenced |= set(re.findall(r'OWNER TO ([\w"@.]+);', pre_sql + views_sql))
+_missing = sorted(r.strip('"') for r in _referenced if r != 'PUBLIC' and r.strip('"') not in set(P['roles']) | set(ROLES))
+assert not _missing, f'staging grants/owners reference roles the target lacks and `roles` does not create: {_missing}'
+rl = ["\\set ON_ERROR_STOP 1", "BEGIN;", "SET LOCAL lock_timeout = '5s';"]
+for r, (attrs, limit, settings) in ROLES.items():
+    rl.append(f"DO $r$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{r}') THEN CREATE ROLE {r} NOLOGIN; END IF; END $r$;")
+    rl.append(f"ALTER ROLE {r} {attrs} CONNECTION LIMIT {limit};")
+    for k in ('app.tenant_id', 'default_transaction_read_only', 'statement_timeout'):
+        rl.append(f"ALTER ROLE {r} SET {k} = '{settings[k]}';" if k in settings else f"ALTER ROLE {r} RESET {k};")
+rl += ["COMMIT;",
+       "SELECT 'role', r.rolname, r.rolcanlogin AS login, r.rolpassword IS NULL AS no_password, r.rolbypassrls AS bypassrls, r.rolinherit,",
+       "       r.rolconnlimit, coalesce(array_to_string(s.setconfig, ';'), '') AS settings",
+       "  FROM pg_authid r LEFT JOIN pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0",
+       f" WHERE r.rolname IN ({', '.join(repr(r) for r in ROLES)}) ORDER BY 2;"]
+write('00-roles.sql', '\n'.join(rl) + '\n')
+write('00-joblog.sql', "\\set ON_ERROR_STOP 1\n"
+      "ALTER SYSTEM SET timescaledb.enable_job_execution_logging = 'on';\nSELECT pg_reload_conf();\n"
+      "SELECT pg_sleep(1);\nSELECT 'job_logging', current_setting('timescaledb.enable_job_execution_logging');\n")
+
 # ── 2. hypertables + caggs WITH NO DATA (dependency order). Rehearsal: create_hypertable's default index collided with
 #       staging's own → create_default_indexes => false.
+# HISTORY_CHUNK (2026-10-14 rehearsal, the 2nd OOM trap): prod's silver.equipment_events holds DAILY data since 2021, so
+# staging's 1-day chunk interval gives 1,555 chunks (staging: 156). stream-engine's hour exclusions query
+# (rollup/availability_exclusions.go: correlated subqueries on equipment_events bounded by per-row ranges) then scans every
+# compressed chunk per outer row → one backend grew to 7.7 GB and the kernel OOM-killed Postgres every 1–3 min (crash loop).
+# The history is created with a coarse interval; set_chunk_time_interval() restores staging's for NEW chunks (phase post).
+HISTORY_CHUNK = {'silver.equipment_events': '30 days'}
 out = ["\\set ON_ERROR_STOP 1"]
 for t in sorted(HYPERTABLES, key=lambda t: (t['s'], t['n'])):
-    out.append(f"SELECT create_hypertable('{t['s']}.{t['n']}', '{t['ht']['tcol']}', chunk_time_interval => INTERVAL '{t['ht']['chunk']}', "
+    _ci = HISTORY_CHUNK.get(f"{t['s']}.{t['n']}", t['ht']['chunk'])
+    out.append(f"SELECT create_hypertable('{t['s']}.{t['n']}', '{t['ht']['tcol']}', chunk_time_interval => INTERVAL '{_ci}', "
                f"if_not_exists => true, migrate_data => true, create_default_indexes => false);")
 order, pending = [], dict(CAGGS)
 while pending:
@@ -129,7 +194,11 @@ for b in blocks[1:]:
         b = re.sub(r'ALTER TABLE ONLY ' + re.escape(tgt) + r'\b', 'ALTER TABLE ' + tgt, b)
     (hyper if tgt in HT_NAMES and 'FOREIGN KEY' not in b else rest).append(b)
 write('03-hyper-keys.sql', blocks[0] + ''.join(hyper))
-write('post.sql', blocks[0] + ''.join(rest))
+_restore = ''.join(f"SELECT public.set_chunk_time_interval('{t['s']}.{t['n']}'::regclass, INTERVAL '{t['ht']['chunk']}');\n"
+                   for t in HYPERTABLES if f"{t['s']}.{t['n']}" in HISTORY_CHUNK)
+_restore += ("SELECT 'chunks', hypertable_schema || '.' || hypertable_name, num_chunks FROM timescaledb_information.hypertables "
+             "ORDER BY 3 DESC;   -- review: > ~300 chunks on a table queried with per-row time bounds = the OOM trap above\n")
+write('post.sql', blocks[0] + ''.join(rest) + _restore)
 
 # ── 4. data copy from the old DB via postgres_fdw. CHECKs dropped first (re-added NOT VALID + VALIDATE after repairs).
 #       production_orders does ADR-0062 P1 inline (text backfill, D5 by business key, po_uuid from ts_creation).
@@ -205,7 +274,9 @@ write('06-checks.sql', '\n'.join(out) + '\n')
 PHASE_D = ['t-backfill-equipment-config-defaults/01-backfill.sql', 't-backfill-cd-equipment/01-backfill.sql',
            't-line-lead-net-machine/01-up.sql', 't-cpack-net-machine-meter-lines/01-up.sql', 't-line-lead-counter-roles/01-up.sql',
            't-line-meter-fill/01-up.sql', 't-line-downtime-from-lead-machine/01-up.sql', 't-ideal-speed-best-demonstrated/01-set.sql',
-           't-backfill-production-targets-default/01-backfill.sql', 't-retention-catalog/01-up.sql',
+           't-backfill-production-targets-default/01-backfill.sql',
+           't-plc-link-minutes-retention/01-up.sql',  # before t-retention-catalog: PROD_RAW_RETENTION=off then nulls its keep too
+           't-retention-catalog/01-up.sql',
            't-i18n-ptbr-missing-desktop-keys/01-up.sql', 't-i18n-availability-states/01-up.sql', 't-device-bindings/01-up.sql',
            't-descriptor-device-keys/01-up.sql', 't-adr0061-p3d-bindings-backfill/01-up.sql', 't-adr0062-p1-po-number-expand/01-up.sql']
 # PROD_RAW_RETENTION (decided 2026-10-09: "off"). Staging drops raw/1-s/1-min data after 90 days because the historian
@@ -219,6 +290,12 @@ PHASE_D = ['t-backfill-equipment-config-defaults/01-backfill.sql', 't-backfill-c
 #                   (historian + daily cold copy) exists, then re-apply db/retention/profiles/production.sql.
 PROD_RAW_RETENTION = os.environ.get('PROD_RAW_RETENTION', 'off').strip().lower()
 assert PROD_RAW_RETENTION in ('off', 'on'), f'PROD_RAW_RETENTION must be off|on, got {PROD_RAW_RETENTION!r}'
+PRUNE_CATALOG_SQL = """
+-- 2026-10-14 rehearsal: t-retention-catalog seeds silver.ca_equipment_boxes_1s, which a LATER migration
+-- (t-drop-ca-equipment-boxes-1s, ADR-0063 A1) dropped together with its catalog row. The transplanted schema never has it,
+-- so apply_retention() aborted on it and left the hot_agg/business policies unapplied. The catalog follows the schema:
+DELETE FROM ops.retention_policy WHERE to_regclass(relation) IS NULL;
+"""
 RAW_RETENTION_OFF_SQL = """
 -- PROD_RAW_RETENTION=off (build.py): keep raw history forever on prod until a cold tier exists.
 UPDATE ops.retention_policy
@@ -234,10 +311,13 @@ parts = ["\\set ON_ERROR_STOP 0"]
 for f in PHASE_D:
     body = subprocess.run(['git', 'show', f'origin/staging:db/migrations/{f}'], check=True, capture_output=True, text=True).stdout
     body = body.replace('\\set ON_ERROR_STOP 1', '\\set ON_ERROR_STOP 0')
+    body = _strip_tooling(body)   # a GRANT to a missing tooling role inside BEGIN…COMMIT would roll the whole migration back
     if f == 't-retention-catalog/01-up.sql' and PROD_RAW_RETENTION == 'off':
         assert body.count('CALL ops.apply_retention();') == 1, 't-retention-catalog changed shape — re-check the raw-retention switch'
         body = body.replace('CALL ops.apply_retention();',
-                            '-- CALL ops.apply_retention(); deferred: PROD_RAW_RETENTION=off override follows') + RAW_RETENTION_OFF_SQL
+                            '-- CALL ops.apply_retention(); deferred: PROD_RAW_RETENTION=off override follows') + PRUNE_CATALOG_SQL + RAW_RETENTION_OFF_SQL
+    elif f == 't-retention-catalog/01-up.sql':
+        body = body.replace('CALL ops.apply_retention();', PRUNE_CATALOG_SQL + 'CALL ops.apply_retention();')
     parts += [f"\\echo ===== {f}", body]
 t244 = subprocess.run(['git', 'show', 'origin/staging:db/migrations/t244-enterprise-0613-parameterize/01-expand.sql'],
                       check=True, capture_output=True, text=True).stdout
@@ -265,7 +345,13 @@ logic += ''.join(l for l in re.split(r'(?<=\n)', re.sub(r'^CREATE VIEW ', 'CREAT
 write('08-logic.sql', logic)
 
 # ── 90. every COMMENT/GRANT of pre-data again, now that views and caggs exist (idempotent)
-write('90-comments-grants.sql', '\n'.join(re.findall(r'^(?:COMMENT ON|GRANT|REVOKE)\b.*?;\s*$', pre_sql, flags=re.M | re.S)) + '\n')
+# + views and caggs: their grants live in the views list / the skipped cagg TOC entries, and the caggs only exist after
+#   `hyper` — the 2026-10-14 rehearsal found every cagg with NO grants (read-api as readapi_ro → permission denied).
+cagg_acl_sql = strip_personal(open(os.path.join(OUT, 'cagg_acl.raw.sql'), newline='').read())
+_g = re.findall(r'^(?:COMMENT ON|GRANT|REVOKE)\b.*?;\s*$', pre_sql + views_sql + cagg_acl_sql, flags=re.M | re.S)
+# statements on staging-only objects excluded above (sandbox/bf/mirror tooling) would only add expected errors
+_g = [g for g in _g if not re.search(r'\bops\.(?:"?_|"?bf_|"?sandbox|"?mirror_replay_cursor)', g)]
+write('90-comments-grants.sql', '\n'.join(_g) + '\n')
 
 # ── 10/11. policies (no retention policy added here; raw retention governed by PROD_RAW_RETENTION in phase D)
 #          + month-windowed catch-up refresh
