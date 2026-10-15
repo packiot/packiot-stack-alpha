@@ -61,7 +61,7 @@ Source: `terraform/staging/variables.tf` (`services`, `service_auth`), `terrafor
 | Tenant | Telemetry | POs and operator actions |
 |---|---|---|
 | CPACK (3) | CPACK factory Node-RED tee → `cpack-ingest` → shared agent | legacy replication only; edge-api refuses ent-3 PO, downtime and shift writes (403 `MIRROR_TENANT_WRITE_BLOCKED`) |
-| Bispharma (5) | live Bispharma box (thin reader) → `ingest` → shared agent | the apps (operator, csadmin) |
+| Bispharma (5) | live Bispharma box (thin reader) → `ingest` → shared agent | the apps (operator, csadmin) **until Bispharma's production go-live**; from then on a **read-only mirror of production** ([ADR-0064](../../adr/0064-staging-mirror-of-production-after-go-live.md)): `prod-reflector` copies everything except the raw series from production every minute, every write is refused (403 `MIRROR_TENANT_WRITE_BLOCKED`, "make this change in production"), the enterprise is named **Bispharma (mirror)**. Switch: `PROD_MIRROR_ENTERPRISES=5`; runbook `docs/runbooks/staging-mirror-of-production.md` |
 | Sandbox (2000003) | copy of CPACK (`oeecloud-fanout` → `SBXCPACK`, when enabled) | replication of CPACK into the sandbox + test writes; held during a hands-on session, then reset to CPACK 4 h after the last change (and a nightly tidy heal); see [Sandbox twin](../components/sandbox-twin.md) |
 | Incoplast (4) | HTTPS tee path through `ingest-shim` (`sparkplug.data.incoplast`) | — |
 
@@ -71,6 +71,7 @@ Source: `terraform/staging/variables.tf` (`services`, `service_auth`), `terrafor
 |---|---|---|
 | Pack4 production | C-PACK (legacy 1) | source of truth for expected behaviour; never test here |
 | CPACK-Staging | 3 | read-only mirror of production; operator writes refused with `MIRROR_TENANT_WRITE_BLOCKED` |
+| Bispharma (mirror) | 5 | after Bispharma's production go-live: read-only mirror of the **new** production; every write refused; test Bispharma flows in production's own staging-like checks or the sandbox, never here |
 | SANDBOX-CPACK | 2000003 | where write flows are tested; resets completely to CPACK-Staging (barcode scans included) |
 
 Testers: [Sandbox for testing](../../use/sandbox-for-testing.md). Product and management:

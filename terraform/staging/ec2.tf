@@ -175,6 +175,9 @@ resource "aws_iam_policy" "app_custom" {
           # `databaseCredentials-prod-foo-XXXXXX` would NOT match (12 chars
           # after the literal `databaseCredentials-` instead of 6).
           "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:databaseCredentials-??????",
+          # ADR-0064: prod-reflector's PRODUCTION login (SELECT-only role prod_reflector_ro), written on the production
+          # host by provision-db-role.py --service prod-reflector-ro --env production. Exactly this one secret.
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:packiot/production/prod-reflector-ro-db-creds-??????",
         ]
       },
       {
