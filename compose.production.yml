@@ -1297,7 +1297,7 @@ services:
   ingest-shim:
     build: ./services/ingest-shim
     container_name: ingest-shim
-    profiles: ["client-ingest"]  # GATED: needs a tenant + mTLS ingest certs — starts only when a client is onboarded (--profile client-ingest)
+    profiles: ["ingest-shim"]   # opt-in: the HTTPS shim serves ONE client group (staging: INCOPLAST); Bispharma-only prod has none (2026-10-16)
     restart: unless-stopped
     env_file: [.env]
     environment:
