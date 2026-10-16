@@ -4,6 +4,11 @@
 ([report](go-live-bispharma-rehearsal-2026-10-15.md), on `staging`). **Nothing has run on production.** The go is the
 user's: merging `release/prod-promotion-2026-10` into `production` deploys.
 
+**2026-10-16 — adapted to TimescaleDB-free staging** (ADR-0063 end state, ADR-0065): the new prod database is born
+**without TimescaleDB** (native partitions, the rollup tick, housekeeping from host timers). The rehearsal above ran on the
+TimescaleDB shape; the TS-free path is proven by `selftest-clean-server.sh` (§2.2) and needs one more clone rehearsal
+before the go. Changes are marked **(TS-free)** below.
+
 **Scope (user decisions, 2026-10-15):**
 - Production goes live for **Bispharma only**.
 - Production starts **clean**: staging's schema, plus Bispharma's config and history copied from staging (enterprise 5).
@@ -28,6 +33,9 @@ the `copy` phase with a single-tenant load (`scripts/promotion/bispharma/`).
 | D4 | **Ids are preserved.** Every enterprise, site, area, equipment, topic route, device key and api key keeps its staging value | The factory box, the reader config and the descriptor all reference them. The generator renders the box's bundle byte-identically from the copied descriptor (§5.1) |
 | D5 | **Sequences are floored above the old DB's ids** (`seq-floor.sql`) | Bispharma has no POs yet, so `core.production_orders` would restart at 1 while CPACK's prod history goes up to ~1.68 M. CPACK's later go-live into this DB then keeps its ids. 9 sequences are raised (POs → 1,676,663). **Then every sequence is floored at 1,000,000,000** (the production id block, [ADR-0064](../adr/0064-staging-mirror-of-production-after-go-live.md) D6, on `staging`): staging mirrors production after the go-live and copies production's rows with their ids, so production's ids must never fall in staging's range (staging's highest: 601,633,961). It also removes the collision class of the old-DB floor (legacy CPACK keeps minting after that snapshot) |
 | D6 | **Group id stays `BISPHARMASTAGING`** in prod | Topic routes, ADR-0061 device keys, the descriptor's `tenant` and the reader's metric suffixes are all keyed on it. Renaming is its own change, with its own rehearsal |
+| D8 | **(TS-free)** The new database has **no TimescaleDB**. The server keeps the D2 image (the library stays loaded for `packiot_pre_promotion` and for rollback); the database never runs `CREATE EXTENSION timescaledb` (`01-extensions.sql` is empty for a TS-free staging, `db-init-bootstrap` no longer creates it) | Staging dropped it on 2026-10-15 (ADR-0063); production must run what staging proved. Removing the library from the server is a later step (§8 item 11) |
+| D9 | **(TS-free)** Housekeeping runs from **systemd timers on the DB host** (`scripts/ops/analytics-housekeeping.sh`, `systemd/analytics-housekeeping@*.timer`): partition-maintain 03:20, downtime-resolved every 2 min, data-invariants every 30 min. No `purge_analytics_plain` | The D2 image has no pg_cron (staging's scheduler) and the TimescaleDB job scheduler is gone with the extension. Same statements as staging's pg_cron jobs (`scripts/ops/adr0063-c2-pgcron-jobs.sql`) |
+| D10 | **(TS-free)** stream-engine's rollup tick is **on by default in prod** (`ROLLUP_SHADOW_ENABLED` defaults to `true` in `compose.production.yml`) | It is the only minute/hour rollup since ADR-0063 B2. Found 2026-10-16: prod's compose did not pass the variable at all, so prod would have computed no minute/hour/gold after the go-live |
 | D7 | **Raw values are not carried** (`bronze.equipment_values_raw`). Silver, gold, serving, events, box scans, samples, POs, shifts, targets, reasons and descriptors are | Bronze raw is staging's 90-day replay buffer; silver is the system of record. Prod raw starts at the go-live and is kept forever (`PROD_RAW_RETENTION=off`) |
 
 ## 2. Database migration
@@ -36,6 +44,13 @@ the `copy` phase with a single-tenant load (`scripts/promotion/bispharma/`).
 
 The generator reads staging's catalog. It stops if a table has no rule, so a table added to staging later must be
 decided, not silently copied or dropped.
+**(TS-free, 2026-10-16, on staging's real catalog):** 74 tenant tables, 8 global (+ `ops.pc_state`, the partition
+registry `partition_maintain` iterates), 1 catalog (`ops.retention_policy`: staging's, copied and **not** fingerprinted —
+phase `data` sets every `hot_raw` keep to forever), 10 skipped (+ `ops.cold_export`, staging's cold-tier manifest that
+points at staging's bucket; `ops.partition_drop_blocked`). Partitions travel through their parent (131 on staging; a
+partition is never a table of its own in the plan). The former caggs (`silver.equipment_categorical_1min/1hour`,
+`silver.agg_equipment_values_1min/1hour`) are plain tables now and **travel with the tenant** (before: rebuilt by phase
+`refresh`). `*__old` tables (ADR-0065 P3a rollback copy) are staging-only. The counts below are the 2026-10-15 rehearsal's.
 - **69 tables, filtered to enterprise 5:**
   - by `id_enterprise` (or `customer_id`);
   - or through `core.equipments`, `core.areas`, `core.sites` or `core.production_orders`.
@@ -69,7 +84,16 @@ PGC=timescaledb TENANT_DIR=/root/tenant5 xplant.sh roles joblog create pre hyper
   migrations, runs the phases above on a clean server and checks the catalog/ACL/tenant gates. `roles` creates
   `prod_reflector_ro` (the production login) and `prod_reflector` (staging's login; on prod passwordless and unused — step 8a
   applies the same migration anyway).
-- `TRANSPLANT_MODE=tenant` restricts phase `data` to the retention catalog.
+- **(TS-free)** `hyper` generates nothing (no hypertables/caggs) and `joblog` is a no-op; both stay in the list so the
+  same command line works for either shape. `policies` runs `10-housekeeping.sql`: `ops.partition_maintain()` once
+  (partitions 60 days ahead), the downtime refresh and the invariants once, then four guards that must print 0 (no
+  timescaledb in the database, no raw retention, no raw partitioned relation with a keep, every partitioned relation has a
+  partition more than 30 days ahead). The selftest's fixture is staging's TS-free shape (real `t-ts-c3`, `t-ts-c4`,
+  `t-adr0065-p0` migrations; partitions with both catch-alls; a former cagg + its view; a `__old` table) and also fails
+  on any `ERROR` in any phase.
+- `TRANSPLANT_MODE=tenant` restricts phase `data` to the retention catalog. **(TS-free)** it no longer runs
+  `t-retention-catalog` (that re-seed would write the pre-ADR-0063 kinds back); it prunes the copied catalog and applies
+  `PROD_RAW_RETENTION=off`.
   - The rehearsal's fingerprint diff caught the business backfills **rewriting Bispharma's curated config**:
     `t-ideal-speed-best-demonstrated` re-derived machine M682's `production_speed` from 110 to 241, and through it its
     line's targets.
@@ -83,12 +107,13 @@ PGC=timescaledb TENANT_DIR=/root/tenant5 xplant.sh roles joblog create pre hyper
 
 | Gate | How | Rehearsal |
 |---|---|---|
-| Rows and content equal to the staging snapshot | `fingerprint-diff.py extract.out 12t-tenant-verify.sql.out`: count plus md5 of the ordered rows for every config table; for hypertables, count, first/last day and md5 of the per-day counts | 76/76 equal, 9,316,727 rows |
+| Rows and content equal to the staging snapshot | `fingerprint-diff.py extract.out 12t-tenant-verify.sql.out`: count plus md5 of the ordered rows for every config table; for hypertables / **(TS-free)** partitioned tables and the four former caggs, count, first/last day and md5 of the per-day counts | 76/76 equal, 9,316,727 rows |
 | No other tenant's rows anywhere | `purity` lines in the same output: 50 tables with a tenant key, 0 foreign rows | 0 |
 | Referential integrity | phase `post` adds every FK after the load; an orphan is an `ERROR` | 0 errors |
 | CHECK invariants | phase `checks`: 32 CHECKs re-added `NOT VALID`, then `VALIDATE` | 0 errors |
 | Schema = staging | `compare-catalog.py cat-stg.json cat-next.json` | 0 missing/different (views: PG15→16 normalisation) |
-| Grants, RLS, policies, role settings, jobs = staging | `compare-acl.py acl-stg.json acl-next.json` | 0. Jobs = staging's 27 minus 8 raw-retention policies and `purge_analytics_plain` (by design) |
+| Grants, RLS, policies, role settings, jobs = staging | `compare-acl.py acl-stg.json acl-next.json` | 0. Jobs = staging's 27 minus 8 raw-retention policies and `purge_analytics_plain` (by design). **(TS-free)** jobs and compression are empty on both sides (housekeeping lives outside the database, D9) |
+| **(TS-free)** Housekeeping guards | `grep 'want 0' out/10-policies.sql.out` | 4 × 0 (selftest) |
 
 ## 3. What prod runs for one tenant (`compose.production.yml`, this PR)
 
@@ -225,8 +250,9 @@ peering id, +1 route.
 | 3 | **Staging extract** (READ ONLY, one REPEATABLE READ snapshot), streamed to S3 `promotion-rehearsal/<date>/` (a go-live prefix of the same bucket), then to the DB host | 55 s extract + 56 s upload + 10 s download |
 | 4 | `xplant.sh roles … seqfloor` (§2.2) | 155 s on r7g.large (of which `tload` 109 s, `seqfloor` 28 s) |
 | 5 | Gates (§2.3): fingerprint and purity diff, compare-catalog, compare-acl | ~1 min |
-| 6 | **Swap**: terminate connections; `packiot → packiot_pre_promotion`; `packiot_next → packiot`; `start_background_workers()` in both; read back `current_database()` and the extension versions | 68 ms SQL |
-| 7 | `XPLANT_DB=packiot xplant.sh refresh` in the background (the caggs are real-time meanwhile). Shred `/root/tenant5` | 438–563 s |
+| 6 | **Swap**: terminate connections; `packiot → packiot_pre_promotion`; `packiot_next → packiot`; `start_background_workers()` **in `packiot_pre_promotion` only** (TS-free: the new `packiot` has no timescaledb, the call would fail there); read back `current_database()` and the extension versions (`packiot`: no timescaledb) | 68 ms SQL |
+| 7 | `XPLANT_DB=packiot xplant.sh refresh` in the background. **(TS-free)** only `serving.downtime_events_resolved` is rebuilt (no caggs; the rollup tables travelled) — seconds, not minutes. Shred `/root/tenant5` | 438–563 s (TS shape) |
+| 7a | **(TS-free) Housekeeping timers** on the DB host: copy `scripts/ops/analytics-housekeeping.sh`, `scripts/ops/install-analytics-housekeeping.sh` and `systemd/analytics-housekeeping@*` keeping the repo layout (with the xplant bundle), then `sudo bash scripts/ops/install-analytics-housekeeping.sh` → 3 timers listed. Check: `systemctl start analytics-housekeeping@partition-maintain` → exit 0 | — |
 | 8 | `provision-db-role.py --env production --db-name packiot --db-host 10.20.10.89 --admin-host 10.20.10.89` on the prod app host for stream-engine, legacy-replicator and operator-gateway (10-14 item 7), **and `--service readapi-ro`**. The transplant creates `readapi_ro` LOGIN *without* a password; this applies terraform's `internal-keys.readapi_ro_password` (= `READAPI_RO_PASSWORD` in `.env`) and logs in with it. Without it read-api, and so every dashboard, fails auth after step 10 (found 2026-10-15; the rehearsal set it in a clone-only script). `superset_ro` needs nothing: it is server-level and already has its password | — |
 | 8a | Check the id block: on `packiot`, `SELECT min(last_value) FROM pg_sequences WHERE last_value IS NOT NULL AND sequencename NOT LIKE 'knex%' AND schemaname NOT LIKE '\_timescaledb%'` ≥ 1000000000. Apply `db/migrations/t-prod-reflector-roles/01-up.sql` + `verify.sql` to `packiot` (idempotent), then `provision-db-role.py --service prod-reflector-ro --env production --db-name packiot --db-host 10.20.10.89 --admin-host 10.20.10.89` (secret `packiot/production/prod-reflector-ro-db-creds`) | — |
 | 9 | Optional, recommended: **rotate ent 5's api key on prod** (`UPDATE core.enterprises SET api_key = gen_random_uuid()::text WHERE id_enterprise = 5`, on the host), so staging's key is not valid on prod. Put it in `OPERATOR_EDGE_API_KEY` | — |
@@ -255,6 +281,7 @@ Bispharma never left staging: staging's box instance, staging's cloud and the st
 |---|---|---|
 | Box | `uninstall-prod.sh` (stops `packiot-prod` only) | yes: 10.4 s; staging instance untouched |
 | Prod services | `docker compose -f compose.production.yml stop` | yes |
+| Housekeeping timers (TS-free) | **First**: `sudo bash scripts/ops/install-analytics-housekeeping.sh --disable` on the DB host — they would otherwise run against the old DB once it is `packiot` again | — |
 | Prod DB | Rename `packiot → packiot_bispharma_rolled_back` and `packiot_pre_promotion → packiot`. Then, to restore the old runtime too, stop the 2.27 container and `docker start timescaledb-2252`. The rolled-back DB opens only under the 2.27 image | yes: 22 ms SQL, image back in 2.3 s, **5.9 s total**; old layout served, `authentik`/`superset` intact |
 | Staging mirror | Remove `PROD_MIRROR_ENTERPRISES` from staging's `/opt/packiot/.env`; recreate `edge-api barcode-service stream-engine prod-reflector` → staging is the master again (writes reopen, its engine resumes ent 5 from the next hour, the reflector idles). Everything production did until then is already on staging. Optional: `UPDATE core.enterprises SET nm_enterprise = 'Bispharma-Staging' WHERE id_enterprise = 5` on staging; peering terraform back to off later | inert-by-default proven in tests; switch is config only |
 | Users | Back to the staging URLs (`front.staging`, `operator-bispharma.staging`), which accept writes again once the mirror is off | — |
@@ -281,5 +308,9 @@ Bispharma never left staging: staging's box instance, staging's cloud and the st
    the window are complete. Not done by this runbook (a write to production).
 11. After a stable week:
    - decide when the staging box instance is retired (then move the fat-edge dashboard to the prod instance);
+   - **(TS-free)** decide when the server drops the TimescaleDB library (ADR-0063 for prod): `packiot_pre_promotion` holds
+     TimescaleDB objects and opens only with the library, so first archive it to S3 and drop it (as staging's F1
+     `packiot`, 2026-10-15), then move the container to a plain pg16 image with `shared_preload_libraries=pg_stat_statements,auto_explain`
+     (keep the D2 container stopped for rollback);
    - decide whether CPACK's prod mTLS tee is stopped at its box. After the swap, prod has no CPACK routes, so its
      batches are unmapped; watch the decoder's unmapped counter in the first hour.

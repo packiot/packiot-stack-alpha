@@ -2,7 +2,8 @@
 # Transplant pipeline (rehearsal): rebuild packiot_next from staging's schema. Phases are idempotent by rebuild.
 # Usage: [PGC=<container>] xplant.sh [phases...]   default: schema   (schema = create pre hyper views)
 # 2026-10-14 rehearsal: `refresh` runs after the swap, when packiot_next no longer exists → XPLANT_DB=packiot.
-# PGC = the Postgres container: rehearsal-pg on a clone (default), `timescaledb` on the prod DB host.
+# PGC = the Postgres container: rehearsal-pg on a clone (default), `timescaledb` on the prod DB host (the container keeps
+# that name after ADR-0063; only the NEW database is TimescaleDB-free).
 # Server-level phases (`roles`, `joblog`) run against the `postgres` DB and touch the whole server (see build.py § 0).
 cd "${XPLANT_DIR:-/root/xplant}" || exit 1
 PGC=${PGC:-rehearsal-pg}
@@ -23,8 +24,10 @@ for ph in ${@:-create pre hyper views}; do case $ph in
  create) docker exec -i $PGC psql -U postgres -X -d postgres -q < /dev/null -c "DROP DATABASE IF EXISTS packiot_next" -c "CREATE DATABASE packiot_next TEMPLATE template0" \
            -c "ALTER DATABASE packiot_next SET search_path = \"\$user\", gold, silver, bronze, identity, config, ops, serving, customer_reports, core, public" \
            -c "ALTER DATABASE packiot_next SET track_functions = 'pl'"
-         $PSN -q -c "CREATE EXTENSION IF NOT EXISTS timescaledb" < /dev/null 2>&1 | grep -v -E 'WARNING|^$'
-         echo "== create: ok, timescaledb $($PSN -At -c "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'" < /dev/null)";;
+         # 01-extensions.sql (build.py): CREATE EXTENSION timescaledb only when STAGING has it. TS-free staging (ADR-0063,
+         # 2026-10-16) → the new DB has none, even on a server whose image still ships the library (kept for rollback).
+         docker exec -i $PGC sh -c "cat > /tmp/01-extensions.sql" < 01-extensions.sql
+         $PSN -q -At -f /tmp/01-extensions.sql < /dev/null 2>&1 | grep -v -E 'WARNING|^$' | sed 's/^/== create: /';;
  pre)    run pre.sql 4;;
  hyper)  run 02-hypertables-caggs.sql; run 03-hyper-keys.sql;;
  views)  run views.sql;;
@@ -46,7 +49,7 @@ for ph in ${@:-create pre hyper views}; do case $ph in
  cpack)  run 07b-cpack-config.sql 10; grep -E 'updated|inserted|deactivated|links|identity|SKIPPED|UNMAPPED' 07b-cpack-config.sql.out;;
  logic)  run 08-logic.sql 20;;
  grants) run 90-comments-grants.sql 10;;
- policies) run 10-policies.sql 10; tail -2 10-policies.sql.out;;
+ policies) run 10-policies.sql 10; grep -E 'want 0|partition_maintain|jobs' 10-policies.sql.out | cut -c1-160;;   # TS-free: 10-housekeeping.sql
  hasura) docker exec $PGC sh -c "pg_dump -U postgres -d packiot -n hdb_catalog | psql -U postgres -d packiot_next -X -q -v ON_ERROR_STOP=1" < /dev/null > hasura.out 2>&1; echo "== hasura: rc=$?, $(grep -c ERROR hasura.out) errors";;
  refresh) run 11-refresh.sql 10; grep -E "refresh (start|end)|resolved rows" 11-refresh.sql.out;;
  *) echo "unknown phase $ph";;
