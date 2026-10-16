@@ -453,7 +453,8 @@ pg_rollup_invalidation:
     - datname: { usage: LABEL, description: "Database" }
     - backlog: { usage: GAUGE, description: "Late-data minute ranges waiting for rollup_tick to re-roll (want small)" }
 
-# ── Rollup freshness (ADR-0063 B2: the 5 rollups are plain tables kept by silver.rollup_tick; replaces
+# ── Rollup freshness (ADR-0063 B2: the rollups are plain tables kept by silver.rollup_tick — equipment_metrics_1min
+# is a VIEW over equipment_categorical_1min since ADR-0065 P3a, so it is not polled here; replaces
 # pg_timescaledb_cagg_seconds_since_last_success). lag = now − newest bucket; index-only scans (0.35 ms on
 # staging). Emits rows only where the rollups are PLAIN tables (relkind 'r'); a TimescaleDB cagg (a view, prod
 # until its go-live) is skipped — a real-time cagg max() would be expensive. ──
@@ -462,7 +463,6 @@ pg_rollup_freshness:
     SELECT current_database() AS datname, x.tbl AS "table", x.grain, x.lag AS lag_seconds
       FROM (SELECT xmlelement(name r, query_to_xml($$
               SELECT 'equipment_categorical_1min' AS tbl, '1min' AS grain, extract(epoch FROM now() - max(ts_value))::float8 AS lag FROM silver.equipment_categorical_1min WHERE ts_value > now() - interval '1 day'
-              UNION ALL SELECT 'equipment_metrics_1min', '1min', extract(epoch FROM now() - max(bucket))::float8 FROM silver.equipment_metrics_1min WHERE bucket > now() - interval '1 day'
               UNION ALL SELECT 'agg_equipment_values_1min', '1min', extract(epoch FROM now() - max(ts_value))::float8 FROM silver.agg_equipment_values_1min WHERE ts_value > now() - interval '1 day'
               UNION ALL SELECT 'equipment_categorical_1hour', '1hour', extract(epoch FROM now() - max(ts_value))::float8 FROM silver.equipment_categorical_1hour WHERE ts_value > now() - interval '2 days'
               UNION ALL SELECT 'agg_equipment_values_1hour', '1hour', extract(epoch FROM now() - max(ts_value))::float8 FROM silver.agg_equipment_values_1hour WHERE ts_value > now() - interval '2 days'$$, true, true, '')) AS q
