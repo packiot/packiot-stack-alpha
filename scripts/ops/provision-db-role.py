@@ -24,7 +24,9 @@ postgres:15-alpine on the stack network.
   provision-db-role.py --service barcode-service --rotate        # new password; then recreate the service
   provision-db-role.py --service barcode-service --env production --db-host <h> --admin-host <h>
   (services: operator-gateway, barcode-service, stream-engine, legacy-replicator, sparkplug-agent, prod-reflector,
-   prod-reflector-ro)
+   prod-reflector-ro, readapi-ro)
+  provision-db-role.py --service readapi-ro --env production --db-name packiot \
+      --db-host 10.20.10.89 --admin-host 10.20.10.89   # go-live step 8: APPLIES terraform's password, never creates one
   provision-db-role.py --service prod-reflector-ro --env production --db-name packiot \
       --db-host 10.20.10.89 --admin-host 10.20.10.89   # ADR-0064, on the PRODUCTION app host; the staging
       # reflector reads the resulting secret packiot/production/prod-reflector-ro-db-creds over the VPC peering
@@ -86,6 +88,17 @@ ROLES = {
         "migration": "t-prod-reflector-roles",
         "staging_host": STAGING_DB_HOST,
         "settings": {"default_transaction_read_only": "on", "statement_timeout": "120s"},
+    },
+    # read-api's login (t276). Its password is OWNED BY TERRAFORM (random_password → packiot/<env>/internal-keys
+    # .readapi_ro_password, mirrored into READAPI_RO_PASSWORD in /opt/packiot/.env), so this script only APPLIES it to
+    # the role: it never generates, writes or rotates it. Found 2026-10-15: the transplant creates readapi_ro LOGIN
+    # without a password and no go-live step set one (the rehearsal did it in a clone-only script).
+    "readapi-ro": {
+        "role": "readapi_ro",
+        "migration": "t276-readapi-ro-nobypassrls",
+        "staging_host": "pgbouncer",
+        "settings": {},
+        "password_from": ("internal-keys", "readapi_ro_password"),
     },
 }
 
@@ -180,7 +193,10 @@ def main():
     a = p.parse_args()
     spec = ROLES[a.service]
     role = spec["role"]
-    a.secret_id = a.secret_id or f"packiot/{a.env}/{a.service}-db-creds"
+    external = spec.get("password_from")   # (secret suffix, json key): a password this script must not own
+    if external and a.rotate:
+        die(f"{a.service}'s password is owned by terraform ({external[0]}.{external[1]}): rotate it there")
+    a.secret_id = a.secret_id or f"packiot/{a.env}/{external[0] if external else a.service + '-db-creds'}"
 
     current = None
     r = aws(a, "get-secret-value", "--secret-id", a.secret_id, "--query", "SecretString", "--output", "text",
@@ -189,6 +205,10 @@ def main():
         current = json.loads(r.stdout)
     elif "ResourceNotFoundException" not in r.stderr:
         die(f"get-secret-value {a.secret_id}: {r.stderr.strip()}")
+    if external:
+        if not (current or {}).get(external[1]):
+            die(f"{a.secret_id} has no {external[1]} field")
+        current = {"password": current[external[1]]}   # only this field; the secret's other keys are not ours
     staging = a.env == "staging"
     a.db_host = a.db_host or (current or {}).get("host") or (spec["staging_host"] if staging else None)
     a.admin_host = a.admin_host or (STAGING_DB_HOST if staging else None)
@@ -208,7 +228,10 @@ def main():
 
     if not a.check:
         # 2. the secret
-        if current and not a.rotate:
+        if external:
+            password = current["password"]
+            print(f"2. password from {a.secret_id}.{external[1]} (terraform-owned; not written)")
+        elif current and not a.rotate:
             password = current.get("password") or die(f"{a.secret_id} has no password field")
             print(f"2. secret {a.secret_id}: exists, password reused")
         else:

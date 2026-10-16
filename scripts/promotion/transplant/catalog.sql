@@ -1,13 +1,24 @@
+-- catalog.sql — READ ONLY. Works with and without the timescaledb extension (ADR-0063: staging dropped it 2026-10-15;
+-- the prod SERVER keeps it for rollback). psql meta-commands pick the hypertable/cagg sources: without the extension
+-- they are empty sets, so nothing references timescaledb_information.
+SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') AS cat_has_ts \gset
+\if :cat_has_ts
+\set cat_ht 'SELECT h.hypertable_schema::text AS sch, h.hypertable_name::text AS nm, (SELECT d.column_name::text FROM timescaledb_information.dimensions d WHERE d.hypertable_schema=h.hypertable_schema AND d.hypertable_name=h.hypertable_name ORDER BY d.dimension_number LIMIT 1) AS tcol, (SELECT d.time_interval::text FROM timescaledb_information.dimensions d WHERE d.hypertable_schema=h.hypertable_schema AND d.hypertable_name=h.hypertable_name ORDER BY d.dimension_number LIMIT 1) AS chunk FROM timescaledb_information.hypertables h'
+\set cat_ca 'SELECT view_schema::text AS sch, view_name::text AS nm, materialized_only, view_definition, materialization_hypertable_schema::text AS msch, materialization_hypertable_name::text AS mnm FROM timescaledb_information.continuous_aggregates'
+\else
+\set cat_ht 'SELECT NULL::text AS sch, NULL::text AS nm, NULL::text AS tcol, NULL::text AS chunk WHERE false'
+\set cat_ca 'SELECT NULL::text AS sch, NULL::text AS nm, NULL::boolean AS materialized_only, NULL::text AS view_definition, NULL::text AS msch, NULL::text AS mnm WHERE false'
+\endif
 WITH s AS (SELECT oid, nspname FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast')
              AND nspname !~ '^(pg_temp|pg_toast_temp|_timescaledb|timescaledb_)' ),
-ht AS (SELECT h.hypertable_schema AS sch, h.hypertable_name AS nm,
-              (SELECT d.column_name FROM timescaledb_information.dimensions d WHERE d.hypertable_schema=h.hypertable_schema AND d.hypertable_name=h.hypertable_name ORDER BY d.dimension_number LIMIT 1) AS tcol,
-              (SELECT d.time_interval::text FROM timescaledb_information.dimensions d WHERE d.hypertable_schema=h.hypertable_schema AND d.hypertable_name=h.hypertable_name ORDER BY d.dimension_number LIMIT 1) AS chunk
-         FROM timescaledb_information.hypertables h),
-ca AS (SELECT view_schema AS sch, view_name AS nm, materialized_only, view_definition, materialization_hypertable_schema AS msch, materialization_hypertable_name AS mnm FROM timescaledb_information.continuous_aggregates)
+ht AS (:cat_ht),
+ca AS (:cat_ca)
 SELECT json_build_object(
  'tables', (SELECT json_agg(json_build_object('s', s.nspname, 'n', c.relname, 'kind', c.relkind, 'rls', c.relrowsecurity, 'force', c.relforcerowsecurity,
         'ht', (SELECT json_build_object('tcol', ht.tcol, 'chunk', ht.chunk) FROM ht WHERE ht.sch=s.nspname AND ht.nm=c.relname),
+        -- native partitioning (ADR-0063 C3): 'part' on the parent (its RANGE column), 'parent' on each partition
+        'part', (SELECT json_build_object('tcol', a.attname) FROM pg_partitioned_table pt JOIN pg_attribute a ON a.attrelid=pt.partrelid AND a.attnum=pt.partattrs[0] WHERE pt.partrelid=c.oid),
+        'parent', (SELECT i.inhparent::regclass::text FROM pg_inherits i WHERE i.inhrelid=c.oid AND c.relispartition),
         'cols', (SELECT json_agg(json_build_object('n', a.attname, 't', format_type(a.atttypid, a.atttypmod), 'nn', a.attnotnull,
                    'def', pg_get_expr(ad.adbin, ad.adrelid), 'id', a.attidentity, 'gen', a.attgenerated) ORDER BY a.attnum)
                  FROM pg_attribute a LEFT JOIN pg_attrdef ad ON ad.adrelid=a.attrelid AND ad.adnum=a.attnum
@@ -33,5 +44,6 @@ SELECT json_build_object(
  'triggers', (SELECT json_agg(json_build_object('s', s.nspname, 'tbl', c.relname, 'n', t.tgname, 'def', pg_get_triggerdef(t.oid)))
      FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN s ON s.oid=c.relnamespace WHERE NOT t.tgisinternal),
  'schemas', (SELECT json_agg(nspname) FROM s),
- 'roles', (SELECT json_agg(rolname) FROM pg_roles WHERE rolname !~ '^pg_')
+ 'roles', (SELECT json_agg(rolname) FROM pg_roles WHERE rolname !~ '^pg_'),
+ 'extensions', (SELECT json_agg(extname ORDER BY extname) FROM pg_extension)
 );

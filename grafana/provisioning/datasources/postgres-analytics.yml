@@ -2,6 +2,13 @@ apiVersion: 1
 
 # F3 — the refactored database (packiot_analytics on the same DB host).
 # Becomes THE database at the ADR-0016 §6 flip.
+# The datasource was renamed "Packiot Shadow (F3)" -> "Packiot Analytics (F3)" with the SAME uid. Provisioning matches by
+# name, so a Grafana DB that still holds the old name fails at boot ("data source with the same uid already exists",
+# prod 2026-10-16 go-live: crash loop). Deletes run before inserts; a no-op where the old name is gone.
+deleteDatasources:
+  - name: Packiot Shadow (F3)
+    orgId: 1
+
 datasources:
   - name: Packiot Analytics (F3)
     type: postgres

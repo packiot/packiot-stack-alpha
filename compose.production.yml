@@ -82,6 +82,8 @@ volumes:
   rabbitmq-data:
   mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
+  edge_transformer_agent_outbox:   # sparkplug-agent-shared outbox (Bispharma go-live)
+  hist_gateway_data:         # D3: pg_duckdb gateway state (fdw defs + hist cutover cache)
 
 # ── IP allocation ──────────────────────────────────────────────────────────────
 # .2  hasura          .3  edge-api          .5  rabbitmq
@@ -89,7 +91,7 @@ volumes:
 # .10 pgbouncer       .12 authentik-server  .13 authentik-worker  .14 authentik-redis
 # .15 hasura-init     .16 db-migrate        .17 adminer
 # .19 operator        .20 oeecloud-worker   .22 prometheus
-# .23 edge-transformer  .24 mosquitto       .26 refdata-api
+# .23 edge-transformer  .24 mosquitto       .26 refdata-api        .27 hist-gateway
 # .29 ingest-shim     .30 db-init-bootstrap .31 operator-adapter   .35 app-redis
 #
 # DELIBERATELY ABSENT vs staging (see header):
@@ -138,8 +140,10 @@ services:
     command:
       - |
         set -e
-        echo "== extensions in ${POSTGRES_DB} (timescaledb auto-created by image; pg_cron best-effort) =="
-        psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
+        # ADR-0063 end state (2026-10-16): the go-live database is TimescaleDB-FREE (staging dropped the extension
+        # 2026-10-15; the transplant never creates it). The server image keeps the library only for the pre-promotion
+        # DB / rollback, so this one-shot must NOT create it — it runs on every deploy against ${POSTGRES_DB}.
+        echo "== extensions in ${POSTGRES_DB} (no timescaledb — ADR-0063; pg_cron best-effort) =="
         # pg_cron requires shared_preload_libraries — tolerate absence so a missing
         # preload never fails the deploy (F3 single-flow does rollups in Go).
         psql -c "CREATE EXTENSION IF NOT EXISTS pg_cron;" \
@@ -229,6 +233,17 @@ services:
       - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      # PROMOTION 2026-10 (B1) — same as staging: rabbitmq_prometheus plugin +
+      # load_definitions, which re-creates the least-priv users (stream-engine,
+      # sparkplug-decoder; permission regexes in
+      # monitoring/rabbitmq/definitions.template.json) on EVERY boot. The file is
+      # rendered before `up` by scripts/render-rabbitmq-definitions.sh (deploy
+      # workflow + app_init.sh) from Secrets Manager; it holds secrets, lives
+      # outside the repo and is mounted read-only. With definitions loaded,
+      # RABBITMQ_DEFAULT_USER/PASS are ignored — the admin user is in the file.
+      - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./monitoring/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - /opt/packiot/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       packiot-net:
         ipv4_address: 172.18.0.5
@@ -374,8 +389,13 @@ services:
         # no IF NOT EXISTS) is NOT re-runnable — on a re-deploy against an already
         # assembled r7g it errors "continuous aggregate already exists" (exit 3),
         # blocking db-migrate → stranding edge-api/oeecloud. Skip if F3 is present.
-        if [ "$$(psql -tAc "SELECT to_regclass('public.agg_equipment_values_1min') IS NOT NULL" 2>/dev/null)" = "t" ]; then
-          echo "F3 schema already assembled (agg_equipment_values_1min exists) — skipping (idempotent).";
+        # PROMOTION 2026-10: after the database transplant (docs/adr/reference/
+        # production-promotion-transplant-runbook.md) the cagg lives in `silver`
+        # (medallion, t231/t261) and `public.agg_equipment_values_1min` no longer
+        # exists — so the guard must accept EITHER location, or this one-shot would
+        # replay the 09-07 F3 snapshot over the transplanted schema.
+        if [ "$$(psql -tAc "SELECT to_regclass('public.agg_equipment_values_1min') IS NOT NULL OR to_regclass('silver.agg_equipment_values_1min') IS NOT NULL" 2>/dev/null)" = "t" ]; then
+          echo "F3 schema already assembled (agg_equipment_values_1min exists in public or silver) — skipping (idempotent).";
           exit 0;
         fi
         if ! ls /f3/snapshot/*.sql >/dev/null 2>&1; then
@@ -519,19 +539,35 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: pgbouncer
-      # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}
-      # from .env, which isn't in Secrets Manager → a fresh instance would lack it
-      # and csadmin.prod auth would break). Dual-accept: no Bearer → api-key
-      # path unchanged (safe for other consumers). These are edge-api settings
-      # (cognito-users, bearer-jwt, onboarding); they used to sit in the read-api
-      # block by mistake, where read-api ignored them. Same values as the
-      # compose.staging.yml edge-api block.
+      # Operator super-admin cross-tenant WRITE escalation (RS256/JWKS verifier,
+      # #188). Enabled per prod decision (2026-09-07). Gated by construction: an
+      # exclusive single super_user + email allowlist. NOTE: only takes effect once
+      # the dev super-admin user is PROVISIONED in prod (a seed step, cutover-gated).
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
+      # ── PROMOTION 2026-10 — staging behaviour parity (reconciliation doc §8) ──
+      # CS-Admin / operator Cognito auth + onboarding. These were meant for
+      # edge-api (#20 durability, 66f501b3) but sat in the refdata/read-api block,
+      # so edge-api only had them via the box .env (app_init.sh). Moved here.
+      AWS_REGION: us-east-1
+      AUTH_BEARER_ENABLED: "true"
+      COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
+      COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
       COGNITO_USER_POOL_ID: us-east-1_0T9t1sTwt
       COGNITO_CS_ADMIN_GROUP: cs-admin
       EDGE_API_COGNITO_AUTH_ENABLED: "true"
       EDGE_API_ONBOARDING_ENABLED: "true"
+      # Teardown (destructive client removal) is ON on staging; kept OFF on prod
+      # until the user decides — a deliberate divergence (doc §8).
+      EDGE_API_TEARDOWN_ENABLED: "false"
       ONBOARD_GENERATE_URL: http://sparkplug-decoder:9105/v1/onboard/generate
       ONBOARD_API_KEY: ${ONBOARD_API_KEY}
+      # Stale-PO gate — CPACK only (staging: 3,4).
+      PO_STALENESS_GATE_ENABLED: "true"
+      PO_STALENESS_GATE_ENTERPRISES: "3"
+      REDIS_URL: ${REDIS_URL:-redis://app-redis:6379/0}
+      # Not carried (no such service on prod — decision B6): EDGE_SESSION_BROKER_*,
+      # SSM_* (ADR-0057 box access), OTEL_* (no tempo). POSTGRES_ANALYTICS_URL is
+      # left unset: single-DB prod, the adapter binds the primary DB (identical).
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -683,9 +719,26 @@ services:
       OAUTH2_PROXY_OIDC_GROUPS_CLAIM: "cognito:groups"
       OAUTH2_PROXY_SCOPE: openid email profile
       OAUTH2_PROXY_EMAIL_DOMAINS: "*"
-      OAUTH2_PROXY_COOKIE_DOMAINS: .prod.packiot.app
-      OAUTH2_PROXY_WHITELIST_DOMAINS: .prod.packiot.app
+      # Cookie + redirect scope BROADENED from .prod.packiot.app to .packiot.app
+      # (2026-08) so the oauth2 gate can cover dash.packiot.app + wiki.packiot.app,
+      # which live on the packiot.app APEX (siblings of prod.packiot.app), not under
+      # *.prod.packiot.app. A cookie scoped to .prod.packiot.app is NOT sent by the
+      # browser to dash/wiki, and .prod-only whitelist rejects the post-login rd=
+      # → the nginx auth_request gate on those hosts would infinite-loop. Setting a
+      # single broadest domain .packiot.app makes the callback (on auth.prod.…) set
+      # Domain=.packiot.app, readable by every packiot.app subdomain (existing *.prod
+      # admin SSO still works — they are subdomains of packiot.app too). MUST land
+      # together with the dash/wiki nginx vhost gates (nginx_setup.sh).
+      OAUTH2_PROXY_COOKIE_DOMAINS: .packiot.app
+      OAUTH2_PROXY_WHITELIST_DOMAINS: .packiot.app
       OAUTH2_PROXY_COOKIE_SECURE: "true"
+      # PROMOTION 2026-10 parity: server-side sessions in app-redis (db 1), like
+      # staging. Cookie-store sessions (split + a host-scoped copy) grew past the
+      # 8 KB CloudFront WAF SizeRestrictions_Cookie_HEADER cap on staging and got
+      # every admin UI 403'd at the edge; prod's .packiot.app scope (dash/wiki +
+      # *.prod) is the same exposure. The cookie then holds only a small ticket.
+      OAUTH2_PROXY_SESSION_STORE_TYPE: redis
+      OAUTH2_PROXY_REDIS_CONNECTION_URL: redis://app-redis:6379/1
       OAUTH2_PROXY_COOKIE_SAMESITE: lax
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_PASS_ACCESS_TOKEN: "false"
@@ -693,6 +746,9 @@ services:
       OAUTH2_PROXY_REVERSE_PROXY: "true"
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
       OAUTH2_PROXY_UPSTREAMS: static://202
+    depends_on:
+      app-redis:
+        condition: service_healthy   # session store (as staging)
     ports:
       - "127.0.0.1:4180:4180"
     networks:
@@ -773,11 +829,26 @@ services:
     build: ./services/stream-engine
     container_name: stream-engine
     restart: unless-stopped
-    env_file: [.env]
+    # No env_file: .env holds the admin POSTGRES_USER/POSTGRES_PASSWORD, the broker admin RABBITMQ_* and every
+    # other service's secrets. The engine's own tuning keys that may live in .env are passed through
+    # explicitly at the end of `environment:` (${KEY:-} = unchanged when .env does not set it: the code
+    # treats "" as unset). Same shape as compose.staging.yml. Enforced by scripts/ci/check-db-least-priv.py.
     environment:
       LOG_LEVEL: info
       AWS_REGION: us-east-1
-      PG_SECRET_ID: packiot/production/db
+      # DB login = the least-privilege `stream_engine` role (db/migrations/t-stream-engine-role: table-level
+      # DML on its own tables, TEMP, sequence USAGE, EXECUTE on the INVOKER engine functions; no DDL/TRUNCATE;
+      # NOBYPASSRLS with role default app.tenant_id=-1 because the engine is cross-tenant), NOT the admin
+      # packiot/production/db. Creds {host,port,user,password,name} from Secrets Manager (CREDS_SOURCE unset);
+      # the secret's host is the r7g DIRECT (POSTGRES_HOST_UPSTREAM — session advisory locks, like staging).
+      # PROVISION FIRST (transplant `roles` step, then scripts/ops/provision-db-role.py --service
+      # stream-engine --env production on the app host) — a deploy before that exits at boot.
+      # EMERGENCY ROLLBACK without a redeploy: STREAM_ENGINE_PG_SECRET_ID=packiot/production/db in
+      # /opt/packiot/.env + recreate stream-engine.
+      PG_SECRET_ID: ${STREAM_ENGINE_PG_SECRET_ID:-packiot/production/stream-engine-db-creds}
+      # Pin AMQP to the least-privilege broker user in RABBITMQ_SECRET_ID, never RABBITMQ_USER/PASSWORD (the
+      # broker ADMIN). Was implicit (CREDS_SOURCE unset in .env ⇒ Secrets Manager); explicit now, as staging.
+      AMQP_CREDS_SOURCE: aws
       # MANUAL PRE-REQ (rename S1+S2, oeecloud-worker -> stream-engine): this
       # secret does not exist yet under the new name. A human must create
       # packiot/production/rabbitmq-stream-engine-creds (username
@@ -803,7 +874,7 @@ services:
       # Single flow → no F1/F2/F3 triple to spread; keep lanes small. 2 keeps
       # po-control strictly ordered (read-modify-write) while data processes
       # concurrently. Bump only if a real client's volume needs it.
-      CONSUME_LANES: "2"
+      CONSUME_LANES: "4"   # PROMOTION 2026-10 parity: staging runs 4 (was 2)
       # Byte-identical statement-count optimization (fold shift-fill into the
       # equipment_values UPSERT). Keep on.
       SHIFT_FILL_FOLDED: "true"
@@ -844,9 +915,25 @@ services:
       # fallback for lines (mutually exclusive per client — do NOT also enable
       # COUNTERS_ONLY_AVAILABILITY for a line-metered tenant, or lines double-write).
       COUNTERS_ONLY_LINE_LEAD_ENABLED: "true"
-      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3"
+      # Greenfield: tenant list stays minimal — each line-metered client is added
+      # to this list at ITS onboarding (staging pattern). Bispharma (ent 5) is added
+      # at ITS production go-live (2026-10, docs/runbooks/go-live-bispharma.md):
+      # counters-only, every tp=3 line metered from its lead (staging: 3,5,2000003).
+      COUNTERS_ONLY_LINE_LEAD_ENTERPRISES: "3,5"
       COUNTERS_ONLY_IDLE_TIMEOUT_SECONDS: "300"
-      COUNTERS_ONLY_AVAILABILITY_ENABLED: "false"
+      # PROMOTION 2026-10 parity: staging runs the counters-only availability pass
+      # for the CPACK L6 members (counters-only Modbus line, SPEED:NO). Ids 68-72 =
+      # L6 BREYER/TEXA/POLYTYPE/RMH/PTH on staging; the new-stack prod carries the
+      # SAME CPACK ids (readiness §2b: 90 ISIMAT / 107 SLEEVE1 match). VERIFY on the
+      # transplanted DB before the go (reconciliation doc §8, check C1). The
+      # OEE_AVAIL_FLOOR pass below engages ONLY for this list.
+      COUNTERS_ONLY_AVAILABILITY_ENABLED: "true"
+      COUNTERS_ONLY_AVAILABILITY_EQUIPMENTS: "68,69,70,71,72"
+      # Client-agnostic hardening (forward-port): the oldest-first backfill drain
+      # that recomputes stranded recalc_needed hour rows (stream-engine
+      # internal/rollup/backfill.go, dedicated advisory key). Safe on all tenants.
+      ROLLUP_BACKFILL_ENABLED: "true"
+      ROLLUP_BACKFILL_INTERVAL_SECONDS: "7"
       # ── Strategy D — shared worker pool + dynamic tenant discovery ─────────
       # Onboard a new client (packml_register active=true) with NO worker
       # restart — the worker picks it up within this interval. 0 = boot-only.
@@ -857,6 +944,117 @@ services:
       # services/oeecloud-worker/scripts/migrate-tenant-queues-sac.sh. Flip on
       # ONLY with OEECLOUD_WORKER_REPLICAS>1. Docs: strategy-d-shared-pool-sac.md.
       WORKER_POOL_SAC_ENABLED: "false"
+      # ── PROMOTION 2026-10 — staging behaviour parity (reconciliation doc §8) ──
+      # Reference = compose.staging.yml + staging's live .env-only flags, scoped to
+      # prod's tenants (CPACK = ent 3; ent 1 has no line/stop config). Staging-only
+      # tenant ids (4 Incoplast, 5 Bispharma, 2000003 sandbox) are dropped.
+      #
+      # Single-DB prod after the transplant: `packiot` IS the medallion
+      # (staging-packiot_analytics-shaped) DB. Without POSTGRES_ANALYTICS_DB_NAME
+      # the handler routes source_type=refactored to (main pool, `public`) — the
+      # pre-medallion names t252 dropped — so this is REQUIRED, not cosmetic.
+      # Staging points BOTH pools at packiot_analytics (the secret's name +
+      # POSTGRES_ANALYTICS_DB_NAME); prod points both at ${POSTGRES_DB} (the
+      # stream-engine-db-creds secret's `name` must be the same DB).
+      POSTGRES_ANALYTICS_DB_NAME: ${POSTGRES_DB}
+      POSTGRES_MAX_CONNS: "5"
+      POSTGRES_ANALYTICS_MAX_CONNS: "15"
+      # ADR-0048/0049 OEE correctness (staging since 2026-08-22).
+      OEE_AVAIL_FLOOR_ENABLED: "true"
+      OEE_CANONICAL_APQ_ENABLED: "true"
+      # FU#8 PO-grain availability (available_time/planned_downtime on PO runtime).
+      PO_AVAILABILITY_ENABLED: "true"
+      # Stale-open stop closer — CPACK + Bispharma (staging: 3,4,5,2000003). ent 5 was
+      # missing on staging once and its stale opens read as running (2026-09-24).
+      EVENTS_CLOSE_STALE_ENABLED: "true"
+      EVENTS_CLOSE_STALE_ENTERPRISES: "3,5"
+      # ADR-0010 §10.4 CPAC (status_type=0) stop deriver. NOTE: for ent 3 this
+      # writes the SHADOW comparison table (CPAC_EVENT_TARGET_TABLE default
+      # equipment_events_cpac_shadow), exactly like staging — it does NOT mint
+      # live CPACK downtimes. CPAC_EVENT_LIVE_ENTERPRISES must never list ent 3: CPACK
+      # must not get a second live writer (the #456 double-write class). See doc §8.
+      # (It lists ent 5 since the Bispharma go-live — see the pass-through below.)
+      CPAC_EVENT_DERIVATION_ENABLED: "true"
+      CPAC_EVENT_ENTERPRISES: "3"
+      CPAC_STOP_THRESHOLD_DEFAULT_SEC: "600"
+      # ADR-0036 B1 medallion Bronze dual-write (now reached: refactored route).
+      BRONZE_RAW_APPEND: "true"
+      # Descriptor-driven box→production bridge (inert without box descriptors).
+      BOXES_BRIDGE_ENABLED: "true"
+      # ADR-0063 B2 (2026-10-16): the rollup tick is THE minute/hour rollup (the caggs are gone; the go-live DB is
+      # TimescaleDB-free). Default ON here — unlike staging, where it was switched on after the backfill — because the prod
+      # DB is born with the rollup tables loaded (go-live-bispharma.md §2.1): without it no minute/hour/gold ever computes.
+      ROLLUP_SHADOW_ENABLED: ${ROLLUP_SHADOW_ENABLED:-true}
+      # Legacy customer-report ports for ents 6/13 (Neopac): NO such tenant on the
+      # new-stack prod, and shift06 is delete-and-reload — kept OFF on purpose
+      # (staging runs them as port proofs). Intervals/flags pinned for parity.
+      SHIFT06_REPORT_ENABLED: "false"
+      SHIFT06_INTERVAL_MINUTES: "15"
+      SAP13_REPORT_ENABLED: "false"
+      SAP13_INTERVAL_MINUTES: "15"
+      SAP13_REASONS_FROM_DIM: "false"
+      SYNC06_REPORT_ENABLED: "false"
+      BOXES13_REPORT_ENABLED: "false"
+      # Rollup batch caps (staging-tuned: fair live-shift progress, #1467).
+      ROLLUP_SHIFT_LIMIT: "75"
+      ROLLUP_BACKFILL_LIMIT: "50"
+      INCREMENT_SANITY_CLAMP_SPIKE_FRACTION: "0.5"
+      # Tenant allowlist: EMPTY = passthrough (all discovered tenants). Prod's only
+      # known Sparkplug tenant is `cpack`; ent 1's group is unverified, so no list.
+      WORKER_TENANT_ALLOWLIST: ""
+      # ── .env pass-through (env_file removed) ─────────────────────────────────────────────────
+      # Every key the engine reads (internal/config/config.go, internal/secrets, tracing) that is NOT set
+      # above, so a value an operator put in /opt/packiot/.env still reaches it exactly as env_file did.
+      # ${KEY:-} → "" when absent, which the code treats as unset (code default). CPAC_EVENT_LIVE_ENTERPRISES
+      # is passed through for parity only — it must stay unset/empty on prod (see the CPAC note above).
+      # Deliberately NOT passed: CREDS_SOURCE, DB_*/POSTGRES_* and RABBITMQ_USER/PASSWORD (admin logins).
+      AVAILABILITY_EXCLUSIONS_ENABLED: ${AVAILABILITY_EXCLUSIONS_ENABLED:-}
+      BAKE_ENTERPRISE_IDS: ${BAKE_ENTERPRISE_IDS:-}
+      BIRTHBIND_VERIFY: ${BIRTHBIND_VERIFY:-}
+      BIRTHBOUND_SWITCHED_ENTERPRISES: ${BIRTHBOUND_SWITCHED_ENTERPRISES:-}
+      BOXES13_INTERVAL_MINUTES: ${BOXES13_INTERVAL_MINUTES:-}
+      CHANGEOVER_AVAILABILITY_ENABLED: ${CHANGEOVER_AVAILABILITY_ENABLED:-}
+      COUNTER_TOTALS_PUBLIC: ${COUNTER_TOTALS_PUBLIC:-}
+      CPAC_EVENT_DERIVATION_INTERVAL_MINUTES: ${CPAC_EVENT_DERIVATION_INTERVAL_MINUTES:-}
+      # Bispharma go-live: ent 5 is counters-only with NO other event writer, so its
+      # stops are LIVE-minted by the 2nd CPAC deriver instance (staging: "5", #1384).
+      # CPACK (ent 3) stays shadow-only and must never be listed here (#456 class).
+      CPAC_EVENT_LIVE_ENTERPRISES: ${CPAC_EVENT_LIVE_ENTERPRISES:-5}
+      CPAC_EVENT_TARGET_TABLE: ${CPAC_EVENT_TARGET_TABLE:-}
+      DQ_ALARMS_ENABLED: ${DQ_ALARMS_ENABLED:-}
+      EVENTS_CLOSE_STALE_HORIZON_HOURS: ${EVENTS_CLOSE_STALE_HORIZON_HOURS:-}
+      EVENTS_CLOSE_STALE_INTERVAL_SEC: ${EVENTS_CLOSE_STALE_INTERVAL_SEC:-}
+      EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS: ${EVENTS_CLOSE_STALE_LONG_HORIZON_DAYS:-}
+      EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC: ${EVENTS_CLOSE_STALE_THRESHOLD_DEFAULT_SEC:-}
+      EVENTS_DERIVER_INTERVAL_MINUTES: ${EVENTS_DERIVER_INTERVAL_MINUTES:-}
+      EVENTS_EXCLUDED_AREAS: ${EVENTS_EXCLUDED_AREAS:-}
+      EVENTS_EXCLUDED_ENTERPRISES: ${EVENTS_EXCLUDED_ENTERPRISES:-}
+      EVENTS_WIDEROW_STATE_ENTERPRISES: ${EVENTS_WIDEROW_STATE_ENTERPRISES:-}
+      INCREMENT_SANITY_CLAMP_K: ${INCREMENT_SANITY_CLAMP_K:-}
+      INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS: ${INCREMENT_SANITY_CLAMP_MIN_DT_SECONDS:-}
+      INCREMENT_SANITY_CLAMP_SPIKE_FLOOR: ${INCREMENT_SANITY_CLAMP_SPIKE_FLOOR:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-}
+      PO_RECALC_EXCLUDED_ENTERPRISES: ${PO_RECALC_EXCLUDED_ENTERPRISES:-}
+      PO_RECALC_INTERVAL_MINUTES: ${PO_RECALC_INTERVAL_MINUTES:-}
+      PO_RECALC_WINDOW: ${PO_RECALC_WINDOW:-}
+      PO_RECOMPUTE_SWEEP_HOURS: ${PO_RECOMPUTE_SWEEP_HOURS:-}
+      PROVISIONAL_SPEED_EQUIPMENTS: ${PROVISIONAL_SPEED_EQUIPMENTS:-}
+      PROVISIONAL_SPEED_FLOOR: ${PROVISIONAL_SPEED_FLOOR:-}
+      PROVISIONAL_SPEED_INFERENCE_ENABLED: ${PROVISIONAL_SPEED_INFERENCE_ENABLED:-}
+      PROVISIONAL_SPEED_MIN_MINUTES: ${PROVISIONAL_SPEED_MIN_MINUTES:-}
+      PROVISIONAL_SPEED_PERCENTILE: ${PROVISIONAL_SPEED_PERCENTILE:-}
+      PROVISIONAL_SPEED_WINDOW_HOURS: ${PROVISIONAL_SPEED_WINDOW_HOURS:-}
+      ROLLUP_MACHINE_LEVEL_ENTERPRISES: ${ROLLUP_MACHINE_LEVEL_ENTERPRISES:-}
+      RUNTIME_PROVISION_INTERVAL_HOURS: ${RUNTIME_PROVISION_INTERVAL_HOURS:-}
+      SAP13_CUSTOMER_ID: ${SAP13_CUSTOMER_ID:-}
+      SHIFT06_CUSTOMER_ID: ${SHIFT06_CUSTOMER_ID:-}
+      SILVER_CLAMP_ENABLED: ${SILVER_CLAMP_ENABLED:-}
+      STRANDED_FLAG_SWEEP_ENABLED: ${STRANDED_FLAG_SWEEP_ENABLED:-}
+      SYNC06_ENTERPRISE_ID: ${SYNC06_ENTERPRISE_ID:-}
+      SYNC06_INTERVAL_MINUTES: ${SYNC06_INTERVAL_MINUTES:-}
+      UNS_CURRENT_METRICS_INTERVAL_MINUTES: ${UNS_CURRENT_METRICS_INTERVAL_MINUTES:-}
+      UNS_INTERVAL_MINUTES: ${UNS_INTERVAL_MINUTES:-}
     # Horizontal scale: default 1 (byte-identical). To run a pool of N, set
     # OEECLOUD_WORKER_REPLICAS=N + WORKER_POOL_SAC_ENABLED=true (post-migration)
     # and COMMENT OUT container_name (line ~753) + the static ipv4_address below
@@ -909,6 +1107,34 @@ services:
       RABBITMQ_PORT: "5672"
       SOURCE_EXCHANGE: edge.plc-normalized
       WORKER_QUEUE: edge-transformer-q
+      # ── PROMOTION 2026-10 — staging behaviour parity (reconciliation doc §8) ──
+      # ADR-0061: resolve device_key → id_equipment through read-api's
+      # /internal/resolve-device (core.device_bindings) instead of the hand map.
+      # REFDATA_INTERNAL_KEY must equal read-api's INTERNAL_API_KEY (same .env
+      # key); unset ⇒ read-api 401s and nothing binds (fail-closed, never wrong).
+      # As on staging, the binder itself is gated by BIRTH_BOUND_ROUTING (default
+      # off, not set on staging either) — this wires the resolver, it does not
+      # switch writes (stream-engine BIRTHBOUND_SWITCHED_ENTERPRISES does that).
+      BIRTH_BOUND_RESOLVER: refdata
+      REFDATA_URL: http://read-api:9104
+      REFDATA_INTERNAL_KEY: ${INTERNAL_API_KEY:-}
+      # Per-tenant routing keys sparkplug.data.<tenant> → stream-engine-q-<tenant>
+      # (Strategy D queues; staging .env).
+      F3_PER_TENANT_ROUTING: "true"
+      # Ask an edge node for a rebirth when its birth state is unknown (staging .env).
+      ET_REQUEST_REBIRTH_ENABLED: "true"
+      # OEE settings (ideal speeds, line roles) from the DB, not compose maps.
+      OEE_PROFILE_FROM_DB: "true"
+      # Phase-9 line aggregation (line scrap one emission/s, #1650).
+      PHASE9_LINE_AGG_ENABLED: "true"
+      # CPACK L6/L5-TEXA counters-only lines emit no MachSpeed: swap Calc's
+      # 3·machSpeed glitch guard for 3·configured-rate (staging since ADR-0037).
+      # Rates come from the DB (COUNTERS_ONLY_FROM_DB above, kept from prod); this
+      # map is the opt-in allowlist + guard bound, keyed by the CPACK unit topic
+      # (tenant-independent), identical to staging. 147 = L6/L5 production_speed.
+      CALC_NO_SPEED_GUARD_FALLBACK: "true"
+      COUNTERS_ONLY_IDEAL_RATES: '{"CPACK/SC/LINHAS/L6/Admin":147,"CPACK/SC/LINHAS/L6/BREYER":147,"CPACK/SC/LINHAS/L6/TEXA":147,"CPACK/SC/LINHAS/L6/POLYTYPE":147,"CPACK/SC/LINHAS/L6/RMH":147,"CPACK/SC/LINHAS/L6/PTH":147,"CPACK/SC/LINHAS/L5/TEXA":147}'
+      CALC_COUNTER_SPIKE_MARGIN: "0"
       RETRY_EXCHANGE: edge.plc-normalized-retry
       RETRY_QUEUE: edge-transformer-q-retry-30s
       FAILED_EXCHANGE: dlx.edge.plc-normalized
@@ -966,6 +1192,12 @@ services:
       # only covered 18 of 42 machines → G5). CS-Admin speed edits now flow through.
       COUNTERS_ONLY_OEE_ENABLED: "true"
       COUNTERS_ONLY_FROM_DB: "true"
+      # The decoder's DB loaders (countersrate, oeeprofile: pgx with its prepared-statement cache) must reach the DB
+      # DIRECTLY, never through pgbouncer's transaction pool: through pgbouncer every periodic reload fails with
+      # `prepared statement "stmtcache_…" does not exist` and the decoder keeps an EMPTY snapshot from boot (counters-only
+      # rates + OEE margins never load). Found by the Bispharma go-live rehearsal (2026-10-15); staging's decoder already
+      # goes direct (POSTGRES_URL → the DB host), so this is parity, not a new path.
+      POSTGRES_HOST: ${POSTGRES_HOST_UPSTREAM}
     volumes:
       # ⚠ FILL AT DEPLOY: replace with the real per-client client.yaml
       # (docs/clients/<client>.yaml, ADR-0004). The example is mounted so the
@@ -1005,10 +1237,72 @@ services:
   #
   # Secrets: AMQP via packiot/production/rabbitmq-sparkplug-decoder-creds
   # (publish-perm on `oee`). INGEST_API_KEY + TLS cert/key are deploy-filled.
+  # ── sparkplug-agent-shared (Bispharma go-live 2026-10 — the thin-reader front-door) ─
+  # Same binary/config as staging's `sparkplug-agent-shared`: ONE process, one
+  # pipeline per tenant file, fed over HTTPS by each factory box's thin reader
+  # (edge-api reader bundle, ADR-0049): box → https://ingest.prod.packiot.app:8449
+  # /v1/tags (nginx TLS, app SG admits the box egress /32 only) → this agent :9104
+  # → SparkPlug B on the internal mosquitto → sparkplug-decoder → `oee` →
+  # stream-engine. CPACK's prod feed is a different path (mTLS :8883) and is
+  # untouched. ONLY bispharma.yaml is mounted (single-file mounts, not the whole
+  # tenants dir): a cpack pipeline here would NBIRTH CPACK metrics into prod.
+  # Auth fails CLOSED: the agent refuses to serve without AGENT_INGEST_API_KEY or a
+  # per-tenant key map. Key in /opt/packiot/.env (never echoed); the same value is
+  # the box's INGEST_KEY in /opt/packiot-prod/.env (runbook go-live-bispharma.md §4).
+  sparkplug-agent-shared:
+    build:
+      context: ./services/sparkplug-decoder
+    container_name: sparkplug-agent-shared
+    entrypoint: ["/usr/local/bin/sparkplug-agent"]   # multi mode via AGENT_TENANTS_DIR (no --config)
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      HEALTH_PORT: "9103"
+      AGENT_TENANTS_DIR: /etc/packiot/tenants
+      AGENT_OUTBOX_DIR: /var/lib/edge-transformer/outbox
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      AGENT_HTTP_INGEST_ENABLED: "true"
+      AGENT_INGEST_PORT: "9104"
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:-}
+      AGENT_INGEST_KEYS_SECRET_ID: ${AGENT_INGEST_KEYS_SECRET_ID:-}
+      AGENT_INGEST_LEGACY_KEY_ALLOWED: "${AGENT_INGEST_LEGACY_KEY_ALLOWED:-true}"
+      AWS_REGION: us-east-1
+      AGENT_BIRTH_ALL_MAPPED: "true"
+      # Capture (onboarding evidence) stays OFF on prod via its own flag. The DB login below is for PLC link
+      # health (silver.plc_link_minutes → the NO DATA availability state) and saved derive rules: without it
+      # link health was silently OFF from the go-live (10-16 13:18 UTC) — never re-gate capture by dropping
+      # the DB login. Least-privilege role sparkplug_agent (db/migrations/t-sparkplug-agent-role), password
+      # only in Secrets Manager (provision-db-role.py --service sparkplug-agent --env production).
+      AGENT_CAPTURE_ENABLED: "false"
+      AGENT_DB_SECRET_ID: packiot/production/sparkplug-agent-db-creds
+      AGENT_TENANTS_PROFILE_DIR: /etc/packiot/tenant-profiles
+    volumes:
+      - ./docs/clients/tenants/bispharma.yaml:/etc/packiot/tenants/bispharma.yaml:ro
+      - ./docs/clients/tenant-profiles/bispharmastaging.yaml:/etc/packiot/tenant-profiles/bispharmastaging.yaml:ro
+      - edge_transformer_agent_outbox:/var/lib/edge-transformer
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.44   # = staging's slot; nginx_setup.sh 8449 → 172.18.0.44:9104
+        aliases: ["edge-agent-shared"]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 192m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
   ingest-shim:
     build: ./services/ingest-shim
     container_name: ingest-shim
-    profiles: ["client-ingest"]  # GATED: needs a tenant + mTLS ingest certs — starts only when a client is onboarded (--profile client-ingest)
+    profiles: ["ingest-shim"]   # opt-in: the HTTPS shim serves ONE client group (staging: INCOPLAST); Bispharma-only prod has none (2026-10-16)
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -1087,16 +1381,12 @@ services:
     environment:
       DB_HOST: pgbouncer
       DB_PORT: "5432"
-      # task #264 (same as compose.staging.yml): read-api logs in as the NOBYPASSRLS,
-      # read-only `readapi_ro` role (db/migrations/t276), NOT the superuser
-      # ${POSTGRES_USER}, so FORCE ROW LEVEL SECURITY co-enforces the tenant fence.
-      # REQUIRED before this file deploys: t276 applied on the prod DB, the role
-      # given LOGIN + a password (ALTER ROLE readapi_ro LOGIN PASSWORD …, one-time,
-      # out of band), and READAPI_RO_PASSWORD in /opt/packiot/.env (Secrets Manager
-      # packiot/production/internal-keys on the release branch). The `:?` makes
-      # compose refuse to start rather than run read-api as the superuser or with
-      # an empty password. Rollback: READAPI_RO_USER=<superuser> +
-      # READAPI_RO_PASSWORD=$POSTGRES_PASSWORD in .env.
+      # PROMOTION 2026-10 parity: read as the least-privilege `readapi_ro`
+      # (t276: NOBYPASSRLS — tenant RLS is enforced in the DB, not only in code),
+      # like staging. pgbouncer resolves it via auth_user=postgres + auth_query.
+      # The role is created by the transplant (NOLOGIN placeholder) and needs a
+      # password at deploy (runbook §6.4); READAPI_RO_PASSWORD is REQUIRED — an
+      # unset value fails `compose up` before anything is replaced.
       DB_USER: ${READAPI_RO_USER:-readapi_ro}
       DB_PASSWORD: ${READAPI_RO_PASSWORD:?READAPI_RO_PASSWORD must be set in /opt/packiot/.env (packiot/production/internal-keys)}
       DB_NAME: ${POSTGRES_DB}
@@ -1108,18 +1398,29 @@ services:
       # (never client-supplied). # FILL AT DEPLOY from packiot/production/refdata-query-keys
       # (e.g. "prod-<client>-key:<enterprise_id>").
       QUERY_API_KEYS: ${REFDATA_QUERY_API_KEYS:-}
-      # Dual JWT verify. front4 sends a Firebase JWT (fbpackiot project — PUBLIC
-      # id, not a secret) OR a Cognito ID token. Cognito is now LIVE on prod
-      # (front4 W1 read-cutover: front4 reads the bootstrap + analytics via
-      # refdata under the shared Cognito pool). Default ON so a fresh re-provision
-      # keeps it (was ${..:-false} → refdata silently rejected Cognito → front4
-      # Cognito login white-paged; flipped live 2026-08-07, codified here).
-      # Override to false only for a deliberate Firebase-only rollback.
-      # FIREBASE_PROJECT_ID removed: read-api no longer reads it (#159, Firebase IdP
-      # retired; Cognito is the sole per-user verifier).
+      # #159: Firebase IdP RETIRED on the new-stack plane — refdata-api trusts
+      # ONLY the Cognito issuer now. FIREBASE_PROJECT_ID is removed (the binary no
+      # longer reads it nor constructs a Firebase verifier — see main.go). front4
+      # authenticates the /v1 read plane with a Cognito ID token; a stale Firebase
+      # token matches no verifier and is rejected (401). Mirrors staging (#1130).
+      # COGNITO_AUTH_ENABLED is now inert for refdata (Cognito is unconditional);
+      # kept for parity with other services that still read it.
       COGNITO_AUTH_ENABLED: ${COGNITO_AUTH_ENABLED:-true}
       COGNITO_ISSUER: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_0T9t1sTwt
       COGNITO_CLIENT_ID: 2ckuoa0ov598rdpdn3uv039h6e
+      # #20 durability: hardcode CS-Admin auth + onboarding config (was ${..:-}
+      # from .env, which isn't in Secrets Manager → a fresh instance would lack it
+      # and csadmin.prod auth would break). Dual-accept: no Bearer → api-key
+      # path unchanged (safe for other consumers).
+      # (edge-api's CS-Admin/onboarding keys that used to sit here moved to the
+      # edge-api service — read-api never read them.)
+      # Internal device resolver for the decoder (ADR-0061); shared with the
+      # decoder's REFDATA_INTERNAL_KEY. Unset ⇒ endpoint inert (401), fail-closed.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+      # Operator super-admin cross-tenant READ escalation — matches edge-api's
+      # WRITE flag (prod decision 2026-09-07) and staging.
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "true"
+      # HIST_GW_* not set: no historian-gateway runs on prod (profile off, B9).
       # ADR-0035 cache-aside over app-redis (fail-open). Point REDIS_URL at
       # managed ElastiCache instead once provisioned (see app-redis note).
       REDIS_CACHE_ENABLED: "true"
@@ -1237,10 +1538,249 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}
 
-  # ── Operator ──────────────────────────────────────────────────────────────────
-  # NOT included in the central cloud stack (deliberately removed — first-dry-run
-  # boot lesson). The operator SPA's nginx reverse-proxies API routes to
-  # `edge-nodered`, which does NOT run in the cloud stack (per-factory only, per
-  # ADR-0005). With no such upstream in the compose network the container
-  # crash-loops on "host not found in upstream edge-nodered". Operator deploys
-  # alongside edge-nodered per-factory — its .19 address (172.18.0.19) is freed.
+  # ── Operator SPA ────────────────────────────────────────────────────────────
+  # CPACK PO-control cutover (docs/clients/cpack-po-cutover-runbook.md, gap B1).
+  # The operator PWA served at operator.prod.packiot.app. Host nginx operator.conf
+  # already proxies operator.prod → 127.0.0.1:8083 (behind the oauth2/Cognito
+  # outer gate — runbook B4, a separate USER decision); this service is what
+  # finally listens there.
+  #
+  # ⚠ WHY Dockerfile.edge (NOT Dockerfile.staging): the staging image bakes
+  # nginx.staging.conf.template, whose legacy `location` block hard-proxies
+  # /machines,/set-event,/downtime-reasons,… to `http://edge-nodered:1880`.
+  # edge-nodered does NOT run in the cloud stack (per-factory only, ADR-0005), so
+  # nginx resolves that literal upstream at startup and emerg-fails
+  # ("host not found in upstream edge-nodered") → crash-loop. That is exactly why
+  # this service was removed on the first dry-run boot. Dockerfile.edge bakes
+  # nginx.edge.conf.template — the clean post-ADR-0018 surface with NO edge-nodered
+  # proxy: writes+/session → edge-api:8080, reads → refdata-api:9104 (both exist
+  # here), upstreams envsubst-configurable, so nginx starts cleanly. PO control
+  # (the cutover's scope) rides /api/production-orders/* → edge-api and the PO
+  # list/current-production reads ride /v1/operator-* → refdata — both resolve on
+  # new-prod. (Residual legacy-only SPA features — machine list, manual-event
+  # justify, language packs — 404 to the SPA catch-all until those routes migrate
+  # off edge-nodered; harmless while no kiosk/operator is pointed here yet — B3.)
+  #
+  # Secrets (deploy-filled into /opt/packiot/.env; NEVER committed):
+  #   EDGE_API_KEY    = OPERATOR_EDGE_API_KEY    = CPACK (ent 3) enterprises.api_key (B2)
+  #   REFDATA_API_KEY = OPERATOR_REFDATA_API_KEY = CPACK refdata read key, also in
+  #                     refdata's QUERY_API_KEYS map → ent 3 (B5)
+  # nginx injects both server-side (envsubst) on /api|/v1 — the browser NEVER
+  # holds a key. Reuses the .19 address freed when the old comment-only entry was
+  # removed. Kiosk repoint + operator provisioning stay OUT of this change.
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile.edge
+    container_name: operator
+    restart: unless-stopped
+    environment:
+      # CPACK ent-3 enterprises.api_key — nginx injects it as x-api-key on /api/*.
+      EDGE_API_KEY: ${OPERATOR_EDGE_API_KEY:-}
+      # CPACK refdata read key — nginx injects it as x-api-key on /v1/*; refdata
+      # resolves customer_id (=3) from it server-side (ADR-0027 Surface-1).
+      REFDATA_API_KEY: ${OPERATOR_REFDATA_API_KEY:-}
+      # Clean-surface upstreams (defaults baked in Dockerfile.edge; pinned here
+      # for clarity — both are live services in this compose network).
+      EDGE_API_UPSTREAM: http://edge-api:8080
+      REFDATA_UPSTREAM: http://read-api:9104   # renamed from refdata-api (alias still resolves)
+    ports:
+      - "127.0.0.1:8083:80"
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.19
+    depends_on:
+      # Ordering only — nginx needs the upstream NAMES to resolve at startup,
+      # which requires the containers to exist on the network. Neither gates on
+      # health (nginx tolerates a briefly-unready upstream at request time).
+      edge-api:
+        condition: service_started
+      read-api:            # renamed from refdata-api (alias kept on read-api)
+        condition: service_started
+    healthcheck:
+      # nginx serves the SPA index on :80; busybox wget ships in nginx:alpine.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # ── legacy-replicator (PROMOTION 2026-10, B11 — CPACK operator actions + events) ─
+  # Same binary and config as staging's `legacy-replicator`: replays CPACK operator
+  # actions (PO lifecycle, downtime create/justify/split/edit) from the LEGACY prod
+  # DB (packiot40, enterprise 1 "C-PACK", SELECT-only user awslambda) into prod's
+  # CPACK tenant (ent 3), plus the PO reconciler/enricher and the manual-event
+  # reconciler. WHY on prod: the factory tee carries telemetry only (and only some
+  # lines since 2026-08-13); CPACK's downtimes/justifications live in the legacy
+  # control plane — prod's last CPACK equipment_events row is 2026-08-12. Staging's
+  # twin gets them exactly this way. Equipment maps by packml BASE topic, POs by
+  # (id_enterprise, id_order); every write is an idempotent natural-key upsert and
+  # never clobbers a tee-produced row. ent 3's CPAC deriver stays SHADOW-only
+  # (stream-engine CPAC_EVENT_LIVE_ENTERPRISES empty) → this is the single live
+  # writer of replayed CPACK events (no double writers).
+  #
+  # PROFILED (`legacy-replicator`): NOT started by the promotion deploy. The runbook
+  # (§5b) starts it after the transplant + deploy + smoke tests, then adds the
+  # profile to COMPOSE_PROFILES in /opt/packiot/.env so later deploys keep it.
+  # Cold start (no ops.mirror_replay_cursor row for CURSOR_SOURCE) seeds the cursor
+  # just below the first legacy user_logs row at BACKFILL_SINCE and replays forward
+  # — that IS the 2026-08-12 → now backfill. An existing cursor is always respected.
+  #
+  # Secrets: LEGACY_DB_PASSWORD ← top-level SM secret `databaseCredentials`
+  # (key DB_PASSWORD), written to .env by app_init.sh (the app role gets read on
+  # that secret in ec2.tf). Empty default so compose never fails interpolation
+  # while the profile is off. Network: the legacy DB must accept the prod app
+  # box's egress IP (staging's is allowlisted) — runbook §5b pre-req.
+  legacy-replicator:
+    build:
+      context: ./services/analytics-sync
+      dockerfile: Dockerfile.replicator
+    container_name: legacy-replicator
+    profiles: ["legacy-replicator"]
+    restart: unless-stopped
+    # No env_file: .env carries the Postgres admin login and every other secret. The DEST login is the
+    # least-privilege role legacy_replicator (db/migrations/t-legacy-replicator-role) from Secrets Manager
+    # (PG_SECRET_ID); the LEGACY source login is unchanged (LEGACY_DB_PASSWORD is still interpolated from .env
+    # by compose, as before). Emergency lever, no redeploy: LEGACY_REPLICATOR_PG_SECRET_ID=packiot/production/db
+    # in /opt/packiot/.env + recreate puts the DEST connection back on the admin login. Same shape as staging.
+    environment:
+      LOG_LEVEL: info
+      REPLICATE_ENABLED: "true"
+      # SOURCE — legacy prod DB (SELECT-only; never written). Same as staging.
+      LEGACY_DB_HOST: 18.220.223.110
+      LEGACY_DB_PORT: "5432"
+      LEGACY_DB_USER: awslambda
+      LEGACY_DB_PASSWORD: ${LEGACY_DB_PASSWORD:-}
+      LEGACY_DB_NAME: packiot40
+      # DEST — prod's (transplanted, medallion) DB as the least-privilege role
+      # legacy_replicator. The secret {host,port,user,password,name} points DIRECT
+      # at the r7g (POSTGRES_HOST_UPSTREAM, name = POSTGRES_DB): the replicator holds
+      # a cursor transaction per batch. Written ON THE APP HOST by
+      # scripts/ops/provision-db-role.py --service legacy-replicator --env production.
+      # No DEST_DB_* / CREDS_SOURCE here (the code reads DEST_DB_* only with CREDS_SOURCE=env).
+      AWS_REGION: us-east-1
+      PG_SECRET_ID: ${LEGACY_REPLICATOR_PG_SECRET_ID:-packiot/production/legacy-replicator-db-creds}
+      # Enterprise id-map — CPACK legacy 1 -> new-stack 3 (same as staging).
+      SRC_ENTERPRISE: "1"
+      DST_ENTERPRISE: "3"
+      # Cold-start backfill = prod's event gap (last CPACK event 2026-08-12).
+      # Takes precedence over BACKFILL_SINCE_DAYS; ignored once the cursor exists.
+      BACKFILL_SINCE: "2026-08-12"
+      REPLICATE_BASE_EVENTS: "true"
+      # Same cursor key as staging's instance — different DB, so no collision.
+      CURSOR_SOURCE: legacy-cpack
+      POLL_INTERVAL_MS: "3000"
+      BATCH_SIZE: "200"
+      HEALTH_PORT: "9104"
+      HEALTHCHECK_MAX_AGE_SEC: "600"
+      RECONCILE_PO_ENABLED: "true"
+      RECONCILE_PO_INTERVAL_SEC: "300"
+      RECONCILE_PO_WINDOW_DAYS: "14"
+      RECONCILE_PO_ENRICH_ENABLED: "true"
+      RECONCILE_PO_ENRICH_WINDOW_DAYS: "120"
+      RECONCILE_MANUAL_EVENTS_ENABLED: "true"
+      RECONCILE_MANUAL_EVENTS_INTERVAL_SEC: "300"
+      # 60 (staging: 35) so the first passes cover the whole 2026-08-12 gap; drop to
+      # 35 once the backfill is verified (runbook §5b step 6).
+      RECONCILE_MANUAL_EVENTS_LOOKBACK_DAYS: "60"
+      RECONCILE_MANUAL_EVENTS_MAX_DELETES: "50"
+      RECONCILE_MANUAL_EVENTS_REFRESH_SERVING: "true"
+      # Keys the code reads that are not set above used to arrive through env_file. Passed through
+      # explicitly so dropping env_file changes nothing: unset in .env ⇒ "" ⇒ the code's default.
+      # Deliberately NOT passed: CREDS_SOURCE, DEST_DB_*, POSTGRES_*, RABBITMQ_* (admin logins / would
+      # switch the DEST login source).
+      BACKFILL_SINCE_DAYS: ${BACKFILL_SINCE_DAYS:-}
+      RECONCILE_BASE_EVENTS_ENABLED: ${RECONCILE_BASE_EVENTS_ENABLED:-}
+      RECONCILE_BASE_EVENTS_INTERVAL_SEC: ${RECONCILE_BASE_EVENTS_INTERVAL_SEC:-}
+      RECONCILE_BASE_EVENTS_LOOKBACK_HOURS: ${RECONCILE_BASE_EVENTS_LOOKBACK_HOURS:-}
+      RECONCILE_BASE_EVENTS_REFRESH_SERVING: ${RECONCILE_BASE_EVENTS_REFRESH_SERVING:-}
+      EVENT_MIN_OVERLAP_SEC: ${EVENT_MIN_OVERLAP_SEC:-}
+      EVENT_MAX_START_DRIFT_SEC: ${EVENT_MAX_START_DRIFT_SEC:-}
+      DLQ_CAPTURE_ENABLED: ${DLQ_CAPTURE_ENABLED:-}
+      DLQ_RETRY_ENABLED: ${DLQ_RETRY_ENABLED:-}
+      DLQ_RETRY_INTERVAL_SEC: ${DLQ_RETRY_INTERVAL_SEC:-}
+      DLQ_RETRY_MAX_ATTEMPTS: ${DLQ_RETRY_MAX_ATTEMPTS:-}
+      DLQ_RETRY_BATCH_SIZE: ${DLQ_RETRY_BATCH_SIZE:-}
+      RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS: ${RECONCILE_PO_ENRICH_KEEP_LEGACY_IDS:-}
+      SANDBOX_HOLD_ENABLED: ${SANDBOX_HOLD_ENABLED:-}
+      SANDBOX_HOLD_BASE_EVENTS: ${SANDBOX_HOLD_BASE_EVENTS:-}
+    networks:
+      packiot-net:
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/legacy-replicator", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── historian-gateway (D3 — transparent hot+cold query layer) ─────────────────
+  # Exposes `ev_all`: live timescaledb (HOT, postgres_fdw to the r7g) UNION S3
+  # Parquet historian (COLD, pg_duckdb). Consumers (read-api, Superset, tools)
+  # query plain Postgres SQL; old timestamps resolve to S3 and prune to the
+  # relevant partition file. Cold-store infra = terraform/production/historian.tf
+  # (S3 + Athena + partition-projection, Approach B3). Proven on staging (CPACK):
+  # one query spans 2021→today; old-timestamp lookups scan 1/181 files.
+  # NOT a dependency of read-api (loose coupling, like staging) — read-api
+  # tolerates the gateway being unready so it never gates on the 20m first boot.
+  # First boot on a fresh hist_gateway_data volume runs refresh_hist_cutover() (a
+  # full one-pass parquet scan — minutes on the 336M-row CPACK partition) inside
+  # initdb before Postgres accepts TCP; start_period 20m suppresses false
+  # "unhealthy" during that window. Only the first boot on a fresh volume pays it.
+  historian-gateway:
+    image: pgduckdb/pgduckdb:16-main
+    container_name: hist-gateway
+    restart: unless-stopped
+    # OPT-IN: the gateway serves COLD (S3 parquet) history — a greenfield first
+    # cutover has none, so it does NOT auto-start. Enable once the historian is
+    # configured (SM secrets present + bucket populated) with:
+    #   docker compose -f compose.production.yml --profile historian up -d historian-gateway
+    # (or COMPOSE_PROFILES=historian). Being profiled keeps it OUT of the default
+    # `up -d --remove-orphans` deploy AND safe from orphan-removal.
+    profiles: ["historian"]
+    environment:
+      # gateway-ONLY vars use safe defaults (NOT :?): an unconfigured historian
+      # must never fail compose interpolation and block the whole 25-service deploy
+      # (compose evaluates :? even for inactive profiles). Override in .env when live.
+      POSTGRES_PASSWORD: ${HIST_GW_PASSWORD:-hist_gw_local_changeme}   # gateway's own PG (packiot-net only, no host port)
+      # live timescaledb (HOT) — the same external r7g every other service uses
+      # (bare, like the rest of compose: app_init.sh always sets POSTGRES_HOST_UPSTREAM)
+      FDW_HOST: ${POSTGRES_HOST_UPSTREAM}
+      FDW_PORT: "5432"
+      FDW_DB: ${POSTGRES_DB}
+      FDW_USER: ${POSTGRES_USER:-postgres}
+      FDW_PASS: ${POSTGRES_PASSWORD}
+      # S3 historian (COLD) — scoped read-only key (svc-historian-gateway).
+      # Empty defaults so the stack never blocks; the gateway simply has no cold
+      # store until these are set (then re-create it on a fresh hist_gateway_data vol).
+      HISTORIAN_BUCKET: ${HISTORIAN_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      HIST_AWS_KEY: ${HIST_AWS_KEY:-}
+      HIST_AWS_SECRET: ${HIST_AWS_SECRET:-}
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.27
+    volumes:
+      - ./services/historian-gateway/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      - hist_gateway_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20m
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

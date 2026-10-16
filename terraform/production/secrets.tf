@@ -118,6 +118,21 @@ resource "aws_secretsmanager_secret_version" "app" {
     rabbitmq_user      = "packiot"
     rabbitmq_password  = random_password.rabbitmq.result
     grafana_admin_pass = random_password.grafana_admin.result
+    # ── Operator SPA keys (CPACK PO-control cutover — cpack-po-cutover-runbook.md
+    #    B2/B5). The `operator` compose service's nginx injects both server-side;
+    #    the browser never holds a key. Both default EMPTY and are HAND-FILLED at
+    #    client onboarding (ignore_changes below preserves the hand-set values),
+    #    the same out-of-band pattern as the oauth2/superset/onboard keys:
+    #      operator_edge_api_key    (B2) = the operator client's enterprises.api_key
+    #        (a DB-generated randomUUID from onboarding — NOT terraform-random).
+    #        For CPACK this is enterprise 3's api_key.
+    #      operator_refdata_api_key (B5) = the opaque refdata read key. MUST match
+    #        the token in the refdata_query_keys secret's api_keys map (which maps
+    #        it → the client's enterprise id). app_init.sh reads both into .env
+    #        (OPERATOR_EDGE_API_KEY / OPERATOR_REFDATA_API_KEY). Populate via a
+    #        put-secret-value merge on the box (values never printed).
+    operator_edge_api_key    = ""
+    operator_refdata_api_key = ""
   })
   lifecycle { ignore_changes = [secret_string] }
 }
@@ -169,6 +184,88 @@ resource "aws_secretsmanager_secret_version" "rabbitmq_edge_transformer_creds" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ── Least-privilege RabbitMQ users for the renamed services (PROMOTION 2026-10) ─
+# compose.production.yml (promoted from staging) reads
+#   stream-engine     → packiot/production/rabbitmq-stream-engine-creds
+#   sparkplug-decoder → packiot/production/rabbitmq-sparkplug-decoder-creds
+#                       (also ingest-shim, same as staging)
+# Unlike the two dry-run secrets above (which reuse the admin `packiot` user),
+# these are REAL least-privilege users: scripts/render-rabbitmq-definitions.sh
+# renders them into /opt/packiot/rabbitmq/definitions.json from
+# monitoring/rabbitmq/definitions.template.json (permission regexes identical to
+# staging), and rabbitmq.conf `load_definitions` re-creates them on every boot.
+# Staging's equivalents were hand-created; here they are codified.
+# AUTHORED, NOT APPLIED — apply before the promotion deploy (doc §6 B1).
+resource "random_password" "rabbitmq_stream_engine" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "rabbitmq_sparkplug_decoder" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "rabbitmq_stream_engine_creds" {
+  name                    = "packiot/production/rabbitmq-stream-engine-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_stream_engine_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_stream_engine_creds.id
+  secret_string = jsonencode({
+    username = "stream-engine"
+    password = random_password.rabbitmq_stream_engine.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
+resource "aws_secretsmanager_secret" "rabbitmq_sparkplug_decoder_creds" {
+  name                    = "packiot/production/rabbitmq-sparkplug-decoder-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_sparkplug_decoder_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_sparkplug_decoder_creds.id
+  secret_string = jsonencode({
+    username = "sparkplug-decoder"
+    password = random_password.rabbitmq_sparkplug_decoder.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
+# ── Internal keys for the promoted read plane (PROMOTION 2026-10, B5) ─────────
+#   internal_api_key    → INTERNAL_API_KEY (read-api /internal/resolve-device ↔
+#                         decoder REFDATA_INTERNAL_KEY, ADR-0061)
+#   readapi_ro_password → READAPI_RO_PASSWORD (read-api's least-privilege DB
+#                         login; the SAME value must be set on the `readapi_ro`
+#                         role after the transplant: ALTER ROLE readapi_ro LOGIN
+#                         PASSWORD … — runbook §6.4)
+# app_init.sh writes both into /opt/packiot/.env. AUTHORED, NOT APPLIED.
+resource "random_password" "internal_api_key" {
+  length  = 40
+  special = false
+}
+
+resource "random_password" "readapi_ro" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "internal_keys" {
+  name                    = "packiot/production/internal-keys"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "internal_keys" {
+  secret_id = aws_secretsmanager_secret.internal_keys.id
+  secret_string = jsonencode({
+    internal_api_key    = random_password.internal_api_key.result
+    readapi_ro_password = random_password.readapi_ro.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
 # ── refdata-api per-tenant query keys ─────────────────────────────────────────
 # refdata-api reads QUERY_API_KEYS from this secret (deploy fills
 # REFDATA_QUERY_API_KEYS in .env; compose passes it through as
@@ -184,6 +281,14 @@ resource "aws_secretsmanager_secret" "refdata_query_keys" {
 
 resource "aws_secretsmanager_secret_version" "refdata_query_keys" {
   secret_id = aws_secretsmanager_secret.refdata_query_keys.id
+  # Empty default — the per-tenant map is hand-filled at client onboarding via
+  # `aws secretsmanager put-secret-value` (a fresh env can't know a client's read
+  # key until the client exists). ignore_changes preserves the hand-set map.
+  # Format: "key:enterprise_id,key2:cid2". For the CPACK PO-control cutover
+  # (docs/clients/cpack-po-cutover-runbook.md B5) this holds the operator read key
+  # mapped to enterprise 3 — the SAME token stored as app.operator_refdata_api_key
+  # (the two MUST agree; refdata resolves customer_id from the key server-side).
+  # app_init.sh reads .api_keys → .env REFDATA_QUERY_API_KEYS.
   secret_string = jsonencode({
     api_keys = ""
   })
