@@ -1,0 +1,15 @@
+[Unit]
+Description=ADR-0065 P1: archive closed tenant-days of the analytics hot tables to Parquet + verified manifest
+After=docker.service network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/packiot/historian/historian-cold-export.sh
+# Same containment as the historian append (2026-09-25 DuckDB incident on the shared 8 GB app host).
+MemoryHigh=1400M
+MemoryMax=1800M
+MemorySwapMax=0
+CPUQuota=60%
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=3h

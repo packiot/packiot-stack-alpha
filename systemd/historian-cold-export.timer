@@ -1,0 +1,7 @@
+[Unit]
+Description=Run the ADR-0065 cold export nightly (before pg_cron's 03:20 partition_maintain, whose drop gate reads its manifest)
+[Timer]
+OnCalendar=*-*-* 01:30:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target

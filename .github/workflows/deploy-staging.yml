@@ -398,6 +398,14 @@ jobs:
               && echo "Loki restarted to load its config"
           fi
 
+      - name: Install the historian pipeline (scripts + systemd units; idempotent)
+        # Was a manual `sudo scripts/install-historian-pipeline.sh` — /opt/packiot/historian drifted from the repo
+        # before (#282). It now also carries the ADR-0065 P1 cold exporter, whose verified manifest is the only thing
+        # that lets ops.partition_maintain() drop raw partitions (fail-safe: without it partitions are KEPT, never
+        # lost) — so install on every deploy. Non-blocking: a failure leaves the previous install in place.
+        continue-on-error: true
+        run: sudo bash scripts/install-historian-pipeline.sh
+
       - name: Reload Alertmanager config (dir-mount makes new file content visible; reload re-reads it)
         # Task #41 — same inode trap as #39/#40, now on the NOTIFICATION path.
         # monitoring/alertmanager is now a DIRECTORY bind mount, so a git checkout
