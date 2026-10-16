@@ -319,8 +319,8 @@ Cards cite the criteria; this table only links them. Spikes are Tasks labelled `
 | PRODT-174 | Bug | Change PO confirmation: scrap decreases, wrong label and payload types | Card-local |
 | PRODT-175 | Bug | Events tab: ongoing stops render a dangling end time | Card-local |
 | PRODT-176 | Spike | Source of C-PACK L3 line-level stops | AC-37, OQ-02 |
-| PRODT-177 | Spike | PO 891330 on L6 shows about 250 times its order size | None |
-| PRODT-178 | Spike | Cause of the CPACK-Staging 502 outage on 8 Oct 2026 | None |
+| PRODT-177 | Spike | PO 891330 on L6 shows about 250 times its order size | NoneAnswered 2026-10-16: not reproducible — 63,229 ordered vs 69,210 net (1.09×), one runtime matching the PO. The inflated value matches the 1 Oct "unbacked increments" incident (stale counter baseline after a restart; silver, gold and PO totals repaired 1 Oct, L6 again 9 Oct). Guard: edge stream-engine #1544 + invariant V3 |
+| PRODT-178 | Spike | Cause of the CPACK-Staging 502 outage on 8 Oct 2026 | NoneAnswered 2026-10-16: five staging deploys between 15:08 and 15:31 UTC (one cancelled) recreated edge-api and read-api; the 16 502s of the window fall in those recreate gaps. Low severity for PRODT-158 (transient; the Operator's write queue retries 502). Follow-ups: docs-only merges should not deploy (path filter), and a health-gated recreate |
 | PRODT-179 | Spike | CPACK-Staging stops differ from production | None |
 | PRODT-38 | Story | Create Change Production Orders feature (existing; see PRODT-158) | UC3 to UC5 |
 
