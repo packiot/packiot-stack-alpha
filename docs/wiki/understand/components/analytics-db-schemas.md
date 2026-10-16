@@ -208,7 +208,7 @@ Serving views are `security_invoker` (the caller's RLS applies) and serving func
 | `serving.v_report_downtimes` | view | downtime report keyed by **shift begin**, not event time |
 | `serving.production_information` | view | current-shift production/OEE per equipment from `silver.equipment_live_shift` |
 | `serving.v_entities_per_user_role(_operator)`, `v_menu_per_user_role`, `v_operator_entities_2`, `v_operator_po_details_3`, `v_operator_po_list_setup_4` | views | front4/operator bootstrap and operator PO screens |
-| Operator by id (ADR-0061 P3) | fn | `operator_po_list_by_equipment`, `events_timeline_by_equipment`, `pending_downtime_by_equipment`, `downtime_reasons_by_equipment`, `topics_of_equipment` |
+| Operator by id (ADR-0061 P3) | fn | `operator_po_list_by_equipment`, `events_timeline_by_equipment`, `pending_downtime_by_equipment`, `downtime_reasons_by_equipment`, `topics_of_equipment`; Events windows (PRODT-170): `operator_events_window_by_equipment`, `operator_events_window_at`, `operator_window_start` (settings: `core.enterprises.operator_{pending,history}_{window,hours}`) |
 | Downtime functions | fn | `downtime_events` (v1/v2/v3), `downtime_by_category`, `downtime_duration_by_category`, `downtime_summary`, `pending_downtime`, `events_timeline*`, `overview_events*`, `refresh_downtime_events_resolved` |
 | OEE/production functions | fn | `oee_score` (ratios of sums since 2026-09-29), `oee_score_by_team`, `oee_progress`, `production_chart*`, `production_flow`, `production_health`, `total_production_by_team`, `single_period_by_team(_v4)`, `targets`, `machine_speed`, `home` |
 | Mission Control | fn | `mission_control`, `mission_control_area` (expose current-shift P and Q), `mission_control_timeline` |
