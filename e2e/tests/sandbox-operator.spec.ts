@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { operatorLogin } from '../fixtures/auth';
 
 /**
@@ -9,6 +9,19 @@ import { operatorLogin } from '../fixtures/auth';
  */
 const USER = process.env.SANDBOX_USER || '';
 const PASS = process.env.SANDBOX_PASSWORD || '';
+
+/**
+ * The operator lands on the user's assigned line (L5) and the twin mirrors CPACK's LIVE events, which CPACK's
+ * operators justify in real time — so "a pending downtime on L5 right now" is live data, not a fixture. Wait until
+ * the PENDING section has rendered (an item or "No events"), then SKIP with the reason when it is empty instead of
+ * failing on a missing precondition (2026-10-16: L5 had 0 pending while 10 were pending on other CPACK lines).
+ */
+async function requirePendingEvent(page: Page) {
+  const pending = page.getByText(/downtime reason pending/i).first();
+  const none = page.getByText(/^no events$/i).first();
+  await expect(pending.or(none)).toBeVisible({ timeout: 25_000 });
+  test.skip(!(await pending.isVisible()), "no pending downtime on the operator's line right now (live CPACK data) — precondition, not a failure");
+}
 
 test.describe.serial('sandbox operator (ent 2000003, mutable twin)', () => {
   test.skip(!USER || !PASS, 'SANDBOX_USER/PASSWORD not set');
@@ -81,7 +94,7 @@ test.describe.serial('sandbox operator (ent 2000003, mutable twin)', () => {
     test.setTimeout(90_000);
     await operatorLogin(page, baseURL!, USER, PASS);
     await page.getByRole('tab', { name: /events?/i }).first().click();
-    await expect(page.getByText(/downtime reason pending/i).first()).toBeVisible({ timeout: 25_000 });
+    await requirePendingEvent(page);
     await page.locator('[data-testid="ModeEditOutlinedIcon"]').first().click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 10_000 });
@@ -98,7 +111,7 @@ test.describe.serial('sandbox operator (ent 2000003, mutable twin)', () => {
     test.setTimeout(90_000);
     await operatorLogin(page, baseURL!, USER, PASS);
     await page.getByRole('tab', { name: /events?/i }).first().click();
-    await expect(page.getByText(/downtime reason pending/i).first()).toBeVisible({ timeout: 25_000 });
+    await requirePendingEvent(page);
     // a DIFFERENT event than the justify test (serial, but the list may not have refreshed)
     await page.locator('[data-testid="CallSplitSharpIcon"]').nth(2).click();
     const dialog = page.getByRole('dialog');
