@@ -466,3 +466,84 @@ func TestCPACCorrectPassRemovesSupersededStop(t *testing.T) {
 		t.Errorf("the surviving run must be re-chained to the trailing stop %s (DO UPDATE), got ts_end %v", tailStop, runEnd)
 	}
 }
+
+// TestCPACLineLeadEmptyLineRow — CPACK L3 (2026-10-16). Line 4000 (tp=3, lead
+// 4001, downtime_from_lead_machine=false like every CPACK line) has NO counter
+// row of its own; its lead reports only NET (L3-BREYER's ProdProcessedCount/76).
+// Gross-only mode (the shadow instance before the fix) mints nothing for the
+// line. LineLead mode gives the LINE the run/stop/run stream read through its
+// lead, leaves the lead machine itself event-free (it is not a LeadActivity
+// lead), and does not change the gross machine 1000.
+func TestCPACLineLeadEmptyLineRow(t *testing.T) {
+	pool := mustPool(t)
+	defer pool.Close()
+	setupSchema(t, pool)
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO ` + schema + `.equipments VALUES (4000, 999, 0, 3, NULL, 4001, false)`,
+		`INSERT INTO ` + schema + `.equipments VALUES (4001, 999, 0, 1, NULL, NULL, NULL)`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().UTC().Add(-3 * time.Hour)
+	for _, start := range []time.Time{base, base.Add(35 * time.Minute)} {
+		for i := 0; i < 10; i++ {
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO `+schema+`.equipment_categorical_1min
+				   (id_equipment, ts_value, gross_production_incr, net_production_incr)
+				 VALUES (4001, $1, 0, 5)`, start.Add(time.Duration(i)*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), itCfg); err != nil {
+		t.Fatalf("gross-only run: %v", err)
+	}
+	off := byEq(dump(t, pool))
+	if len(off[4000]) != 0 || len(off[4001]) != 0 {
+		t.Fatalf("gross-only mode: line 4000 / lead 4001 must have no events (the L3 bug), got %d / %d", len(off[4000]), len(off[4001]))
+	}
+
+	cfg := itCfg
+	cfg.LineLead = true
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
+		t.Fatalf("line-lead run: %v", err)
+	}
+	onRows := dump(t, pool)
+	on := byEq(onRows)
+	var stops, runs int
+	for _, r := range on[4000] {
+		switch r.Status {
+		case 10:
+			if r.TsEnd != nil {
+				stops++
+			}
+		case 6:
+			runs++
+		}
+	}
+	if stops != 1 || runs != 2 {
+		t.Errorf("line 4000: want 1 closed stop + 2 runs through its lead, got stops=%d runs=%d (%d rows)", stops, runs, len(on[4000]))
+	}
+	if len(on[4001]) != 0 {
+		t.Errorf("lead machine 4001 must stay event-free (net-only, not a LeadActivity lead), got %d rows", len(on[4001]))
+	}
+	if len(on[1000]) != len(off[1000]) {
+		t.Fatalf("gross machine stream changed: %d vs %d rows", len(off[1000]), len(on[1000]))
+	}
+	for i := range off[1000] {
+		if a, b := off[1000][i], on[1000][i]; !a.TsEvent.Equal(b.TsEvent) || a.Status != b.Status {
+			t.Errorf("gross machine row %d changed: %+v vs %+v", i, a, b)
+		}
+	}
+
+	if _, _, _, err := RunOnceCPAC(ctx, dest(pool), cfg); err != nil {
+		t.Fatalf("line-lead run 2: %v", err)
+	}
+	if again := dump(t, pool); len(again) != len(onRows) {
+		t.Fatalf("line-lead pass not idempotent: %d rows then %d", len(onRows), len(again))
+	}
+}
