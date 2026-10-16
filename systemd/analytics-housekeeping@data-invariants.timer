@@ -1,0 +1,7 @@
+[Unit]
+Description=Run the data invariants every 30 minutes
+[Timer]
+OnCalendar=*:0/30
+AccuracySec=30s
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Analytics DB housekeeping: %i (ADR-0063 — replaces TimescaleDB jobs / pg_cron on a host without pg_cron)
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+ExecStart=/opt/packiot/ops/analytics-housekeeping.sh %i
+TimeoutStartSec=30min
+Nice=5

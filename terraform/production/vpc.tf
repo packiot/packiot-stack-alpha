@@ -69,6 +69,14 @@ resource "aws_route_table" "private" {
     cidr_block           = "0.0.0.0/0"
     network_interface_id = aws_instance.nat.primary_network_interface_id
   }
+  # ADR-0064: return path to staging's prod-reflector over the peering (mirror_peering.tf); absent when off.
+  dynamic "route" {
+    for_each = var.staging_mirror_enabled ? [1] : []
+    content {
+      cidr_block                = var.staging_mirror_vpc_cidr
+      vpc_peering_connection_id = aws_vpc_peering_connection.staging_mirror[0].id
+    }
+  }
   tags = { Name = "packiot-production-private-rt" }
 }
 

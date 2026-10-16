@@ -1,0 +1,7 @@
+[Unit]
+Description=Keep analytics partitions ahead daily (staging: pg_cron 03:20)
+[Timer]
+OnCalendar=*-*-* 03:20:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target
