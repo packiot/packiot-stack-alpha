@@ -93,6 +93,13 @@ jobs:
         # visibility we'd want from --wait without the false-positive failure.
         run: docker compose -f compose.production.yml -f compose.superset.yml up -d --remove-orphans
 
+      - name: Install the ADR-0065 P1 cold exporter (script + unit + timer; idempotent)
+        # Archives closed tenant-days to s3://packiot-production-historian-…/silver/… and fills the verified
+        # ops.cold_export manifest. It drops nothing: production raw retention stays off (retention keep NULL) until
+        # P4 is decided there. Non-blocking (a failure keeps the previous install); sudo -n never waits for a prompt.
+        continue-on-error: true
+        run: sudo -n bash scripts/ops/install-cold-export.sh production
+
       - name: Post-deploy diagnostic
         # Quick visibility on what landed. Non-blocking — if the diagnostic
         # itself fails (e.g. docker ps API hiccup), don't fail the deploy.
