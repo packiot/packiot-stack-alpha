@@ -130,5 +130,20 @@ SQL
   total_ok=$((total_ok + OK)); total_bad=$((total_bad + BAD))
   rm -f "$WORK/res.csv" "$WORK/export.sql"
 done
+# ADR-0065 P2 hook: move the historian's F3 boundary up to the newly verified archive. A no-op until the gateway has
+# 20-f3-cold.sql applied (no f3_union_boundary there yet); never fails the export.
+GW="${GATEWAY_CONTAINER:-hist-gateway}"
+REFRESH_SQL="${F3_REFRESH_SQL:-$(dirname "$0")/refresh-f3-cutover.sql}"
+if [ -f "$REFRESH_SQL" ] && command -v docker >/dev/null && docker inspect "$GW" >/dev/null 2>&1; then
+  if [ "$(docker exec "$GW" sh -c 'psql -X -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT to_regclass('"'"'public.f3_union_boundary'"'"') IS NOT NULL"' 2>/dev/null </dev/null)" = t ]; then
+    if docker exec -i "$GW" sh -c 'psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$REFRESH_SQL" > "$WORK/f3-refresh.log" 2>&1; then
+      log "historian F3 boundary refreshed: $(grep -c '^f3_union_boundary' "$WORK/f3-refresh.log") tenant(s)"
+    else
+      log "WARNING: historian F3 boundary refresh failed (see $WORK/f3-refresh.log) — the old boundary stays (safe: hot still serves those days)"
+    fi
+  else
+    log "historian gateway has no f3_union_boundary yet (20-f3-cold.sql not applied) — skipping the boundary refresh"
+  fi
+fi
 log "done: verified $total_ok tenant-day file(s), $total_bad mismatched"
 [ "$total_bad" -eq 0 ]
