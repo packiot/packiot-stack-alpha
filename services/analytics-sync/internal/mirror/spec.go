@@ -136,6 +136,15 @@ var Local = map[string]string{
 	"customer_reports.shift":                "customer export (SHIFT06), off for a mirror",
 	"ops.data_invariant_result":             "staging's invariant history",
 	"ops.sandbox_state":                     "sandbox twin state (staging only)",
+	// ADR-0063 plain-PG rollups (replaced the caggs): derived on each side from its OWN silver.equipment_values.
+	"silver.agg_equipment_values_1min":   "rollup of staging's own silver.equipment_values (ADR-0063)",
+	"silver.agg_equipment_values_1hour":  "rollup of staging's own silver.equipment_values (ADR-0063)",
+	"silver.equipment_categorical_1min":  "rollup of staging's own silver.equipment_values (ADR-0063)",
+	"silver.equipment_categorical_1hour": "rollup of staging's own silver.equipment_values (ADR-0063)",
+	"silver.rollup_invalidation":         "work queue of the local rollups above",
+	"silver.equipment_metrics_1min__old": "pre-ADR-0063 copy kept until its scheduled drop",
+	"ops.cold_export":                    "this environment's own historian cold-export ledger (ADR-0065)",
+	"ops.cold_export_exempt":             "this environment's own cold-export exemptions (ADR-0065)",
 }
 
 // staging-only scratch: never classified (ops backups/fixes, temp tables).
