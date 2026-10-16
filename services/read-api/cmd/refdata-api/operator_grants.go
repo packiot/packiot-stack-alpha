@@ -85,8 +85,9 @@ func withOperatorPrincipal(ctx context.Context, p operatorPrincipal) context.Con
 	return context.WithValue(ctx, operatorPrincipalKey, p)
 }
 
-// operatorPrincipalFromContext returns the tablet principal; ok=false means the
-// request did not come through the operator channel (no line grants apply).
+// operatorPrincipalFromContext returns the principal whose line grant applies:
+// the tablet user (X-Api-Key + channel) or a regular Bearer user with a role.
+// ok=false ⇒ no line grants apply (service keys, escalated super-admins, role-less users).
 func operatorPrincipalFromContext(ctx context.Context) (operatorPrincipal, bool) {
 	p, ok := ctx.Value(operatorPrincipalKey).(operatorPrincipal)
 	return p, ok
@@ -364,6 +365,7 @@ var lineGrantPolicies = map[string]lineGrantMode{
 	"/v2/pending-downtime":          grantEquipmentParam,
 	"/v2/operator-po-list":          grantEquipmentParam,
 	"/v2/downtime-reasons":          grantEquipmentParam,
+	"/v2/events-window":             grantEquipmentParam, // PRODT-170: a line's pending/history window
 	"/v1/operator-entities":         grantNone,
 	"/v1/entities-per-user-role":    grantNone,
 	"/v1/language-packs":            grantNone,

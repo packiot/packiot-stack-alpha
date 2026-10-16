@@ -310,6 +310,14 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 				ctx = withUserRole(ctx, cid)
 			} else if id.hasRole {
 				ctx = withUserRole(ctx, id.userRole)
+				// PRODT-172 review: the SAME user reading read-api's public host
+				// directly with their own Bearer (no tablet nginx, no channel header)
+				// gets the same line grant. Only an actual permissions.operator.lines
+				// restriction narrows anything (dbLoadLineGrants: super_user or no
+				// such array ⇒ unrestricted); a role-less user stays unrestricted here.
+				ctx = withOperatorPrincipal(ctx, operatorPrincipal{
+					customerID: id.customerID, userRole: id.userRole, hasRole: true,
+				})
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

@@ -60,8 +60,9 @@ func restrictedTo(ids ...int) lineGrants {
 // "tok-other" → a user of tenant 22.
 func operatorStack(sa *operatorSuperAdminAuth) (http.Handler, *fakeBearer) {
 	fb := &fakeBearer{table: map[string]resolvedIdentity{
-		"tok-op":    {customerID: 9, userRole: 31, hasRole: true},
-		"tok-other": {customerID: 22, userRole: 40, hasRole: true},
+		"tok-op":     {customerID: 9, userRole: 31, hasRole: true},
+		"tok-other":  {customerID: 22, userRole: 40, hasRole: true},
+		"tok-norole": {customerID: 9},
 		// fakeCognito-shaped tokens of users homed in the admin tenant (1).
 		"valid:dev@packiot.com":     {customerID: 1, userRole: 1, hasRole: true},
 		"valid:nosuper@packiot.com": {customerID: 1, userRole: 2, hasRole: true},
@@ -352,5 +353,60 @@ func TestOperatorGrants_HomeMismatchSuperAdmin(t *testing.T) {
 		if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), `{"error":"forbidden"}`) || f.queryCalls != 0 {
 			t.Errorf("%s: code=%d body=%s queries=%d; want 403 forbidden, no query", name, rr.Code, rr.Body, f.queryCalls)
 		}
+	}
+}
+
+func bearerReq(path, tok string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set("Authorization", "Bearer "+tok) // the public host: no api-key, no channel
+	return r
+}
+
+// PRODT-172 review: the same restricted user reading read-api DIRECTLY with
+// their own Bearer (no tablet nginx, no X-Operator-Channel) is held to the grant.
+func TestOperatorGrants_DirectBearerRestricted(t *testing.T) {
+	f := &grantFakes{grants: restrictedTo(100, 101)}
+	installGrantFakes(t, f)
+	h, _ := operatorStack(nil)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, bearerReq("/v2/pending-downtime?equipment=500", "tok-op"))
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "LINE_NOT_PERMITTED") || f.queryCalls != 0 {
+		t.Fatalf("foreign line via direct Bearer: code=%d queries=%d body=%s; want 403, no query", rr.Code, f.queryCalls, rr.Body)
+	}
+	if f.gotPrincipl.userRole != 31 || f.gotPrincipl.customerID != 9 {
+		t.Errorf("principal = %+v; want role 31 of tenant 9", f.gotPrincipl)
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, bearerReq("/v2/pending-downtime?equipment=100", "tok-op"))
+	if rr.Code != http.StatusOK || f.queryCalls != 1 {
+		t.Errorf("own line via direct Bearer: code=%d queries=%d; want 200", rr.Code, f.queryCalls)
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, bearerReq("/v1/operator-po-list", "tok-op"))
+	if rr.Code != http.StatusOK || !strings.Contains(f.lastSQL, "line_grant") {
+		t.Errorf("tenant-wide list via direct Bearer: code=%d sql=%q; want rows filtered", rr.Code, f.lastSQL)
+	}
+}
+
+// A front4-style Bearer user is unchanged: a role without operator.lines (the
+// grant lookup answers unrestricted) or no role at all (no lookup).
+func TestOperatorGrants_DirectBearerUnrestrictedUnchanged(t *testing.T) {
+	f := &grantFakes{grants: lineGrants{}}
+	installGrantFakes(t, f)
+	h, _ := operatorStack(nil)
+	for _, tok := range []string{"tok-op", "tok-norole"} {
+		f.queryCalls = 0
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, bearerReq("/v2/pending-downtime?equipment=500", tok))
+		if rr.Code != http.StatusOK || f.queryCalls != 1 {
+			t.Errorf("%s: code=%d queries=%d; want 200 unchanged", tok, rr.Code, f.queryCalls)
+		}
+	}
+	f.grantCalls = 0
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, bearerReq("/v1/operator-po-list", "tok-norole"))
+	if f.grantCalls != 0 || strings.Contains(f.lastSQL, "line_grant") {
+		t.Errorf("role-less Bearer: grant lookups=%d sql=%q; want no grant applied", f.grantCalls, f.lastSQL)
 	}
 }
