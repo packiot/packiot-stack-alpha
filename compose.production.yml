@@ -1268,8 +1268,13 @@ services:
       AGENT_INGEST_LEGACY_KEY_ALLOWED: "${AGENT_INGEST_LEGACY_KEY_ALLOWED:-true}"
       AWS_REGION: us-east-1
       AGENT_BIRTH_ALL_MAPPED: "true"
-      # Capture (onboarding evidence) stays OFF on prod: no AGENT_REGISTER_DSN.
+      # Capture (onboarding evidence) stays OFF on prod via its own flag. The DB login below is for PLC link
+      # health (silver.plc_link_minutes → the NO DATA availability state) and saved derive rules: without it
+      # link health was silently OFF from the go-live (10-16 13:18 UTC) — never re-gate capture by dropping
+      # the DB login. Least-privilege role sparkplug_agent (db/migrations/t-sparkplug-agent-role), password
+      # only in Secrets Manager (provision-db-role.py --service sparkplug-agent --env production).
       AGENT_CAPTURE_ENABLED: "false"
+      AGENT_DB_SECRET_ID: packiot/production/sparkplug-agent-db-creds
       AGENT_TENANTS_PROFILE_DIR: /etc/packiot/tenant-profiles
     volumes:
       - ./docs/clients/tenants/bispharma.yaml:/etc/packiot/tenants/bispharma.yaml:ro
