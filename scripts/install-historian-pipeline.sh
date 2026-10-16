@@ -35,6 +35,7 @@ SCRIPTS=(
   historian-staleness-monitor.sh
   historian-cutover-coverage-check.sh
   historian-ee-coverage-check.sh
+  historian-cold-export.sh
 )
 for s in "${SCRIPTS[@]}"; do
   install -m 0755 "$REPO_ROOT/scripts/$s" "$DEST/$s"
@@ -58,6 +59,7 @@ done
 UNITS=(
   historian-staging-append.service   historian-staging-append.timer
   historian-integrity-monitor.service historian-integrity-monitor.timer
+  historian-cold-export.service       historian-cold-export.timer
 )
 for u in "${UNITS[@]}"; do
   install -m 0644 "$REPO_ROOT/systemd/$u" "$UNIT_DIR/$u"
@@ -65,7 +67,7 @@ done
 
 # ── 5. reload + enable the timers (idempotent) ────────────────────────────────
 systemctl daemon-reload
-systemctl enable --now historian-staging-append.timer historian-integrity-monitor.timer
+systemctl enable --now historian-staging-append.timer historian-integrity-monitor.timer historian-cold-export.timer
 
 # ── 6. summary + drift assertion ──────────────────────────────────────────────
 EXECSTART="$(systemctl cat historian-staging-append.service | awk -F= '/^ExecStart=/{print $2}')"
@@ -74,5 +76,5 @@ case "$EXECSTART" in
   */historian-staging-run-append.sh) echo "[install-historian] OK: timer runs the FULL wrapper (append+stamp+refresh)";;
   *) echo "[install-historian] WARNING: ExecStart is not the full wrapper — check systemd/historian-staging-append.service" >&2;;
 esac
-systemctl list-timers historian-staging-append.timer historian-integrity-monitor.timer --no-pager 2>/dev/null | head -4 || true
+systemctl list-timers historian-staging-append.timer historian-integrity-monitor.timer historian-cold-export.timer --no-pager 2>/dev/null | head -4 || true
 echo "[install-historian] done."
