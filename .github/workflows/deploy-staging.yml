@@ -37,6 +37,27 @@ jobs:
           if [ "$tip" != "${{ github.sha }}" ] && [ "$status" = "ahead" ]; then
             echo "::notice::Superseded by ${tip}: that commit's own deploy run owns staging; skipping this one."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only skip (PRODT-178: back-to-back docs deploys recreated edge-api/read-api → 502s). Compare
+          # against the LAST COMMIT ACTUALLY DEPLOYED (a run whose `deploy` job succeeded), never the push's
+          # `before`: a code commit superseded above was never deployed, so its files stay in this diff and
+          # this run deploys them. Docs = docs/** except docs/clients/** (mounted into containers) + top-level
+          # *.md; docs/wiki + docs/api are published by build-wiki.yml, not by this deploy. Any doubt deploys.
+          last=""
+          for row in $(gh api "repos/${{ github.repository }}/actions/workflows/deploy-staging.yml/runs?branch=staging&status=completed&per_page=30" \
+                         --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
+            ok=$(gh api "repos/${{ github.repository }}/actions/runs/${row%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length')
+            if [ "$ok" -gt 0 ]; then last=${row#*:}; break; fi
+          done
+          if [ -z "$last" ]; then echo "no deployed baseline found → deploy"; echo "deploy=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          cmp=$(gh api "repos/${{ github.repository }}/compare/${last}...${{ github.sha }}")
+          st=$(jq -r .status <<<"$cmp"); n=$(jq '.files | length' <<<"$cmp")
+          code=$(jq -r '.files[].filename' <<<"$cmp" | grep -vE '^docs/' | grep -vE '^[^/]+\.md$' ; jq -r '.files[].filename' <<<"$cmp" | grep -E '^docs/clients/')
+          echo "last deployed: ${last}  status: ${st}  files: ${n}"
+          if [ "$st" = "ahead" ] && [ "$n" -gt 0 ] && [ "$n" -lt 300 ] && [ -z "$code" ]; then
+            echo "::notice::Docs-only since the last deployed commit ${last:0:8} (${n} files): skipping the deploy."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
           else
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           fi
