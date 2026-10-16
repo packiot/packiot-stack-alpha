@@ -23,8 +23,8 @@ postgres:15-alpine on the stack network.
   provision-db-role.py --service barcode-service --check         # verify only (steps 1 + 4)
   provision-db-role.py --service barcode-service --rotate        # new password; then recreate the service
   provision-db-role.py --service barcode-service --env production --db-host <h> --admin-host <h>
-  (services: operator-gateway, barcode-service, stream-engine, legacy-replicator, prod-reflector, prod-reflector-ro,
-   readapi-ro)
+  (services: operator-gateway, barcode-service, stream-engine, legacy-replicator, sparkplug-agent, prod-reflector,
+   prod-reflector-ro, readapi-ro)
   provision-db-role.py --service readapi-ro --env production --db-name packiot \
       --db-host 10.20.10.89 --admin-host 10.20.10.89   # go-live step 8: APPLIES terraform's password, never creates one
   provision-db-role.py --service prod-reflector-ro --env production --db-name packiot \
@@ -67,6 +67,11 @@ ROLES = {
         "role": "legacy_replicator",
         "staging_host": STAGING_DB_HOST,   # direct: pgbouncer's static db list excludes packiot_analytics
         "settings": {},   # no tenant default: each instance stamps app.tenant_id=DST_ENTERPRISE at connect
+    },
+    "sparkplug-agent": {                   # shared sparkplug-agent: PLC link health + saved derive rules
+        "role": "sparkplug_agent",
+        "staging_host": STAGING_DB_HOST,   # direct, like stream-engine (pgbouncer's db list excludes packiot_analytics)
+        "settings": {"app.tenant_id": "-1", "statement_timeout": "30s"},   # multi-tenant writer (t-sparkplug-agent-role)
     },
     # ADR-0064 prod-reflector. Two logins in two databases (db/migrations/t-prod-reflector-roles):
     "prod-reflector": {                    # STAGING destination; run on the staging app host
