@@ -74,6 +74,10 @@ pre, views, post, fns, cagg_acl = [], [], [], [], []
 # pg_dump labels a view's ACL/COMMENT "ACL <schema> TABLE <view>": classify it by the catalog, or its GRANT runs in pre.sql
 # before the view exists (selftest 2026-10-16: GRANT on silver.equipment_metrics_1min, a view since ADR-0065 P3a)
 VIEW_NAMES = {(v['s'], v['n']) for v in (S['views'] or []) if v['kind'] == 'v'}
+# CHECK constraints are dropped before the data load and re-added by phase `checks` (after `post`), so a comment on one
+# must run after `checks`: it goes with the late comments/grants (90-comments-grants.sql). Before 2026-10-16 it ran in
+# pre.sql and was silently lost with the dropped CHECK; the TS-free clone rehearsal surfaced it as a post.sql ERROR.
+CHECK_NAMES = {(c['s'], c['n']) for c in S['constraints'] if c['type'] == 'c'}
 for line in toc:
     m = re.match(r'^(\d+); \d+ \d+ (.+)$', line.rstrip('\n'))
     if not m:
@@ -98,6 +102,9 @@ for line in toc:
     if (sch, obj) in CAGGS or (sch, name.split(' ')[0]) in CAGGS:
         if typ in ('ACL', 'COMMENT'):
             cagg_acl.append(line)   # 2026-10-14 rehearsal: skipping these lost every cagg GRANT (readapi_ro, stream_engine…)
+        continue
+    if typ == 'COMMENT' and name.startswith('CONSTRAINT ') and (sch, name.split(' ')[1].strip('"')) in CHECK_NAMES:
+        cagg_acl.append(line)   # → 90-comments-grants.sql, after `checks` re-adds the constraint
         continue
     if typ in POST or (typ == 'COMMENT' and name.startswith(('CONSTRAINT ', 'INDEX ', 'TRIGGER ', 'POLICY '))):
         post.append(line)   # a comment on a post-data object runs after it exists (FK comments, 2026-10-16 dry run)
