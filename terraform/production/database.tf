@@ -128,19 +128,24 @@ resource "aws_instance" "db" {
     DB_PASS=$(aws secretsmanager get-secret-value \
       --secret-id packiot/production/db --region ${var.aws_region} \
       --query SecretString --output text | jq -r .password)
-    # Image = staging's TimescaleDB 2.27.0 on PostgreSQL 16, digest-pinned (ADR-0063 §7 step 1, decided for the
-    # Bispharma go-live 2026-10-15). The image still ships the 2.25.2 libraries, so a database created under the old
-    # 2.25.2 pin (the pre-promotion DB) keeps working unchanged (rehearsed on a prod-AMI clone). Flags = staging's
-    # db_init.sh minus pg_cron (not used by the F3 schema): pg_stat_statements/auto_explain + 200 connections.
-    # lifecycle.ignore_changes = [user_data]: the RUNNING box is switched by the go-live runbook, not by apply.
+    # Image = plain PostgreSQL 16.13 on Alpine 3.23 (musl), digest-pinned — NO TimescaleDB (ADR-0063 end state on
+    # prod, 2026-10-16): the Bispharma go-live DB was built TS-free; the pre-promotion DB was archived to
+    # s3://packiot-production-db-backups-639178078294/archive/packiot_pre_promotion-2026-10-16.dump (restore-verified)
+    # and dropped; the empty extension was dropped from authentik/postgres/superset/template1. Same Alpine/PG/musl as
+    # the previous timescale image, so the data directory is reused as is. Every extension used is contrib.
+    # Flags: pg_stat_statements/auto_explain + 200 connections; housekeeping runs from systemd timers on this host
+    # (scripts/ops/install-analytics-housekeeping.sh), not pg_cron. The container keeps the name `timescaledb`
+    # (scripts and timers address it by name). ulimit = the live container's (2026-10-16 inspect).
+    # lifecycle.ignore_changes = [user_data]: the RUNNING box was switched by hand (with preflight + auto-rollback).
     docker run -d --name timescaledb --restart unless-stopped \
       -p ${var.db_private_ip}:5432:5432 \
       -e POSTGRES_DB=${var.db_name} \
       -e POSTGRES_USER=${var.db_user} \
       -e POSTGRES_PASSWORD="$DB_PASS" \
+      --ulimit nofile=32768:65536 \
       -v /opt/packiot/pgdata:/var/lib/postgresql/data \
-      timescale/timescaledb:2.27.0-pg16@sha256:51eb3bcdfc41f481c797026813d9d457fb5cbc8ea370a65640d8cda13a4040c1 \
-      postgres -c shared_preload_libraries=timescaledb,pg_stat_statements,auto_explain -c max_connections=200
+      postgres:16.13-alpine3.23@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50 \
+      postgres -c shared_preload_libraries=pg_stat_statements,auto_explain -c max_connections=200
   USERDATA
   )
 
