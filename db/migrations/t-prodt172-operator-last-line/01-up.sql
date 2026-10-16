@@ -11,7 +11,7 @@
 -- landing-line row must never block those; edge-api only ever reads a row back for the verified user and checks
 -- the line against the user's grant before using it (a stale id simply reads as "no last line").
 --
--- edge-api ALSO ships an idempotent knex mirror (migrations/20261016000001_create_operator_last_line.ts) for its CI
+-- edge-api ALSO ships an idempotent knex mirror (migrations/20261016000002_create_operator_last_line.ts) for its CI
 -- DB / fresh dev DBs; it is a no-op when this table already resolves through search_path. Apply THIS file first on
 -- staging/production so the table lands in `identity` with the grant below.
 --
