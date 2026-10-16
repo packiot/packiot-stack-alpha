@@ -77,7 +77,10 @@ jobs:
         # project name is stable regardless of cwd (this workflow runs from the
         # repo root; app_init.sh runs from /opt/packiot/stack). A mismatched
         # project name created two container sets fighting for the same subnet.
-        run: docker compose -f compose.production.yml build
+        # compose.superset.yml: the embedded-BI overlay (every service profile-gated `superset`; inert unless
+        # COMPOSE_PROFILES has it). Listed in every compose call so --remove-orphans never reaps Superset
+        # (same as deploy-staging.yml). Enabled on prod 2026-10-16 for front4 Reports (Bispharma go-live).
+        run: docker compose -f compose.production.yml -f compose.superset.yml build
 
       - name: Deploy
         # --remove-orphans so removing a service from compose actually
@@ -88,7 +91,7 @@ jobs:
         # one-shot services like hasura-init / db-init-bootstrap / db-migrate
         # (restart: "no", exit 0). The Post-deploy diagnostic below gives us the
         # visibility we'd want from --wait without the false-positive failure.
-        run: docker compose -f compose.production.yml up -d --remove-orphans
+        run: docker compose -f compose.production.yml -f compose.superset.yml up -d --remove-orphans
 
       - name: Post-deploy diagnostic
         # Quick visibility on what landed. Non-blocking — if the diagnostic
@@ -96,11 +99,11 @@ jobs:
         if: always()
         run: |
           echo "=== Container status ==="
-          docker compose -f compose.production.yml ps || true
+          docker compose -f compose.production.yml -f compose.superset.yml ps || true
           echo
           echo "=== Recent ERROR logs (last 60s, any service) ==="
-          for svc in $(docker compose -f compose.production.yml ps --services 2>/dev/null); do
-            count=$(docker compose -f compose.production.yml logs --since 60s "$svc" 2>&1 | grep -cE '"level":"ERROR"|^ERROR' || echo 0)
-            [ "$count" -gt 0 ] && echo "  $svc: $count ERROR lines" || true
+          for svc in $(docker compose -f compose.production.yml -f compose.superset.yml ps --services 2>/dev/null); do
+            count=$(docker compose -f compose.production.yml -f compose.superset.yml logs --since 60s "$svc" 2>&1 | grep -cE '"level":"ERROR"|^ERROR' || true)   # grep -c already prints 0; `|| echo 0` printed it twice
+            [ "${count:-0}" -gt 0 ] && echo "  $svc: $count ERROR lines" || true
           done
           echo "(empty above = no ERROR-level logs in any service)"
