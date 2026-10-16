@@ -271,10 +271,15 @@ The endpoints are listed above. Known contract issues to fix under this Epic:
     has line-level stops every day since 3 Oct — 14 to 30 a day (17 on 16 Oct, last at 16:29 UTC), from the legacy
     mirror path. The empty days seen on 7 Oct match the legacy oeecloud VM migration (cutover 5 Oct) and the switch of
     C-PACK events to PubSub (6–7 Oct); those days were back-filled. **AC-37 is met today** and RN-16 does not empty L3.
-  - **Residual risk:** the new-stack C-PACK event deriver (shadow mode, `silver.equipment_events_cpac_shadow`) produces
-    line stops for every L-line except L3 since 3 Oct (164 L3 rows in total, all older). If the legacy path breaks
-    again nothing covers L3. Follow-up before C-PACK's own go-live: find why the deriver stopped emitting for L3
-    (lead machine 58 L3-BREYER) and make it cover L3.
+  - **Residual risk — root cause found and fixed 2026-10-16 (#1871).** The earlier note said the shadow deriver
+    (`silver.equipment_events_cpac_shadow`) stopped emitting L3 stops on 3 Oct; that date was wrong. The last L3 row
+    is **26 Aug 13:08 UTC** (164 rows, 4–26 Aug). Cause: the deriver reads a line's OWN gross counter
+    (`silver.equipment_categorical_1min`), and L3 has had none since 1 Sep — its reader sends the two line meters with
+    swapped roles (the deliberate 26 Aug revert of #909, `docs/clients/cpack-legacy-oracle-line-meters.md` §L3), so
+    the line row is never built. Fix: an opt-in `LineLead` mode (CPACK shadow instance only) reads the lead machine's
+    minutes (L3-BREYER, 58), the same source the line-lead OEE model uses; with it off the SQL is byte-identical, so
+    the live Bispharma deriver is untouched. Dry-run (25 h): L3 0 → 14 stops (legacy mirror 28). Still open: the
+    factory reader does not read L3's own gross register (ingestion-side), and Aug 26 → now is not back-filled.
 
 This spec stays `in-review` until both are answered.
 
