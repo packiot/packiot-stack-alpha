@@ -254,6 +254,13 @@
     "argc": 1
   },
   {
+    "ref": "/v2/events-window",
+    "source": "route",
+    "kind": "function",
+    "name": "serving.operator_events_window_by_equipment",
+    "argc": 1
+  },
+  {
     "ref": "/v2/operator-po-list",
     "source": "route",
     "kind": "function",

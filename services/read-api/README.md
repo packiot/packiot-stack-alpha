@@ -47,7 +47,7 @@ the committed file drifts.
 | Group | Paths | Auth | What |
 |---|---|---|---|
 | Operator reads v1 | `/v1/events-timeline`, `/v1/pending-downtime`, `/v1/shift-hours`, `/v1/shift-hours-by-enterprise`, `/v1/day-week-begin`, `/v1/operator-po-list`, `/v1/operator-po-details`, `/v1/operator-entities`, `/v1/entities-per-user-role`, `/v1/downtime-reasons`, `/v1/language-packs` | tenant | fixed reads (some keyed by `topics=`) |
-| Operator reads v2 | `/v2/events-timeline`, `/v2/pending-downtime`, `/v2/operator-po-list`, `/v2/downtime-reasons` | tenant | same reads keyed by `?equipment=<id>,…` (ADR-0061 P3) |
+| Operator reads v2 | `/v2/events-timeline`, `/v2/pending-downtime`, `/v2/events-window`, `/v2/operator-po-list`, `/v2/downtime-reasons` | tenant | same reads keyed by `?equipment=<id>,…` (ADR-0061 P3) |
 | Query API | `GET /v1/catalog`, `POST /v1/query` | tenant | catalog of metrics/dimensions/grains/datasets; compiled query or named dataset (`datasets.go`) |
 | UI state | `GET/PUT /v1/screen-config`, `GET /v1/dashboard-config` | tenant | per-user screen layout (`identity.user_screen_config`, owned by migration `t-readapi-screen-config`; read-api only checks it at boot, no DDL); dashboard config |
 | Historian | `POST /v1/historian/production-series`, `/v1/historian/downtime-series` | tenant | daily series past the hot window via the historian gateway; 503 when `HIST_GW_PASSWORD` is unset |

@@ -199,6 +199,13 @@ var endpointDocs = map[string]endpointDoc{
 		description: "Unclassified downtime events for the given id_equipment values, newest first (`serving.pending_downtime_by_equipment`).",
 		example:     []any{exPendingRowV2},
 	},
+	"/v2/events-window": {
+		summary:     "Pending and history list time windows by equipment id",
+		description: "One row per requested equipment (`serving.operator_events_window_by_equipment`, PRODT-170): the enterprise's pending and history windows — `shift` (current shift), `production_day` (current production day, from the site calendar — not the UTC date) or `hours` (last N hours) — and the start time each list uses now. Both lists filter on a stop's start time with exactly these starts; an ongoing stop is always pending. A start is never more than 7 days back.",
+		example: []any{map[string]any{"id_equipment": 100, "id_enterprise": 42,
+			"pending_window": "production_day", "pending_hours": 24, "pending_start": "2026-10-16T02:10:00Z",
+			"history_window": "hours", "history_hours": 24, "history_start": "2026-10-15T16:49:45Z"}},
+	},
 	"/v2/downtime-reasons": {
 		summary:     "Downtime and scrap reason trees by equipment id",
 		description: "One row per requested active machine or line (`serving.downtime_reasons_by_equipment`). Line-only reasons rule: a machine inside a line whose downtimes come from its lead machine gets the LINE's downtime tree; scrap reasons stay the machine's own.",

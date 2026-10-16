@@ -3577,6 +3577,98 @@
         ]
       }
     },
+    "/v2/events-window": {
+      "get": {
+        "description": "One row per requested equipment (`serving.operator_events_window_by_equipment`, PRODT-170): the enterprise's pending and history windows — `shift` (current shift), `production_day` (current production day, from the site calendar — not the UTC date) or `hours` (last N hours) — and the start time each list uses now. Both lists filter on a stop's start time with exactly these starts; an ongoing stop is always pending. A start is never more than 7 days back.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",
+        "operationId": "get_v2_events_window",
+        "parameters": [
+          {
+            "description": "Comma-separated positive id_equipment values (at most 500). Identity is id_equipment, never a topic. Ids of another tenant simply match nothing.",
+            "example": "101,102",
+            "in": "query",
+            "name": "equipment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "history_hours": 24,
+                    "history_start": "2026-10-15T16:49:45Z",
+                    "history_window": "hours",
+                    "id_enterprise": 42,
+                    "id_equipment": 100,
+                    "pending_hours": 24,
+                    "pending_start": "2026-10-16T02:10:00Z",
+                    "pending_window": "production_day"
+                  }
+                ],
+                "schema": {
+                  "$ref": "#/components/schemas/Rows"
+                }
+              }
+            },
+            "description": "Rows as JSON objects (abridged example; the columns are the backing SQL object's). An empty array when nothing matches."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "examples": {
+                  "case1": {
+                    "summary": "{\"error\":\"missing required query param: equipment\"}",
+                    "value": "{\"error\":\"missing required query param: equipment\"}"
+                  },
+                  "case2": {
+                    "summary": "{\"error\":\"equipment: at most 500 ids\"}",
+                    "value": "{\"error\":\"equipment: at most 500 ids\"}"
+                  },
+                  "case3": {
+                    "summary": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}",
+                    "value": "{\"error\":\"equipment: \\\"abc\\\" is not a positive integer id\"}"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "Missing or invalid query parameter."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "example": "{\"error\":\"query failed\"}",
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorText"
+                }
+              }
+            },
+            "description": "The query failed or timed out (15 s)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "CognitoBearer": []
+          }
+        ],
+        "summary": "Pending and history list time windows by equipment id",
+        "tags": [
+          "operator-v2"
+        ]
+      }
+    },
     "/v2/operator-po-list": {
       "get": {
         "description": "Production orders for the selected lines/sectors and their parent, keyed by id_equipment (ADR-0061 P3, `serving.operator_po_list_by_equipment`). `display_path` is a human label for display only, never an identifier.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.",

@@ -195,6 +195,12 @@ var endpoints = []endpoint{
 	{path: "/v2/pending-downtime",
 		sql:   `SELECT * FROM serving.pending_downtime_by_equipment($2::int[]) WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: equipmentIDsArg},
+	// PRODT-170 (RN-18): the enterprise's pending/history windows (kind, hours, start) per equipment — the SAME
+	// starts the two lists above filter with (db/migrations/t-prodt170-operator-events-windows), so the operator can
+	// say which stops it shows ("since 23:10 — current production day").
+	{path: "/v2/events-window",
+		sql:   `SELECT * FROM serving.operator_events_window_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
 	// v2 downtime-reasons: one row per requested machine/line, no register join (same LINE-ONLY rule as v1).
 	{path: "/v2/downtime-reasons",
 		sql:   `SELECT * FROM serving.downtime_reasons_by_equipment($2::int[]) WHERE id_enterprise = $1`,

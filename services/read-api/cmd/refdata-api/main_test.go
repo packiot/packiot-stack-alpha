@@ -27,6 +27,8 @@ func TestContractCoverage(t *testing.T) {
 		"serving.pending_downtime_by_equipment",
 		"serving.downtime_reasons_by_equipment",
 		"serving.operator_po_list_by_equipment",
+		// PRODT-170: the windows the two Events lists use
+		"serving.operator_events_window_by_equipment",
 	}
 	all := ""
 	for _, ep := range endpoints {
@@ -37,8 +39,8 @@ func TestContractCoverage(t *testing.T) {
 			t.Errorf("contract root %q not covered by any endpoint", root)
 		}
 	}
-	if len(endpoints) != 15 { // 11 v1 + 4 ADR-0061 /v2
-		t.Errorf("expected 15 endpoints, got %d", len(endpoints))
+	if len(endpoints) != 16 { // 11 v1 + 4 ADR-0061 /v2 + PRODT-170 /v2/events-window
+		t.Errorf("expected 16 endpoints, got %d", len(endpoints))
 	}
 }
 
@@ -103,4 +105,31 @@ func TestDowntimeReasonsRouteAdmitsLineTopics(t *testing.T) {
 		return
 	}
 	t.Fatal("/v1/downtime-reasons route not found")
+}
+
+// PRODT-170: /v2/events-window is tenant-scoped like its two list siblings and keyed the same way (?equipment=),
+// so the label the operator shows is computed for exactly the equipment the lists were asked for.
+func TestEventsWindowRoute(t *testing.T) {
+	var got *endpoint
+	for i := range endpoints {
+		if endpoints[i].path == "/v2/events-window" {
+			got = &endpoints[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("/v2/events-window not mounted")
+	}
+	if got.class != routeTenantScoped {
+		t.Errorf("class = %v, want routeTenantScoped", got.class)
+	}
+	if !strings.Contains(got.sql, "serving.operator_events_window_by_equipment($2::int[])") ||
+		!strings.Contains(got.sql, "WHERE id_enterprise = $1") {
+		t.Errorf("sql = %q: want the window function on $2 fenced by id_enterprise = $1", got.sql)
+	}
+	if _, err := got.args(httptest.NewRequest("GET", "/v2/events-window?equipment=100", nil)); err != nil {
+		t.Errorf("args(?equipment=100): %v", err)
+	}
+	if _, err := got.args(httptest.NewRequest("GET", "/v2/events-window", nil)); err == nil {
+		t.Error("args without ?equipment=: want error")
+	}
 }
