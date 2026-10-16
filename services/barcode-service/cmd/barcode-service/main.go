@@ -13,7 +13,7 @@
 // look for `// PHASE-2:` markers where those hooks slot in.
 //
 // It is modelled on services/refdata-api: one lean binary, config from env,
-// pgx over pgbouncer (simple-protocol for transaction pooling), structured
+// DB login = the least-privilege barcode_service role (dbcreds.go), pgx over pgbouncer (simple-protocol for transaction pooling), structured
 // slog, an issuer-agnostic dual Firebase/Cognito JWT verifier that derives the
 // tenant (id_enterprise) SERVER-SIDE and fails closed. The client never names a
 // tenant — same single-injection-authority discipline as refdata's ADR-0027.
@@ -26,6 +26,7 @@
 //	                               unhealthy — ADR-0011 rule 4 (fail the probe,
 //	                               don't serve writes you can't durably persist)
 //	GET  /metrics                — reserved (PHASE-2: Prometheus RED metrics)
+//	GET  /openapi.json           — OpenAPI 3.1 description (openapi.go)
 package main
 
 import (
@@ -40,21 +41,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// config is the full runtime configuration, all from env. No secret has a
-// default; a missing DB password simply yields an unhealthy pool (fail-closed
-// at /healthz) rather than a silent misconnect.
+// config is the runtime configuration, all from env. The DB login is not here:
+// dbcreds.go loads it (Secrets Manager, or DB_* env in dev) and fails closed.
 type config struct {
 	httpPort string
-
-	dbHost     string
-	dbPort     string
-	dbUser     string
-	dbPassword string
-	dbName     string
 
 	firebaseProject string // Firebase project id (aud + iss suffix). "" ⇒ Firebase path off.
 	cognitoIssuer   string // https://cognito-idp.<region>.amazonaws.com/<poolId>. "" ⇒ Cognito path off.
@@ -66,12 +59,7 @@ type config struct {
 func loadConfig() config {
 	return config{
 		httpPort:        getenv("HTTP_PORT", "8446"),
-		dbHost:          getenv("DB_HOST", "pgbouncer"),
-		dbPort:          getenv("DB_PORT", "5432"),
-		dbUser:          getenv("DB_USER", "postgres"),
-		dbPassword:      os.Getenv("DB_PASSWORD"),
-		dbName:          getenv("DB_NAME", "packiot_shadow"),
-		firebaseProject: getenv("FIREBASE_PROJECT_ID", defaultFirebaseProject),
+		firebaseProject: lookupenv("FIREBASE_PROJECT_ID", defaultFirebaseProject), // "" ⇒ off (#159); see lookupenv
 		cognitoIssuer:   os.Getenv("COGNITO_ISSUER"),
 		cognitoAudience: os.Getenv("COGNITO_CLIENT_ID"), // aud on Cognito ID tokens; same var refdata-api uses
 		logLevel:        getenv("LOG_LEVEL", "info"),
@@ -98,21 +86,17 @@ func main() {
 		os.Exit(runHealthcheck(cfg.httpPort))
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s",
-		cfg.dbHost, cfg.dbPort, cfg.dbUser, cfg.dbPassword, cfg.dbName)
-	pc, err := pgxpool.ParseConfig(dsn)
+	creds, err := loadDBCreds(context.Background(), awsSecret)
 	if err != nil {
-		logger.Error("parse dsn", slog.String("err", err.Error()))
+		logger.Error("db creds", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
-	pc.MaxConns = 5
-	// pgbouncer transaction pooling breaks pgx's implicit prepared statements —
-	// simple protocol is the stack-wide fix (see refdata-api/main.go). It is
-	// ALSO what makes pg_advisory_xact_lock safe here: transaction pooling pins
-	// one server backend for the life of a tx, so an xact-scoped advisory lock
-	// is held for exactly our BEGIN…COMMIT and released on return.
-	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	pool, err := pgxpool.NewWithConfig(context.Background(), pc)
+	logger.Info("db creds loaded", slog.String("dsn", creds.Redacted("barcode-service")))
+	if creds.User != dbRole {
+		logger.Warn("not logged in as the least-privilege role", slog.String("user", creds.User),
+			slog.String("want", dbRole))
+	}
+	pool, err := newPool(context.Background(), creds)
 	if err != nil {
 		logger.Error("pool", slog.String("err", err.Error()))
 		os.Exit(1)
@@ -129,15 +113,18 @@ func main() {
 	store := newPgScanStore(pool)
 	broker := newSSEBroker()
 
-	srv := &scanServer{store: store, broker: broker, logger: logger}
+	mirror, err := parseProdMirror(os.Getenv("PROD_MIRROR_ENTERPRISES"))
+	if err != nil {
+		logger.Error("config", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	if len(mirror) > 0 {
+		logger.Warn("production-mirror tenants: scans refused with 403 (ADR-0064)", slog.Any("enterprises", mirror))
+	}
+	srv := &scanServer{store: store, broker: broker, logger: logger, mirror: mirror}
 
 	mux := http.NewServeMux()
-	// Write + stream sit behind the auth middleware (tenant from JWT only).
-	mux.Handle("POST /v1/scans", auth.middleware(http.HandlerFunc(srv.handlePostScan)))
-	mux.Handle("GET /v1/scans/stream", auth.middleware(http.HandlerFunc(srv.handleStream)))
-	// Ops probes — NO auth (they expose no tenant data). /healthz fails closed.
-	mux.HandleFunc("GET /healthz", healthzHandler(pool))
-	mux.HandleFunc("GET /metrics", metricsHandler) // PHASE-2: real Prometheus registry
+	registerRoutes(mux, auth, srv, pool)
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.httpPort,
@@ -154,7 +141,7 @@ func main() {
 	go func() {
 		logger.Info("barcode-service listening",
 			slog.String("port", cfg.httpPort),
-			slog.String("db_name", cfg.dbName),
+			slog.String("db_name", creds.Database),
 			slog.Bool("firebase", cfg.firebaseProject != ""),
 			slog.Bool("cognito", cfg.cognitoIssuer != ""))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -172,6 +159,28 @@ func main() {
 	}
 	broker.Close()
 	logger.Info("stopped")
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs. It is an
+// interface so the OpenAPI drift test (openapi_test.go) can record every
+// pattern without standing up a DB or a JWT verifier.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the HTTP surface is defined. Every
+// non-ops route here must be described in openapi.json — the drift test fails
+// otherwise.
+func registerRoutes(mux routeRegistrar, auth *authenticator, srv *scanServer, pool *pgxpool.Pool) {
+	// Write + stream sit behind the auth middleware (tenant from JWT only).
+	mux.Handle("POST /v1/scans", auth.middleware(http.HandlerFunc(srv.handlePostScan)))
+	mux.Handle("GET /v1/scans/stream", auth.middleware(http.HandlerFunc(srv.handleStream)))
+	// Ops probes — NO auth (they expose no tenant data). /healthz fails closed.
+	mux.Handle("GET /healthz", healthzHandler(pool))
+	mux.Handle("GET /metrics", http.HandlerFunc(metricsHandler)) // PHASE-2: real Prometheus registry
+	// API description — NO auth: it holds no tenant data, and public exposure is
+	// decided by nginx (the scan vhost proxies only the exact /v1/scans paths).
+	mux.Handle("GET /openapi.json", http.HandlerFunc(openAPIHandler))
 }
 
 // healthzHandler returns 503 when the DB is unreachable — ADR-0011 rule 4: a
@@ -215,6 +224,18 @@ func runHealthcheck(port string) int {
 
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// lookupenv returns k's value whenever k is SET — including "" — and def only
+// when k is absent. Use it for settings where an explicit empty value means
+// "disabled"; getenv cannot express that. FIREBASE_PROJECT_ID needs it: staging
+// sets "" to retire Firebase (#159), and getenv silently mapped that back to
+// fbpackiot, keeping Firebase verification live.
+func lookupenv(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok {
 		return v
 	}
 	return def

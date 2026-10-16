@@ -60,7 +60,11 @@ const (
 	ModeScrapDerived   = "scrap_derived"
 	ModeGrossDerived   = "gross_derived"
 	ModeOutfeedDerived = "outfeed_derived"
-	ModeNone           = "none"
+	// ModeProcessedIsGross: the machine's ProdProcessedCount is its TOTAL (gross) and
+	// ProdDefectiveCount the rejects, so good = processed - defective. CPACK ISIMAT:
+	// legacy reports gross == the processed counter and net = gross - defective.
+	ModeProcessedIsGross = "processed_is_gross"
+	ModeNone             = "none"
 )
 
 // Apply derives the missing counts IN PLACE per the counter_derive mode. On
@@ -74,6 +78,8 @@ const (
 //	scrap_derived        — gross+net    → scrap := gross - net  (floored at 0).
 //	gross_derived        — net+scrap    → gross := net + scrap.
 //	outfeed_derived      — gross+scrap  → net := max(gross - scrap, 0)  [APPROXIMATION].
+//	processed_is_gross   — net(=processed)+scrap → gross := processed; net := max(processed - scrap, 0).
+//	                       The only mode that REPLACES a sensed count (see Stage.Overrides).
 //
 // An unknown mode is an error (the loader's closed-enum lint prevents it
 // upstream; this is belt-and-braces so a hand-built call can't silently no-op).
@@ -111,6 +117,16 @@ func Apply(gross, net, scrap *float64, mode string) error {
 		// CPACK). A stateless Apply cannot replicate the in_scrap/prev_scrap terms,
 		// so this is a documented best-effort: net := max(gross - scrap, 0). Flagged
 		// so a correctness audit knows exactly which case diverges from legacy.
+		n := *gross - *scrap
+		if n < 0 {
+			n = 0
+		}
+		*net = n
+	case ModeProcessedIsGross:
+		// The sensed Processed count arrives in the net slot but measures the total.
+		// Floor at 0 for the same reason as scrap_derived (a transient defective >
+		// processed must not read as a counter reset).
+		*gross = *net
 		n := *gross - *scrap
 		if n < 0 {
 			n = 0
@@ -156,6 +172,9 @@ var modeSpecs = map[string]modeSpec{
 	ModeScrapDerived:   {sensed: []role{roleGross, roleNet}, derived: []role{roleScrap}},
 	ModeGrossDerived:   {sensed: []role{roleNet, roleScrap}, derived: []role{roleGross}},
 	ModeOutfeedDerived: {sensed: []role{roleGross, roleScrap}, derived: []role{roleNet}},
+	// net is both sensed and derived: the arriving Processed tag must NOT publish as
+	// net (it is the gross), so Overrides reports it and the agent drops the original.
+	ModeProcessedIsGross: {sensed: []role{roleNet, roleScrap}, derived: []role{roleGross, roleNet}},
 }
 
 // countLeaf parses a canonical count suffix into (head, role, idx). It matches
@@ -251,6 +270,37 @@ func New(entries []Entry) *Stage {
 }
 
 // Empty reports whether the stage has no derive groups (Process is a no-op).
+// Overrides reports whether an arriving tag is a SENSED count this stage replaces
+// (its role is also derived for the group's mode), so the caller must drop the
+// original instead of publishing it. Counts are cumulative: publishing the raw
+// value and then the derived one for the same metric would read as a counter
+// going backwards (a reset) to Calc. When the group is not complete in a batch,
+// the original is still dropped and nothing is emitted for that role (a hold,
+// like any partial group); the next complete batch carries the cumulative value.
+func (s *Stage) Overrides(metric string) bool {
+	if s == nil {
+		return false
+	}
+	ref, ok := s.bySuffix[metric]
+	if !ok {
+		return false
+	}
+	// Only a role the mode both SENSES and DERIVES is replaced (processed_is_gross's
+	// net). A purely derived role is additive: a real tag that arrives for it still
+	// publishes, exactly as before this method existed.
+	spec := modeSpecs[ref.g.mode]
+	return hasRole(spec.sensed, ref.r) && hasRole(spec.derived, ref.r)
+}
+
+func hasRole(rs []role, r role) bool {
+	for _, x := range rs {
+		if x == r {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Stage) Empty() bool { return len(s.groups) == 0 }
 
 // present accumulates, per group this batch, the sensed count values + a ts.

@@ -1,5 +1,6 @@
 // Package httpserver holds the shim's HTTP surface: the authenticated,
-// scope-guarded /ingest/sparkplug endpoint and the /healthz probe.
+// scope-guarded /ingest/sparkplug endpoint, the /healthz probe, and the
+// /openapi.json API description (openapi.go).
 //
 // The handler NEVER logs the API key or the full payload — only the derived
 // topic/group and the byte size. Leaking either would defeat the whole
@@ -50,9 +51,23 @@ func New(d Deps) http.Handler {
 	}
 	s := &server{d: d, apiKey: []byte(d.APIKey), scopeGroup: strings.ToUpper(d.ScopeGroup), fanout: fanout}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /ingest/sparkplug", s.handleIngest)
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.registerRoutes(mux)
 	return mux
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs — an
+// interface so the OpenAPI drift test can enumerate every pattern.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the HTTP surface is defined. Every
+// non-ops route must be described in openapi.json (openapi_test.go enforces it).
+func (s *server) registerRoutes(mux routeRegistrar) {
+	mux.Handle("POST /ingest/sparkplug", http.HandlerFunc(s.handleIngest))
+	mux.Handle("GET /healthz", http.HandlerFunc(s.handleHealthz))
+	// No auth: the document holds no data; public exposure is nginx's call.
+	mux.Handle("GET /openapi.json", http.HandlerFunc(handleOpenAPI))
 }
 
 type server struct {
@@ -91,7 +106,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.reject(w, r, http.StatusBadRequest, metrics.OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			s.reject(w, r, http.StatusRequestEntityTooLarge, metrics.OutcomeRejectedBad, "payload too large", "", int64(len(body)))
 			return
 		}
 		s.reject(w, r, http.StatusBadRequest, metrics.OutcomeRejectedBad, "cannot read body", "", int64(len(body)))

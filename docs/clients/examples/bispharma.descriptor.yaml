@@ -1,0 +1,194 @@
+# BISPHARMA — PLC TYPE PROFILE example (ADR-0050).
+#
+# What this proves
+# ----------------
+# bispharma's site is 16 production lines, EVERY line driven by an IDENTICAL
+# Siemens S7 program: the same DB1 layout, the same rack/slot. Before ADR-0050 the
+# descriptor's plc.s7_tag_map had to be ~80 hand-copied entries (one 6-line layout
+# × 16), and the onboarding UI had no create-path for them — so a UI-authored
+# tenant produced an IDLE reader (empty tag map ⇒ nothing to poll).
+#
+# Here the layout is declared ONCE as plc.types.bispharma_s7 and every endpoint
+# just references it (`type: bispharma_s7`). The generator EXPANDS type × each
+# line's members into the s7_tag_map:
+#
+#   - the PHYSICAL half (db / offset / word) comes from the type: a member's
+#     SENSOR key (S1, S3, …, the leading S<n> of its topic's last segment) selects
+#     the register offset from sensor_offsets;
+#   - the CANONICAL half (the metric name) comes from the SAME member + count_index
+#     the agent raw_tag_map is synthesized from — /Admin/ProdProcessedCount/<idx>/Unit
+#     with idx = id_equipment (equipment_id mode).
+#
+# Because both the reader s7_tag_map AND the agent raw_tag_map derive that leaf from
+# the same members, the ADR-0045 §C consistency invariant holds BY CONSTRUCTION —
+# there is no hand-authored physical/canonical pair left to drift. Run through the
+# onboard generator this descriptor validates + emits a valid client.yaml.
+#
+# NOTE: bispharma's scrap is a cross-register derivation (infeed − output, i.e.
+# DW0 − DW4) — declared in the type's `derive:` block (ADR-0050 §4). As of
+# ADR-0058 P1.4 the generator EMITS it: a derived ProdDefectiveCount on the LINE,
+# computed by the agent's sandboxed expr stage from the two members' NET counts.
+# Each member still owns ONE count sensor → its NET production leaf; the scrap is
+# a line-level derivation over them (member−member, no extra reader tag).
+#
+# ids / prefix are illustrative for the staging onboarding; nothing here is secret.
+
+tenant: BISPHARMA
+enterprise_id: 5
+canonical:
+  prefix: BISPHARMA/SP
+mapping:
+  # equipment_id: a member's count index IS its register id_equipment (no per-member
+  # capture needed — bispharma's channels are the surrogate ids).
+  count_index_default_mode: equipment_id
+metric_templates:
+  member:
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+  line:
+    - {leaf: "/Status/StateCurrent", type: long}
+agent:
+  edge_node_id: bispharma-edge
+  internal_broker: tcp://mosquitto:1883
+  raw_topic: bispharma/raw
+  uplink_broker: ssl://ingest.example.invalid:8883
+  mtls:
+    cert_ref: secret://packiot/staging/bispharma/uplink-cert
+    key_ref: secret://packiot/staging/bispharma/uplink-key
+    ca_ref: secret://packiot/staging/bispharma/uplink-ca
+tee:
+  ingest_url: https://localhost:8444/v1/tags
+  tls_insecure: true
+plc:
+  # ── ONE reusable PLC type — the whole point of ADR-0050 ──
+  types:
+    bispharma_s7:
+      protocol: s7
+      rack: 0
+      slot: 2
+      port: 102
+      db: 1
+      word: dint
+      # sensor key → DB1 byte offset. A member's key (S1, S3, …) picks its offset.
+      sensor_offsets: {S1: 0, S2: 4, S3: 8, S4: 12, S5: 16, S6: 20}
+      # ADR-0050 §4 / ADR-0058 P1.4: scrap = infeed − output = S1 − S6 (units in
+      # minus good units out). Both S1 (S1INFEED) and S6 (S6OUTPUT) are MEMBERS, so
+      # each binds to its published NET count — the generator now emits a derived
+      # ProdDefectiveCount on the LINE from this. Illustrative direction; confirm the
+      # exact per-client counters against a live tee capture before a real fire.
+      derive: {scrap: "S1 - S6"}
+  # ── 16 endpoints, each ONE line, each just references the type ──
+  endpoints:
+    - {name: L01, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.1}
+    - {name: L02, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.2}
+    - {name: L03, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.3}
+    - {name: L04, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.4}
+    - {name: L05, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.5}
+    - {name: L06, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.6}
+    - {name: L07, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.7}
+    - {name: L08, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.8}
+    - {name: L09, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.9}
+    - {name: L10, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.10}
+    - {name: L11, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.11}
+    - {name: L12, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.12}
+    - {name: L13, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.13}
+    - {name: L14, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.14}
+    - {name: L15, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.15}
+    - {name: L16, protocol: s7, type: bispharma_s7, host_ref: 192.168.5.16}
+equipment:
+  - {topic: BISPHARMA/SP/LINHAS/L01, device_key: dk_1f005e69b0fad491f72463a6802319f7, id_equipment: 100, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S1INFEED, device_key: dk_009039142f65d96b356f00b776dc5e9b, id_equipment: 101, tp_equipment: 1, id_unit: 101}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S3, device_key: dk_2d67f57209c56c3b2bd94e8625616bca, id_equipment: 103, tp_equipment: 1, id_unit: 103}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S4, device_key: dk_3faa63967be430078b65ff75ea8caf28, id_equipment: 104, tp_equipment: 1, id_unit: 104}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S5, device_key: dk_c4f3f19f9d52f5ebdb0fc1ceae7a1ea4, id_equipment: 105, tp_equipment: 1, id_unit: 105}
+  - {topic: BISPHARMA/SP/LINHAS/L01/S6OUTPUT, device_key: dk_da0e542cbddb576fd4536d0081eb12e2, id_equipment: 106, tp_equipment: 1, id_unit: 106}
+  - {topic: BISPHARMA/SP/LINHAS/L02, device_key: dk_2aa82cb8f3b4cdc5d773679791f19529, id_equipment: 200, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S1INFEED, device_key: dk_61fcdf16012492633addd077072cc438, id_equipment: 201, tp_equipment: 1, id_unit: 201}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S3, device_key: dk_5464f4822fe5b6746b6887378f387613, id_equipment: 203, tp_equipment: 1, id_unit: 203}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S4, device_key: dk_658ccd0eee68d158e156b32b1edd1a94, id_equipment: 204, tp_equipment: 1, id_unit: 204}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S5, device_key: dk_47e42589752352c56613ad11ea87d8ca, id_equipment: 205, tp_equipment: 1, id_unit: 205}
+  - {topic: BISPHARMA/SP/LINHAS/L02/S6OUTPUT, device_key: dk_0e38902c6d7f18736defd5f59fd1c7a4, id_equipment: 206, tp_equipment: 1, id_unit: 206}
+  - {topic: BISPHARMA/SP/LINHAS/L03, device_key: dk_0bde05c1ebb1bb85e997867dc2f6886c, id_equipment: 300, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S1INFEED, device_key: dk_8462cf33a3fe29f9d09a5540d4a12d57, id_equipment: 301, tp_equipment: 1, id_unit: 301}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S3, device_key: dk_91741449fcf89a9f2224cbfa1a821678, id_equipment: 303, tp_equipment: 1, id_unit: 303}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S4, device_key: dk_bb5d204fec75240f1505af33310be446, id_equipment: 304, tp_equipment: 1, id_unit: 304}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S5, device_key: dk_8d7f8e1cb45a574f64058806b3dfc6d6, id_equipment: 305, tp_equipment: 1, id_unit: 305}
+  - {topic: BISPHARMA/SP/LINHAS/L03/S6OUTPUT, device_key: dk_46877c4cf2114f608e9a91b0aa8d5d53, id_equipment: 306, tp_equipment: 1, id_unit: 306}
+  - {topic: BISPHARMA/SP/LINHAS/L04, device_key: dk_fb04b783ab405903cd2bd1e93228c931, id_equipment: 400, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S1INFEED, device_key: dk_d888ee1df62cb736969f7b0188366b92, id_equipment: 401, tp_equipment: 1, id_unit: 401}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S3, device_key: dk_4ab94dba31ec5cceadf7156bff61cf54, id_equipment: 403, tp_equipment: 1, id_unit: 403}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S4, device_key: dk_8496af7b85476e4b62d47f7991377957, id_equipment: 404, tp_equipment: 1, id_unit: 404}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S5, device_key: dk_5a2d94602a33117211ca2e48b03cb5a0, id_equipment: 405, tp_equipment: 1, id_unit: 405}
+  - {topic: BISPHARMA/SP/LINHAS/L04/S6OUTPUT, device_key: dk_c8fb4692ef35587be8f3aedffcca91ca, id_equipment: 406, tp_equipment: 1, id_unit: 406}
+  - {topic: BISPHARMA/SP/LINHAS/L05, device_key: dk_4a618e07ac179a9779f4f87086f24539, id_equipment: 500, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S1INFEED, device_key: dk_c20b275e07532abbeafb05342c7582aa, id_equipment: 501, tp_equipment: 1, id_unit: 501}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S3, device_key: dk_8d8019a9854ebe28934c0373799a8a15, id_equipment: 503, tp_equipment: 1, id_unit: 503}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S4, device_key: dk_00f2ac01f8c9ea4fbc599f4a26bc5527, id_equipment: 504, tp_equipment: 1, id_unit: 504}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S5, device_key: dk_d4565e744d1cd713afa9da93f7c4e2a3, id_equipment: 505, tp_equipment: 1, id_unit: 505}
+  - {topic: BISPHARMA/SP/LINHAS/L05/S6OUTPUT, device_key: dk_d69b750ffe9739cf4519ce94d7e0562a, id_equipment: 506, tp_equipment: 1, id_unit: 506}
+  - {topic: BISPHARMA/SP/LINHAS/L06, device_key: dk_89595831e4af7be20348eb73c2a1938e, id_equipment: 600, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S1INFEED, device_key: dk_23ee8cc2aa646e23b4b971c795ff19e9, id_equipment: 601, tp_equipment: 1, id_unit: 601}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S3, device_key: dk_454e6a3308466be0d8f3df657fa69f76, id_equipment: 603, tp_equipment: 1, id_unit: 603}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S4, device_key: dk_7004b5e4b143ff9cf1adee2342aa4251, id_equipment: 604, tp_equipment: 1, id_unit: 604}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S5, device_key: dk_e7bf84d3ed323a723cb4fb662316de02, id_equipment: 605, tp_equipment: 1, id_unit: 605}
+  - {topic: BISPHARMA/SP/LINHAS/L06/S6OUTPUT, device_key: dk_e5d474d764142a78ea5732f878520f4d, id_equipment: 606, tp_equipment: 1, id_unit: 606}
+  - {topic: BISPHARMA/SP/LINHAS/L07, device_key: dk_8b41bd42f0fbcf323a8329d1f543227e, id_equipment: 700, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S1INFEED, device_key: dk_4523efa40ce140b0dc814de6a3b1eab8, id_equipment: 701, tp_equipment: 1, id_unit: 701}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S3, device_key: dk_d1df17566f6fcc0067e85ea3f5e6a170, id_equipment: 703, tp_equipment: 1, id_unit: 703}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S4, device_key: dk_013281e51dc91a0d16eb865d0ceca4cf, id_equipment: 704, tp_equipment: 1, id_unit: 704}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S5, device_key: dk_bf09f7bf0f46ebf24bf634656e1d8da8, id_equipment: 705, tp_equipment: 1, id_unit: 705}
+  - {topic: BISPHARMA/SP/LINHAS/L07/S6OUTPUT, device_key: dk_c8a95dd0324497813997666d6e10934c, id_equipment: 706, tp_equipment: 1, id_unit: 706}
+  - {topic: BISPHARMA/SP/LINHAS/L08, device_key: dk_672bfeb0294df1e6790cf1abf575198c, id_equipment: 800, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S1INFEED, device_key: dk_effb683c5c02be4e75178e8a555ac827, id_equipment: 801, tp_equipment: 1, id_unit: 801}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S3, device_key: dk_e9f73bfbdbaf0557515196ad76c83bca, id_equipment: 803, tp_equipment: 1, id_unit: 803}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S4, device_key: dk_e9bd412b980c6d70a48b36e43d5a37b2, id_equipment: 804, tp_equipment: 1, id_unit: 804}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S5, device_key: dk_0b0056baec16ccdb60cd34d2f202cf70, id_equipment: 805, tp_equipment: 1, id_unit: 805}
+  - {topic: BISPHARMA/SP/LINHAS/L08/S6OUTPUT, device_key: dk_d1e1c22a6d8cfcaf13c7535171cea7b1, id_equipment: 806, tp_equipment: 1, id_unit: 806}
+  - {topic: BISPHARMA/SP/LINHAS/L09, device_key: dk_848d48823cc8cdc5ab7b85a1e0e74824, id_equipment: 900, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S1INFEED, device_key: dk_b8f27b6b74c9ddd4c66de5116ce42c15, id_equipment: 901, tp_equipment: 1, id_unit: 901}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S3, device_key: dk_65c3ffd176f16b23724b4c7fbda9d59e, id_equipment: 903, tp_equipment: 1, id_unit: 903}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S4, device_key: dk_ae4a00bb66f335b46eb08d81a7006867, id_equipment: 904, tp_equipment: 1, id_unit: 904}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S5, device_key: dk_296afaef3eb8b771b95035e6609e7e9a, id_equipment: 905, tp_equipment: 1, id_unit: 905}
+  - {topic: BISPHARMA/SP/LINHAS/L09/S6OUTPUT, device_key: dk_ba7890d8b38f61d961fd749225d35136, id_equipment: 906, tp_equipment: 1, id_unit: 906}
+  - {topic: BISPHARMA/SP/LINHAS/L10, device_key: dk_23980de618d623e16c67edac84564061, id_equipment: 1000, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S1INFEED, device_key: dk_6be1f2af28dd7fe5baf5f583ac28ee69, id_equipment: 1001, tp_equipment: 1, id_unit: 1001}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S3, device_key: dk_4e542167077796b8b639b28f63c91af5, id_equipment: 1003, tp_equipment: 1, id_unit: 1003}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S4, device_key: dk_cffb73555788ebd47d84bb7ee4747e72, id_equipment: 1004, tp_equipment: 1, id_unit: 1004}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S5, device_key: dk_4586dbcb914f597d8ee83adecff1aa75, id_equipment: 1005, tp_equipment: 1, id_unit: 1005}
+  - {topic: BISPHARMA/SP/LINHAS/L10/S6OUTPUT, device_key: dk_fb329168743006472dc6e5d6c3a2d68a, id_equipment: 1006, tp_equipment: 1, id_unit: 1006}
+  - {topic: BISPHARMA/SP/LINHAS/L11, device_key: dk_94f90efc6a4a9b2177a7389e24165c57, id_equipment: 1100, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S1INFEED, device_key: dk_c67eeb1e2e9997ff3a11a817afdd7b68, id_equipment: 1101, tp_equipment: 1, id_unit: 1101}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S3, device_key: dk_68379608f596c06bca88f112fbf6e754, id_equipment: 1103, tp_equipment: 1, id_unit: 1103}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S4, device_key: dk_e3c5bf124042ce0b5398f3be10ad155d, id_equipment: 1104, tp_equipment: 1, id_unit: 1104}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S5, device_key: dk_17355962fe2305eb19dfd401c5a2a205, id_equipment: 1105, tp_equipment: 1, id_unit: 1105}
+  - {topic: BISPHARMA/SP/LINHAS/L11/S6OUTPUT, device_key: dk_52f58605301cba7a71bf05a9e92fa414, id_equipment: 1106, tp_equipment: 1, id_unit: 1106}
+  - {topic: BISPHARMA/SP/LINHAS/L12, device_key: dk_d58b3045c05e1657d97a87093fc662e4, id_equipment: 1200, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S1INFEED, device_key: dk_069bc3da753550055e3b697e019cac14, id_equipment: 1201, tp_equipment: 1, id_unit: 1201}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S3, device_key: dk_58d5e1df9445cf89204fd573b392f3dd, id_equipment: 1203, tp_equipment: 1, id_unit: 1203}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S4, device_key: dk_191085ab52ba145c90225068f84a6510, id_equipment: 1204, tp_equipment: 1, id_unit: 1204}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S5, device_key: dk_d85db72a6780453beed985473240da01, id_equipment: 1205, tp_equipment: 1, id_unit: 1205}
+  - {topic: BISPHARMA/SP/LINHAS/L12/S6OUTPUT, device_key: dk_7c3485a2056eab72409cc7ddbaca0740, id_equipment: 1206, tp_equipment: 1, id_unit: 1206}
+  - {topic: BISPHARMA/SP/LINHAS/L13, device_key: dk_839e60cddb85c8ebe69ea66ef1c80d63, id_equipment: 1300, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S1INFEED, device_key: dk_0c6bbd7a5e44db9302506165f4ef8a20, id_equipment: 1301, tp_equipment: 1, id_unit: 1301}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S3, device_key: dk_75a480dee1de78e2a58d376f41c1b9c6, id_equipment: 1303, tp_equipment: 1, id_unit: 1303}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S4, device_key: dk_469bb35843dc48edbf1e7ae5215039c1, id_equipment: 1304, tp_equipment: 1, id_unit: 1304}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S5, device_key: dk_3862369fdc264e2ac46449e17088da95, id_equipment: 1305, tp_equipment: 1, id_unit: 1305}
+  - {topic: BISPHARMA/SP/LINHAS/L13/S6OUTPUT, device_key: dk_97d2bb69a47755183800e684d2988047, id_equipment: 1306, tp_equipment: 1, id_unit: 1306}
+  - {topic: BISPHARMA/SP/LINHAS/L14, device_key: dk_efb49dfa0f3ffc35f1072fe428aff374, id_equipment: 1400, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S1INFEED, device_key: dk_08f66256509a2e267377509314a9ee94, id_equipment: 1401, tp_equipment: 1, id_unit: 1401}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S3, device_key: dk_1584f026f7b42f4f719dda4ceb26450b, id_equipment: 1403, tp_equipment: 1, id_unit: 1403}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S4, device_key: dk_35cb3ed7c6d0df706ff86a6c35b5bfcf, id_equipment: 1404, tp_equipment: 1, id_unit: 1404}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S5, device_key: dk_1bb4b8c99fd6ff870a2f23a52d8319c8, id_equipment: 1405, tp_equipment: 1, id_unit: 1405}
+  - {topic: BISPHARMA/SP/LINHAS/L14/S6OUTPUT, device_key: dk_6c75c065b5b9a94bd3d971a51156ab89, id_equipment: 1406, tp_equipment: 1, id_unit: 1406}
+  - {topic: BISPHARMA/SP/LINHAS/L15, device_key: dk_98c427cbd51385c415e935b950a39248, id_equipment: 1500, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S1INFEED, device_key: dk_e55ae6272460561914a4eb92ee52ef87, id_equipment: 1501, tp_equipment: 1, id_unit: 1501}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S3, device_key: dk_dcdf3e3bf9fb9f3ca1d10989ef40fee5, id_equipment: 1503, tp_equipment: 1, id_unit: 1503}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S4, device_key: dk_d946df0cb8a790aeb4b940df1f258dc0, id_equipment: 1504, tp_equipment: 1, id_unit: 1504}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S5, device_key: dk_f119435d83bc1795028625b8198fcbb2, id_equipment: 1505, tp_equipment: 1, id_unit: 1505}
+  - {topic: BISPHARMA/SP/LINHAS/L15/S6OUTPUT, device_key: dk_823831e41453ef942119600f9137d736, id_equipment: 1506, tp_equipment: 1, id_unit: 1506}
+  - {topic: BISPHARMA/SP/LINHAS/L16, device_key: dk_bd91a887365acb7de46b9ee90ca35e92, id_equipment: 1600, tp_equipment: 3}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S1INFEED, device_key: dk_7ccc5d5591e31a0dcd9dd486dcef2bbb, id_equipment: 1601, tp_equipment: 1, id_unit: 1601}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S3, device_key: dk_5a99fbeb9baf583741746c84bed82e38, id_equipment: 1603, tp_equipment: 1, id_unit: 1603}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S4, device_key: dk_a07d7c5538dc52df71423be40de2136c, id_equipment: 1604, tp_equipment: 1, id_unit: 1604}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S5, device_key: dk_caff67dd17928668a6b08d955d0a63d7, id_equipment: 1605, tp_equipment: 1, id_unit: 1605}
+  - {topic: BISPHARMA/SP/LINHAS/L16/S6OUTPUT, device_key: dk_635ea3744de86ffe2239a2f2395c83c7, id_equipment: 1606, tp_equipment: 1, id_unit: 1606}

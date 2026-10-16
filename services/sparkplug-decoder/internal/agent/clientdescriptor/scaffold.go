@@ -272,7 +272,9 @@ func Scaffold(opts ScaffoldOptions) (*Descriptor, error) {
 	}
 	d.PLC = plc
 
-	if err := d.Validate(); err != nil {
+	// ValidateDraft: a scaffold has no device_key yet (its equipment has no core.device_bindings row; edge-api
+	// stamps the keys on save, ADR-0061) — everything else must already be valid.
+	if err := d.ValidateDraft(); err != nil {
 		// A scaffold that does not validate is a bug in this generator, not user
 		// error — surface it loudly rather than emit an invalid skeleton.
 		return nil, fmt.Errorf("scaffold produced an invalid descriptor (generator bug): %w", err)

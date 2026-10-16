@@ -27,7 +27,12 @@ SECRET_KEY = os.environ["SUPERSET_SECRET_KEY"]
 # it asks Superset to MINT the guest token over the API; only Superset signs it.
 GUEST_TOKEN_JWT_SECRET = os.environ["SUPERSET_GUEST_TOKEN_JWT_SECRET"]
 GUEST_TOKEN_JWT_EXP_SECONDS = 300          # 5 min; front4 re-mints on expiry
-GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens assume
+# DEDICATED guest role — MUST NOT be "Public". In Flask-AppBuilder "Public" is the
+# role every UNAUTHENTICATED request assumes, so pointing guest tokens at Public
+# leaks the guest read/explore/datasource perms to the whole internet (the anon
+# `GET /api/v1/dashboard/` 200 metadata leak). "GuestViewer" is created + granted the
+# minimal embed perms by bootstrap_guest_role.py; Public is stripped to zero perms.
+GUEST_ROLE_NAME = "GuestViewer"            # dedicated, locked-down role guest tokens assume
 
 # ── Metadata DB (Superset's own state — SEPARATE from the analytics DB) ───────
 # The dedicated `superset` role+DB on the r7g, created by superset-db-init (mirrors
@@ -36,9 +41,9 @@ GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens
 # "database", never here.
 #
 # CONNECTS UPSTREAM-DIRECT to the r7g (POSTGRES_HOST_UPSTREAM), NOT via pgbouncer.
-# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_shadow` (the
+# WHY: the stack's pgbouncer routes ONLY `packiot` and `packiot_analytics` (the
 # entrypoint generates a route from DB_NAME=packiot and the compose command sed-adds
-# `packiot_shadow`; there is no wildcard and no `superset` route). Adding one would
+# `packiot_analytics`; there is no wildcard and no `superset` route). Adding one would
 # mean editing the base `pgbouncer` service `command:` in compose.staging.yml /
 # compose.production.yml — a change to the shared DB path every stack service
 # depends on, well outside this profile-gated overlay. The metadata DB is
@@ -48,7 +53,17 @@ GUEST_ROLE_NAME = "Public"                 # the (locked-down) role guest tokens
 # state under pgbouncer's transaction-pooling mode (the same reason hasura is kept
 # pgbouncer-direct in the base stack). superset-db-init already targets this same
 # upstream host to CREATE the role+DB, so the metadata DB lives there anyway.
-SUPERSET_METADATA_DB_HOST = os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
+#
+# STAGING CONTAINER-IN-STACK OVERRIDE: on staging the metadata DB is NOT the shared
+# r7g but a dedicated `superset-db` postgres CONTAINER inside the stack (named
+# volume, resettable, no r7g superuser DDL / SG ingress needed). compose.staging.yml
+# sets SUPERSET_METADATA_DB_HOST=superset-db to point here. When that env is UNSET
+# (the prod compose.superset.yml overlay), we fall back to POSTGRES_HOST_UPSTREAM
+# exactly as before — this override is backward-compatible with the prod EC2 model.
+SUPERSET_METADATA_DB_HOST = (
+    os.environ.get("SUPERSET_METADATA_DB_HOST")
+    or os.environ.get("POSTGRES_HOST_UPSTREAM", "pgbouncer")
+)
 SQLALCHEMY_DATABASE_URI = (
     "postgresql+psycopg2://superset:%s@%s:5432/superset"
     % (os.environ["SUPERSET_DB_PASSWORD"], SUPERSET_METADATA_DB_HOST)
@@ -105,7 +120,16 @@ FEATURE_FLAGS = {
 # front4 loads Superset in an <iframe>. We MUST allow that origin as a
 # frame-ancestor and MUST NOT emit X-Frame-Options (it has no per-origin allow
 # and would blank the iframe). Talisman owns the response security headers.
-FRONT4_ORIGIN = os.environ.get("SUPERSET_FRAME_ANCESTOR", "https://front.prod.packiot.app")
+# SUPERSET_FRAME_ANCESTOR may list MULTIPLE comma-separated origins — front4 is
+# served from more than one host (e.g. staging.packiot.com AND
+# front.staging.packiot.app). Parse into a list used for BOTH the CSP
+# frame-ancestors and the CORS allow-list, so every valid parent origin can iframe
+# Superset. (register_embed.py splits the same env for the embed allow_domain_list.)
+FRONT4_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("SUPERSET_FRAME_ANCESTOR", "https://front.prod.packiot.app").split(",")
+    if o.strip()
+]
 ENABLE_PROXY_FIX = True             # behind nginx + CloudFront — trust X-Forwarded-*
 TALISMAN_ENABLED = True
 TALISMAN_CONFIG = {
@@ -118,26 +142,72 @@ TALISMAN_CONFIG = {
         "style-src": ["'self'", "'unsafe-inline'"],
         "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
         # THE embed hinge — who may frame Superset:
-        "frame-ancestors": ["'self'", FRONT4_ORIGIN],
+        "frame-ancestors": ["'self'", *FRONT4_ORIGINS],
     },
     "force_https": False,           # TLS terminates at nginx/CloudFront
     "frame_options": None,          # do NOT set X-Frame-Options (see above)
     "session_cookie_secure": True,
+    # Talisman's init_app OVERWRITES app.config["SESSION_COOKIE_SAMESITE"] with this
+    # (default "Lax") — so SESSION_COOKIE_SAMESITE below was dead config and the
+    # session cookie shipped Lax: never sent in a cross-SITE iframe (staging.packiot.com
+    # → bi.staging.packiot.app) → CSRF 400 on every chart. Must be set HERE.
+    "session_cookie_samesite": "None",
 }
 # Cross-site iframe → the Superset session cookie must be SameSite=None; Secure.
 SESSION_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_SECURE = True
 
+# CHIPS (Partitioned) session cookie — cross-SITE embedding (2026-09-24).
+# front4 is also served at staging.packiot.com (registrable domain packiot.com) while
+# Superset lives on bi.staging.packiot.app: a cross-SITE iframe. Chromium blocks
+# third-party cookies even with SameSite=None; Secure, so the Superset session cookie
+# never came back → Flask-WTF's CSRF token (stored in the session) was missing → EVERY
+# embedded chart POST 400'd "The CSRF session token is missing". Same-site hosts
+# (front.staging.packiot.app) were unaffected. A `Partitioned` cookie (CHIPS) is allowed
+# in a 3rd-party context, keyed by the top-level site. Flask 2.3 has no
+# SESSION_COOKIE_PARTITIONED (Flask 3.1+) and writes the session cookie in save_session
+# AFTER after_request hooks, so a tiny WSGI middleware appends the attribute to that
+# cookie's Set-Cookie (only when it is already SameSite=None; Secure).
+class _PartitionedSessionCookie:
+    def __init__(self, wsgi_app, cookie_name):
+        self._app = wsgi_app
+        self._prefix = cookie_name + "="
+
+    def __call__(self, environ, start_response):
+        def _start_response(status, headers, exc_info=None):
+            patched = []
+            for key, value in headers:
+                low = value.lower()
+                if (key.lower() == "set-cookie" and value.startswith(self._prefix)
+                        and "samesite=none" in low and "partitioned" not in low):
+                    value = value + "; Partitioned"
+                patched.append((key, value))
+            return start_response(status, patched, exc_info)
+        return self._app(environ, _start_response)
+
+
+def FLASK_APP_MUTATOR(app):  # noqa: N802 — Superset config hook name
+    app.wsgi_app = _PartitionedSessionCookie(app.wsgi_app, app.config.get("SESSION_COOKIE_NAME", "session"))
+
 # ── CORS (scoped to the front4 SPA origin) ────────────────────────────────────
 ENABLE_CORS = True
 CORS_OPTIONS = {
     "supports_credentials": True,
-    "origins": [FRONT4_ORIGIN],
+    "origins": FRONT4_ORIGINS,
     "allow_headers": ["Authorization", "Content-Type", "X-CSRFToken"],
     "resources": ["/api/*", "/embedded/*"],
 }
 WTF_CSRF_ENABLED = True
-WTF_CSRF_EXEMPT_LIST = ["superset.views.core.log"]  # keep CSRF ON for everything else
+# guest_token: the embedded-dashboard token mint. edge-api's superset-embed broker
+# calls it SERVER-TO-SERVER with a JWT Bearer (the least-priv guesttoken-svc minter) —
+# no browser session/cookie is involved, so CSRF (an anti-cookie-forgery control) does
+# not apply and its enforcement here just 400s the legit mint. Exempting ONLY this one
+# Bearer-authenticated endpoint unblocks the embed path (resolves the #210 CSRF blocker);
+# CSRF stays ON for every cookie-authenticated view.
+WTF_CSRF_EXEMPT_LIST = [
+    "superset.views.core.log",
+    "superset.security.api.guest_token",
+]
 
 # ── Authoring auth: Cognito as an OIDC/OAuth2 provider (Flask-AppBuilder) ─────
 # This is what gives each supervisor a REAL Superset account (Explore + SQL Lab)
@@ -255,7 +325,8 @@ if _USE_COGNITO_OAUTH:
 # authoring RLS role) and stamp it as a libpq startup option, so each tenant gets
 # its own pooled connection with the correct GUC. If no tenant can be derived we
 # stamp NOTHING → GUC stays unset → deny-all (fail-closed). Only the analytics DB
-# (`packiot`) is stamped; the metadata DB (`superset`) is never touched.
+# (`packiot` / `packiot_shadow` / `packiot_analytics` — see `_ANALYTICS_DB_NAMES`
+# below) is stamped; the metadata DB (`superset`) is never touched.
 import re as _tenant_re  # noqa: E402
 from flask import g as _flask_g  # noqa: E402
 
@@ -334,9 +405,18 @@ def _admin_all_tenant_stamp(security_manager):
     return None
 
 
+_ANALYTICS_DB_NAMES = ("packiot", "packiot_shadow", "packiot_analytics")
+# Match every physical name the analytics DB has answered to across envs/time:
+# `packiot` = production (F3 assembled as its own `public` schema); `packiot_shadow`
+# = staging today; `packiot_analytics` = the post-rename name both envs converge on
+# (branch `rename/db-packiot-analytics`, in flight as of 2026-08-20). This tuple is
+# the ONLY thing that needs updating when that rename lands — everything else in
+# this mutator is env-agnostic. Never match the metadata DB (`superset`).
+
+
 def DB_CONNECTION_MUTATOR(uri, params, username, security_manager, source):  # noqa: N802,E501
     try:
-        if getattr(uri, "database", None) == "packiot":
+        if getattr(uri, "database", None) in _ANALYTICS_DB_NAMES:
             tenant = _caller_tenant_id()
             if tenant is None:
                 # No guest-token tenant: fall back to the ALL-TENANT sentinel for

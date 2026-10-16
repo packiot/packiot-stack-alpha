@@ -7,10 +7,11 @@ import (
 )
 
 func TestProvisionMatrixFidelity(t *testing.T) {
-	// equipment×6 plain + metrics special + area×2 (day, shift). #186 retired the
-	// area live hour/week/month grains, so provisioning drops to 8; NO site provisioning.
-	if len(provisionMatrix) != 8 {
-		t.Errorf("matrix size %d != 8", len(provisionMatrix))
+	// equipment×4 plain (day/job/month/shift) + metrics special + area×2 (day, shift).
+	// #186 retired the area live hour/week/month grains; #263 retired the unread
+	// equipment live hour + week grains → provisioning drops to 6; NO site provisioning.
+	if len(provisionMatrix) != 6 {
+		t.Errorf("matrix size %d != 6", len(provisionMatrix))
 	}
 	for _, m := range provisionMatrix {
 		if strings.HasPrefix(m.unsTable, "uns_site") {
@@ -42,11 +43,13 @@ func TestRefreshShape(t *testing.T) {
 // sourced from the runtime tables, and each ADVANCES last_updated so
 // the frozen freshness timestamp moves.
 func TestEquipmentShiftDayShape(t *testing.T) {
-	// day: sourced from equipment_oee_daily at today's bucket.
+	// day: sourced from equipment_oee_daily at the current PRODUCTION day
+	// (shift-calendar label), never the UTC calendar date.
 	for _, m := range []string{
 		"equipment_oee_daily",
 		"equipment_live_day",
-		"date_trunc('day', now())::date",
+		"piot_get_day_begin_by_equipment(e.id_equipment, now())",
+		"v.ts_value = cur.ts_day",
 		"tp_equipment > 1",
 		"id_area = ANY($1)", "id_enterprise = ANY($2)",
 		"last_updated = now()",
@@ -87,7 +90,7 @@ func TestEquipmentFreshnessStamp(t *testing.T) {
 	cases := []struct {
 		name, sql string
 	}{
-		{"hour", refreshHourEquipmentSQL},
+		// #263: "hour" case removed with refreshHourEquipmentSQL (equipment_live_hour unread).
 		{"week/month", refreshEquipmentSQL},
 		{"job", refreshJobsSQL},
 	}
@@ -101,15 +104,36 @@ func TestEquipmentFreshnessStamp(t *testing.T) {
 // TestEquipmentShiftDaySQLBuilds ensures both statements schema-qualify
 // cleanly with no leftover Sprintf verbs for both flow layouts.
 func TestEquipmentShiftDaySQLBuilds(t *testing.T) {
-	for _, schemas := range [][2]string{
-		{"shadow_go_port", "public"}, // F2 comparator layout
-		{"public", "public"},         // single-flow F3-native
+	// [ev, ref, grain] — the grain-sink schema (equipment_live_*) is now a
+	// separate arg (t237 GrainSchema knob; flips public→silver at P-silver).
+	for _, schemas := range [][3]string{
+		{"shadow_go_port", "public", "shadow_go_port"}, // F2 comparator layout
+		{"public", "public", "public"},                 // single-flow F3-native
+		{"public", "public", "silver"},                 // staging post P-silver
 	} {
 		for _, q := range []string{refreshDayEquipmentSQL, refreshShiftEquipmentSQL} {
-			out := fmt.Sprintf(q, schemas[0], schemas[1])
+			out := fmt.Sprintf(q, schemas[0], schemas[1], schemas[2])
 			if strings.Contains(out, "%!") || strings.Contains(out, "%[") {
 				t.Errorf("Sprintf verb residue for %v", schemas)
 			}
+		}
+	}
+}
+
+// TestLiveDayKeyIsProductionDay — both live-DAY refreshers must key the gold day
+// row by the shift-calendar production-day label, never the UTC calendar date
+// (2026-10-13: the UTC key served the next, empty production day between UTC
+// midnight and the day begin → front4 Home 0 / 0 %).
+func TestLiveDayKeyIsProductionDay(t *testing.T) {
+	for name, sql := range map[string]string{
+		"area":      refreshDayAreaSQL,
+		"equipment": refreshDayEquipmentSQL,
+	} {
+		if !strings.Contains(sql, "piot_get_day_begin_by_") || !strings.Contains(sql, "v.ts_value = cur.ts_day") {
+			t.Errorf("%s live-day refresh is not keyed by the production-day label", name)
+		}
+		if strings.Contains(sql, "date_trunc('day', now())") {
+			t.Errorf("%s live-day refresh still keys by the UTC calendar date", name)
 		}
 	}
 }

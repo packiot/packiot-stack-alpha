@@ -1,5 +1,5 @@
 -- 07-oee-output-clamp-backfill-and-checks.sql — ADR-0037 output-invariant, finished.
--- __SCH__ = target schema (public on packiot_shadow / F3).
+-- __SCH__ = target schema (public on packiot_analytics / F3).
 --
 -- CONTEXT. The rollup code now clamps every served OEE ratio to ≤1 (the #576
 -- shift-grain LEAST, extended to hour/day/week-month/area-site/PO-recalc/

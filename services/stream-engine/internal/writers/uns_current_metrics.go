@@ -31,7 +31,7 @@ func (w *UnsMetrics) CanWrite(kind sparkplug.MetricKind) bool {
 // ADR-0010 Phase 3 shadow-mode DB comparison.
 func (w *UnsMetrics) Build(ctx context.Context, m *sparkplug.Metric, _ string, schema string) (*Query, error) {
 	topic := m.TopicForRegister()
-	info, err := w.resolver.Resolve(ctx, topic)
+	info, err := w.resolver.ResolveMetric(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("resolve topic %s: %w", topic, err)
 	}

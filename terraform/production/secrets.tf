@@ -184,6 +184,88 @@ resource "aws_secretsmanager_secret_version" "rabbitmq_edge_transformer_creds" {
   lifecycle { ignore_changes = [secret_string] }
 }
 
+# ── Least-privilege RabbitMQ users for the renamed services (PROMOTION 2026-10) ─
+# compose.production.yml (promoted from staging) reads
+#   stream-engine     → packiot/production/rabbitmq-stream-engine-creds
+#   sparkplug-decoder → packiot/production/rabbitmq-sparkplug-decoder-creds
+#                       (also ingest-shim, same as staging)
+# Unlike the two dry-run secrets above (which reuse the admin `packiot` user),
+# these are REAL least-privilege users: scripts/render-rabbitmq-definitions.sh
+# renders them into /opt/packiot/rabbitmq/definitions.json from
+# monitoring/rabbitmq/definitions.template.json (permission regexes identical to
+# staging), and rabbitmq.conf `load_definitions` re-creates them on every boot.
+# Staging's equivalents were hand-created; here they are codified.
+# AUTHORED, NOT APPLIED — apply before the promotion deploy (doc §6 B1).
+resource "random_password" "rabbitmq_stream_engine" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "rabbitmq_sparkplug_decoder" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "rabbitmq_stream_engine_creds" {
+  name                    = "packiot/production/rabbitmq-stream-engine-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_stream_engine_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_stream_engine_creds.id
+  secret_string = jsonencode({
+    username = "stream-engine"
+    password = random_password.rabbitmq_stream_engine.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
+resource "aws_secretsmanager_secret" "rabbitmq_sparkplug_decoder_creds" {
+  name                    = "packiot/production/rabbitmq-sparkplug-decoder-creds"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_sparkplug_decoder_creds" {
+  secret_id = aws_secretsmanager_secret.rabbitmq_sparkplug_decoder_creds.id
+  secret_string = jsonencode({
+    username = "sparkplug-decoder"
+    password = random_password.rabbitmq_sparkplug_decoder.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
+# ── Internal keys for the promoted read plane (PROMOTION 2026-10, B5) ─────────
+#   internal_api_key    → INTERNAL_API_KEY (read-api /internal/resolve-device ↔
+#                         decoder REFDATA_INTERNAL_KEY, ADR-0061)
+#   readapi_ro_password → READAPI_RO_PASSWORD (read-api's least-privilege DB
+#                         login; the SAME value must be set on the `readapi_ro`
+#                         role after the transplant: ALTER ROLE readapi_ro LOGIN
+#                         PASSWORD … — runbook §6.4)
+# app_init.sh writes both into /opt/packiot/.env. AUTHORED, NOT APPLIED.
+resource "random_password" "internal_api_key" {
+  length  = 40
+  special = false
+}
+
+resource "random_password" "readapi_ro" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "internal_keys" {
+  name                    = "packiot/production/internal-keys"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret_version" "internal_keys" {
+  secret_id = aws_secretsmanager_secret.internal_keys.id
+  secret_string = jsonencode({
+    internal_api_key    = random_password.internal_api_key.result
+    readapi_ro_password = random_password.readapi_ro.result
+  })
+  lifecycle { ignore_changes = [secret_string] }
+}
+
 # ── refdata-api per-tenant query keys ─────────────────────────────────────────
 # refdata-api reads QUERY_API_KEYS from this secret (deploy fills
 # REFDATA_QUERY_API_KEYS in .env; compose passes it through as

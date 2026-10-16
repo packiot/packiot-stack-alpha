@@ -1,5 +1,5 @@
 -- 08-oee-full-bounds-and-po-summary.sql — ADR-0037 output-invariant, tightened.
--- __SCH__ = target schema (public on packiot_shadow / F3). Idempotent.
+-- __SCH__ = target schema (public on packiot_analytics / F3). Idempotent.
 --
 -- CONTEXT. Migration 07 landed the UPPER-BOUND guard (oee* ≤ 1) because the code
 -- clamp was only LEAST(ratio,1) — no lower bound, so a `BETWEEN 0 AND 1` would

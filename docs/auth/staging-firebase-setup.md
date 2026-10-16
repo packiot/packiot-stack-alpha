@@ -105,7 +105,7 @@ Firebase console → **Project settings → Service accounts** tab:
 Once the staging project + web config + service-account key exist, the migration follow-up (tracked under #54 / ADR-0033) is:
 
 1. **Mint the `packiot` test user** in the **`packiot-staging`** project (Admin SDK `createUser`, using the step-4 staging SA key — NOT the dead prod key). Record its `uid`.
-2. **Seed `users.id_user_firebase`** with that `uid` in **both** staging databases — the F1 (`packiot`) and F3 (`packiot_shadow`) planes — on a row that has a non-NULL `id_enterprise` and `active = true`, so refdata's `usersEnterpriseSQL` resolves it to a tenant. (A Firebase uid with no matching `users` row fails closed with 401 by design — see ADR-0033 §1.1.)
+2. **Seed `users.id_user_firebase`** with that `uid` in **both** staging databases — the F1 (`packiot`) and F3 (`packiot_analytics`) planes — on a row that has a non-NULL `id_enterprise` and `active = true`, so refdata's `usersEnterpriseSQL` resolves it to a tenant. (A Firebase uid with no matching `users` row fails closed with 401 by design — see ADR-0033 §1.1.)
 3. Do steps 1–2 **atomically per user** — this is exactly the CS-Admin provisioning flow ADR-0033 Decision 7 formalizes (create Firebase user in the correct per-ENV project **and** seed the `uid → id_enterprise` mapping in one transaction). For the one-off staging test user a manual mint + seed is fine; going forward CS-Admin owns this.
 
 After that, flip `front4/.env.staging` (step 3) to the staging config and staging front4 login runs against `packiot-staging`, fully isolated from prod.

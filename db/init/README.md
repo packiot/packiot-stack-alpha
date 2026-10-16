@@ -1,7 +1,10 @@
 # db/init — local-dev Postgres bootstrap schema
 
+> **2026-10-07:** the legacy local harness that mounted `db/init/` (compose.development.yml) was removed (ADR-0060 P2). The dev DB is now the anonymized seed image (`dev/seed`); `db/init/*` has no runner left and is kept for reference only — ORPHANED.
+
+
 These SQL files are mounted into `postgres:/docker-entrypoint-initdb.d/` by
-`compose.development.yml` only. They run **once**, on the first boot of the
+`the dev/ environment (ADR-0060; formerly compose.development.yml)` only. They run **once**, on the first boot of the
 local-dev Postgres container, to create the core OEE schema + seed enough
 rows to exercise the pipeline end-to-end.
 

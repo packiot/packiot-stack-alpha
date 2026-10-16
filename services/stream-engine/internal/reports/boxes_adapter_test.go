@@ -21,7 +21,7 @@ func TestBoxesAdapterShape(t *testing.T) {
 		}
 	}
 	for _, m := range []string{
-		"time_bucket($3::interval, ts_value)",
+		"date_bin($3::interval, ts_value, $6::timestamptz)", // = time_bucket with reportBucketOrigin (ADR-0063 C1)
 		"GROUP BY 3, 4, id_equipment, id_area, id_site",
 		"ON CONFLICT (customer_id, label_key, ts_value, id_order)",
 	} {
@@ -44,12 +44,15 @@ func TestBoxesAdapterShape(t *testing.T) {
 func TestBoxesBridgeShape(t *testing.T) {
 	for _, m := range []string{
 		"child.cd_equipment = $1", "parent.cd_equipment = $2",
-		"time_bucket($4::interval", "label_key = $5",
+		"date_bin($4::interval, b.ts_value, $7::timestamptz)", "label_key = $5",
 		"ON CONFLICT (ts_value, id_equipment)",
 	} {
 		if !strings.Contains(bridgeSQL, m) {
 			t.Errorf("bridge SQL lost %q", m)
 		}
+	}
+	if strings.Contains(bridgeSQL+counterSQL, "time_bucket") {
+		t.Error("ADR-0063 C1: no TimescaleDB time_bucket in the reports (date_bin with its 2000-01-03 origin)")
 	}
 	for _, banned := range []string{"TL117", "Packer", "= 13"} {
 		if strings.Contains(bridgeSQL, banned) {

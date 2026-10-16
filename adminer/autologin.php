@@ -9,7 +9,10 @@ class AutoLogin extends \Adminer\Adminer {
         $this->server   = getenv('ADMINER_DEFAULT_SERVER') ?: '10.10.10.89';
         $this->username = getenv('POSTGRES_USER')          ?: 'postgres';
         $this->password = getenv('POSTGRES_PASSWORD')      ?: '';
-        $this->database = getenv('POSTGRES_DB')            ?: 'packiot';
+        // Default DB = the live single plane, packiot_analytics (F3). The old
+        // POSTGRES_DB fallback pointed at the retired F1 `packiot` plane (audit
+        // 2026-08-21, M7). ADMINER_DEFAULT_DB lets compose override it explicitly.
+        $this->database = getenv('ADMINER_DEFAULT_DB') ?: (getenv('POSTGRES_DB') ?: 'packiot_analytics');
     }
 
     // Pre-fill server/user/password into the login form.

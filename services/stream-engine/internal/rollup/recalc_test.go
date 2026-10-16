@@ -31,8 +31,13 @@ func TestReflagSemantics(t *testing.T) {
 	if !strings.Contains(reflagRunningSQL, "status = 2") {
 		t.Error("running POs must re-enqueue every pass")
 	}
-	if !strings.Contains(reflagRecentSQL, "interval '48 hours'") || !strings.Contains(reflagRecentSQL, "status = 3") {
+	if !strings.Contains(reflagRecentSQL, "interval '48 hours'") || !strings.Contains(reflagRecentSQL, "status IN (3, 4)") {
 		t.Error("finished POs must keep refreshing for 48h")
+	}
+	// The 48 h tail is keyed on the END (2026-09-29): keyed on ts_start, a PO that ran
+	// longer than 48 h was never re-summed after it closed.
+	if !strings.Contains(reflagRecentSQL, "COALESCE(ts_end, ts_start) >= now() - interval '48 hours'") {
+		t.Error("the finished-PO tail must be keyed on ts_end")
 	}
 }
 
@@ -43,9 +48,9 @@ func TestComputeShape(t *testing.T) {
 		"ee.status IN (5, 10, 11)",     // stopped
 		"greatest(ee.ts_event, el.lo)", // overlap math
 		"LEFT JOIN sums",               // phase A always-updates
-		"recalc_needed    = false",
+		"recalc_needed    = false",       // phase A apply clears the flag
 	} {
-		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL+applyValuesSQL, m) {
 			t.Errorf("compute lost %q", m)
 		}
 	}
@@ -59,6 +64,55 @@ func TestComputeShape(t *testing.T) {
 	}
 	if !strings.Contains(computeReflagOpenSQL, "upper(runtime_timerange) IS NULL") {
 		t.Error("open-range reflag lost")
+	}
+}
+
+// TestComputeSplitInstrumentation locks in the line-metered (split-instrumentation)
+// counter-source resolution: a tp=3 line-PO whose counters live on a gross_machine
+// MEMBER must read that member, while every self-metered equipment stays byte-identical.
+func TestComputeSplitInstrumentation(t *testing.T) {
+	// Phase A resolves the value source via COALESCE(gross_machine, id_equipment)
+	// and joins equipment_values on it — NOT on the (possibly empty) line row.
+	for _, m := range []string{
+		"COALESCE(eq.gross_machine, e.id_equipment) AS gross_src",
+		"WHERE ca.id_equipment = el.gross_src",
+		"COALESCE(eq.gross_machine, e.id_equipment) AS ev_src", // Phase B: events from the same member
+		"WHERE ee.id_equipment = el.ev_src",
+	} {
+		if !strings.Contains(computeValuesSQL+computeEventsSQL, m) {
+			t.Errorf("split-instrumentation resolution lost %q", m)
+		}
+	}
+	// The net→gross reconciliation must be GATED on gross_machine IS NOT NULL, so a
+	// self-metered PO with a genuine net=0 (all-scrap) is never rewritten.
+	if !strings.Contains(computeValuesSQL, "el.gross_machine IS NOT NULL AND COALESCE(s.net, 0) = 0") {
+		t.Error("net→gross reconciliation must be gated on gross_machine IS NOT NULL")
+	}
+	// GUARD: Phase A's own-counter source base stays id_equipment — it never FALLS BACK to
+	// lead_machine. (2026-09-25) Line-lead lines are no longer read here at all: their PO
+	// counters come from the explicit, separately-gated computeLineLeadValuesSQL (the same
+	// lead-sourced model as the hour/shift grains), because their own counters were gross-only
+	// (L4/L5 → PO shown as all scrap), net-only (negative scrap) or absent (L3/L8 → 0).
+	if !strings.Contains(computeValuesSQL, "COALESCE(eq.gross_machine, e.id_equipment) AS gross_src") {
+		t.Error("Phase A source must stay COALESCE(gross_machine, id_equipment)")
+	}
+	if strings.Contains(computeEventsSQL, "lead_machine") {
+		t.Error("the events pass must not read lead_machine")
+	}
+	if !strings.Contains(computeValuesSQL, "el.line_lead") || !strings.Contains(applyValuesSQL, "WHEN r.line_lead THEN e.net_production") {
+		t.Error("Phase A must leave line-lead PO counters to computeLineLeadValuesSQL")
+	}
+	// The enterprise gate is rendered from LineLeadScope; with no per-line overrides
+	// it must be exactly the historical predicate.
+	renderedLL := strings.Replace(computeLineLeadValuesSQL, "%[6]s", LineLeadScope{}.Predicate("$2::int[]"), 1)
+	for _, must := range []string{"eq.tp_equipment = 3", "COALESCE(eq.lead_machine, 0) > 0", "eq.id_enterprise = ANY($2::int[])", "COALESCE(sum(r.eff_net), 0) AS net"} {
+		if !strings.Contains(renderedLL, must) {
+			t.Errorf("line-lead PO pass missing gate/invariant %q", must)
+		}
+	}
+	// 2026-09-29: net is never lowered to gross per minute (transit is real output).
+	if strings.Contains(computeLineLeadValuesSQL, "LEAST(r.eff_net, r.eff_gross)") {
+		t.Error("line-lead PO pass must not clamp net to gross per minute")
 	}
 }
 
@@ -102,7 +156,7 @@ func TestGrainMatrix(t *testing.T) {
 	// ideal_production (grain has no ideal_speed column).
 	for _, m := range []string{
 		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)",        // A ∈ [0,1], ::float or bigint div → 0
-		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                                // Q ∈ [0,1]
+		"oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)",                                // Q ≥ 0, uncapped since 2026-09-29
 		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                            // P derived from ideal_production
 	} {
 		if !strings.Contains(grainOeeReconcileSQL, m) {
@@ -118,11 +172,15 @@ func TestGrainMatrix(t *testing.T) {
 	if !strings.Contains(grainRollupSQL, "s.running_time::float / NULLIF(s.total_time - s.planned_downtime, 0)") {
 		t.Error("grainRollupSQL oee_a must cast ::float (bigint columns → integer division → oee_a=0)")
 	}
-	// oee must be the PRODUCT of exactly the three clamped factors (two '*' joining
-	// three GREATEST(LEAST(...)) terms after the `oee =`).
+	// oee must be the PRODUCT of the three factors: A bounded to [0,1] (one
+	// GREATEST(LEAST( term), P and Q uncapped since 2026-09-29 (GREATEST(x, 0)).
 	oeeAssign := grainOeeReconcileSQL[strings.Index(grainOeeReconcileSQL, "oee   ="):]
-	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
-		t.Errorf("canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	oeeExpr := oeeAssign[:strings.Index(oeeAssign, "FROM")]
+	if n := strings.Count(oeeExpr, "GREATEST(LEAST("); n != 1 {
+		t.Errorf("canonical oee: only Availability may be capped, found %d GREATEST(LEAST( terms", n)
+	}
+	if n := strings.Count(oeeExpr, "GREATEST("); n != 3 {
+		t.Errorf("canonical oee must be the product of 3 factors, found %d GREATEST( terms", n)
 	}
 	for _, m := range []string{
 		"s.net / NULLIF(s.ideal_production, 0)",                                // oee (grain variant, pre-reconcile top-down)
@@ -145,7 +203,7 @@ func TestGrainMatrix(t *testing.T) {
 func TestDayCanonicalReconcile(t *testing.T) {
 	for _, m := range []string{
 		"oee_a = GREATEST(LEAST(COALESCE(e.running_time::float / NULLIF(e.available_time, 0), 0), 1), 0)", // A ∈ [0,1], ::float
-		"oee_q = GREATEST(LEAST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 1), 0)",                          // Q ∈ [0,1]; net=0/gross=0 → 0 (never 1)
+		"oee_q = GREATEST(COALESCE(e.net / NULLIF(e.gross, 0), 0), 0)",                          // Q ≥ 0, uncapped (hour transit Q>1 is data); net=0/gross=0 → 0
 		"e.gross * e.available_time / NULLIF(e.ideal_production * e.running_time, 0)",                      // P from ideal_production (no ideal_speed on day)
 	} {
 		if !strings.Contains(dayOeeReconcileSQL, m) {
@@ -156,10 +214,14 @@ func TestDayCanonicalReconcile(t *testing.T) {
 	if !strings.Contains(dayOeeReconcileSQL, "e.running_time::float / NULLIF(e.available_time, 0)") {
 		t.Error("day reconcile Availability must cast ::float (integer columns → integer division → oee_a=0)")
 	}
-	// oee must be the PRODUCT of exactly the three clamped factors (not back-solved).
+	// oee must be the PRODUCT of the three factors (not back-solved): A capped to
+	// [0,1], P and Q uncapped since 2026-09-29.
 	oeeAssign := dayOeeReconcileSQL[strings.Index(dayOeeReconcileSQL, "oee   ="):]
-	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 3 {
-		t.Errorf("day canonical oee must be the product of 3 bounded factors, found %d GREATEST(LEAST( terms", n)
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST(LEAST("); n != 1 {
+		t.Errorf("day canonical oee: only Availability may be capped, found %d GREATEST(LEAST( terms", n)
+	}
+	if n := strings.Count(oeeAssign[:strings.Index(oeeAssign, "FROM")], "GREATEST("); n != 3 {
+		t.Errorf("day canonical oee must be the product of 3 factors, found %d GREATEST( terms", n)
 	}
 	if strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "oee /") || strings.Contains(oeeAssign[:strings.Index(oeeAssign, "FROM")], "e.oee /") {
 		t.Error("day canonical oee must be a·p·q, not back-solved from oee")
@@ -200,45 +262,46 @@ func TestDayShape(t *testing.T) {
 	}
 }
 
-// Day over-mint clamp (task #59): the summed time metrics must be
-// bounded by the TRUE per-equipment production-day length, and that
-// length must NOT be a hardcoded 86400 (DST days are 90000 / 82800s).
-// The behavioural proof (non-hour-aligned over-mint capped, hour-aligned
-// unchanged, DST 90000 not mis-clamped) lives in the golden DB test
-// (day_clamp_golden_test.go, -tags golden); these are the always-on
-// string guards so a refactor can't silently drop the ceiling.
-func TestDayOverMintClamp(t *testing.T) {
-	// The four additive wall-clock time metrics get the LEAST ceiling.
+// Day time sums are stored RAW (2026-10-13, user decision "remove the
+// day-length cap like P and Q"; replaces the task #59 production-day-length
+// ceiling). Every additive time metric is the plain Σ of its hour rows; only
+// the availability RATIO stays capped at 1. A day above its own length is a
+// data-quality signal surfaced by invariant K7 (t-data-invariants-v10), not
+// clamped. The behavioural proof lives in the golden DB test
+// (day_clamp_golden_test.go, -tags golden); these are the always-on string
+// guards so a refactor can't silently reintroduce a ceiling.
+func TestDayStoresRawTimeSums(t *testing.T) {
 	for _, m := range []string{
-		"LEAST(sum(hr.available_time), el.day_len_s)",
-		"LEAST(sum(hr.running_time),   el.day_len_s)",
-		"LEAST(sum(hr.stopped_time),   el.day_len_s)",
-		"LEAST(sum(hr.downtime),   el.day_len_s)",
+		"sum(hr.available_time)   AS available_time",
+		"sum(hr.running_time)     AS running_time",
+		"sum(hr.stopped_time)     AS stopped_time",
+		"sum(hr.downtime)         AS downtime",
+		"sum(hr.planned_downtime) AS planned_downtime",
+		"sum(hr.changeover_time)  AS changeover_time",
+		"sum(hr.no_data_time)        AS no_data_time",
+		"sum(hr.out_of_service_time) AS out_of_service_time",
 	} {
 		if !strings.Contains(dayRollupSQL, m) {
-			t.Errorf("day over-mint clamp lost %q", m)
+			t.Errorf("day time metric no longer a raw sum: %q", m)
 		}
 	}
-	// day_len_s must be grouped through the CTE so the ceiling is per-row.
-	if !strings.Contains(dayRollupSQL, "GROUP BY el.id_equipment, el.ts_value, el.day_len_s") {
-		t.Error("day_len_s must be in the GROUP BY (per-day ceiling)")
-	}
-	// The ceiling source: the day-boundary function, next anchor via the
-	// CALENDAR '1 day' interval (DST-correct) — NEVER a hardcoded 86400.
-	if !strings.Contains(dayEligibleSQL, "piot_get_day_begin_by_equipment(d.id_equipment, d.ts_value + interval '1 day')") {
-		t.Error("day_len_s must source the next anchor from the day-boundary fn")
-	}
-	if !strings.Contains(dayEligibleSQL, "AS day_len_s") {
-		t.Error("day_len_s column missing from the eligibility temp table")
-	}
-	// The ceiling must be the per-row anchor-derived length, never a
-	// hardcoded literal (DST days are 90000 / 82800s). The exact-match
-	// LEAST assertions above already fail if the arg is swapped for a
-	// number; this pins the anti-pattern explicitly for a future reader.
-	for _, antipattern := range []string{"), 86400)", ", 86400.", "day_len_s = 86400"} {
+	// No day-length ceiling of any spelling may come back.
+	for _, antipattern := range []string{
+		"day_len_s", "86400", "90000",
+		"LEAST(sum(hr.available_time)", "LEAST(sum(hr.running_time),", "LEAST(sum(hr.stopped_time)",
+		"LEAST(sum(hr.downtime)", "LEAST(sum(hr.planned_downtime)", "LEAST(sum(hr.changeover_time)",
+		"LEAST(sum(hr.no_data_time)", "LEAST(sum(hr.out_of_service_time)",
+	} {
 		if strings.Contains(dayRollupSQL+dayEligibleSQL, antipattern) {
-			t.Errorf("day length hardcoded via %q — must derive from the day anchors (DST breaks 86400)", antipattern)
+			t.Errorf("day-length cap reintroduced via %q — policy is store raw (2026-10-13)", antipattern)
 		}
+	}
+	// Availability is the one ratio that stays capped at 1 (CHECK
+	// *_oee_bounds: 0 <= oee_a <= 1), and it must divide in float: hour time
+	// columns are integer, so Σ/Σ without the cast is integer division.
+	if !strings.Contains(dayRollupSQL, "GREATEST(LEAST(sum(hr.running_time)::float") ||
+		!strings.Contains(dayRollupSQL, "/ NULLIF(sum(hr.available_time), 0), 1), 0) AS oee_a") {
+		t.Error("day oee_a must be LEAST(Σrunning::float / Σavailable, 1) floored at 0")
 	}
 }
 
@@ -253,7 +316,7 @@ func TestHourShape(t *testing.T) {
 	}
 	for _, m := range []string{
 		"interval '65 minutes'",
-		"ca_agg_equipment_values_1min",     // speed from the 1min tier
+		"equipment_categorical_1min",     // speed from the 1min tier
 		"locf.ideal_production_speed",      // line-OEE fix: LOCF ideal from equipment_values
 		"q.production_speed)",              // ideal fallback (final COALESCE arg)
 		"now() - interval '6 hour'",        // E guard
@@ -266,6 +329,17 @@ func TestHourShape(t *testing.T) {
 	}
 	if !strings.Contains(hourTargetsSQL, "NOT e.recalc_needed") {
 		t.Error("targets must drive from event-hit (cleared) rows only")
+	}
+	// #256 durable fix: the re-flag scope MUST be ⊆ the eligible scope, else a
+	// flagged-but-never-computed row is a permanent phantom. hourEligibleSQL is
+	// tp_equipment > 1 (machines roll up at shift/day, never hourly), so the
+	// re-flag must carry the same tp>1 guard or it re-enqueues tp=1 rows the next
+	// eligibility pass will skip forever (measured: 6,276 stuck tp=1 flags).
+	if !strings.Contains(hourEligibleSQL, "tp_equipment > 1") {
+		t.Error("hour eligibility scope changed — re-flag guard below must track it")
+	}
+	if !strings.Contains(hourReflagSQL, "tp_equipment > 1") {
+		t.Error("hour re-flag must mirror eligibility's tp>1 scope (else tp=1 rows become permanent phantom flags)")
 	}
 }
 
@@ -284,7 +358,7 @@ func TestShiftShape(t *testing.T) {
 		"(ev.ts_total - ev.ts_planned) / (3600 * 24)", // ELAPSED-prorated proportional formula (#80/ADR-0029 D5)
 		"now() + interval '18 hour'",                    // forward re-flag
 	} {
-		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+shiftTargetsSQL+shiftReflagSQL, m) {
+		if !strings.Contains(shiftEligibleSQL+shiftValuesSQL+shiftEventsSQL+shiftEventsUpdateSQL+withOosTarget(shiftTargetsSQL, false, "")+shiftReflagSQL, m) {
 			t.Errorf("shift lost %q", m)
 		}
 	}
@@ -349,8 +423,14 @@ func TestEntityGrainShape(t *testing.T) {
 	if strings.Contains(sall, "site_oee_hourly") || strings.Contains(sall, "site_oee_weekly") || strings.Contains(sall, "site_oee_monthly") {
 		t.Error("site tier must not reference the retired hourly/weekly/monthly grains (#186)")
 	}
-	// Site day-flag re-sourced from the area day grain (tier below).
-	if !strings.Contains(sall, "area_oee_daily ad") || !strings.Contains(sall, "site_oee_daily t SET recalc_needed = true") {
-		t.Error("site day-flag cascade must re-source from area_oee_daily (#186)")
+	// #263: the site DAY grain was dropped (site_oee_daily unread — its only consumer,
+	// current_rest.go→site_live_day, was itself unread). The site tier must no longer
+	// reference site_oee_daily at all (no day-flag/day/day-oeep), but MUST still roll up
+	// site_oee_shift (serving.oee_progress; independent — rolls up area_oee_shift).
+	if strings.Contains(sall, "site_oee_daily") {
+		t.Error("site tier must not reference site_oee_daily (DAY grain dropped in #263)")
+	}
+	if !strings.Contains(sall, "site_oee_shift") {
+		t.Error("site tier must still roll up site_oee_shift (serving.oee_progress)")
 	}
 }

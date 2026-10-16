@@ -75,7 +75,7 @@ Once the tenant is a **server-derived value bound as `$1`**, a cross-tenant read
 
 ### The key→customer_id source of truth (open decision, see §6)
 
-Today the map is `QUERY_API_KEYS="stg-cpack-key:3,stg-sim-key:2,stg-incoplast-key:4"` — a static env parsed once at boot. ADR-0020 already flagged the fragility: **the enterprise id is hardcoded as a literal, positional to seed order**, and ADR-0021 mandates resolving `id_enterprise` from the DB by name rather than baking the number. Surface-1 keeps the env map as the v1 mechanism (it is fail-closed and simple) but **specifies the target**: a keyed lookup against a `customer_api_keys` table (hashed key → `id_enterprise`), cached in-process with a short TTL and a fail-closed miss. This removes the hardcoded id, makes onboarding a tenant a DB insert (not a redeploy), and keeps the hot path a memory read. This is the standing "no hardcoded enterprise ids" directive applied to the credential layer.
+Today the map is `QUERY_API_KEYS="<cpack-read-key>:3,<sim-read-key>:2,<incoplast-read-key>:4"` — a static env parsed once at boot. ADR-0020 already flagged the fragility: **the enterprise id is hardcoded as a literal, positional to seed order**, and ADR-0021 mandates resolving `id_enterprise` from the DB by name rather than baking the number. Surface-1 keeps the env map as the v1 mechanism (it is fail-closed and simple) but **specifies the target**: a keyed lookup against a `customer_api_keys` table (hashed key → `id_enterprise`), cached in-process with a short TTL and a fail-closed miss. This removes the hardcoded id, makes onboarding a tenant a DB insert (not a redeploy), and keeps the hot path a memory read. This is the standing "no hardcoded enterprise ids" directive applied to the credential layer.
 
 ---
 

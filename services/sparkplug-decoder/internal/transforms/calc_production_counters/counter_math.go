@@ -43,6 +43,50 @@ func rolloverAdjustedPrev(prev, cur, counterMax int64, cfg Config) (newPrev int6
 	return 0, false
 }
 
+// clampSpikeIncrement bounds a counter increment to what the equipment could
+// physically produce in the elapsed interval (WS1 — the counter-anomaly gross
+// guard). The existing reset (ADR-0048) and rollover (ADR-0037 f) guards cover a
+// totalizer that RESETS or WRAPS; they do NOT cover a plain forward JUMP — a bad
+// reading where cur ≫ prev without a reset/rollover. Such a jump yields an
+// increment implying an impossible speed (e.g. CPACK eq47/L5: a 108951-in-a-minute
+// consumed increment vs a ~100/min line → PO gross inflated 25–73× vs legacy).
+//
+// Rule: with a positive per-equipment idealRate (parts/min) and a real interval,
+// an increment implying a derived rate above marginK·idealRate is CLAMPED to that
+// ceiling. The bound is per-equipment and marginK is client-configurable (a canning
+// line and a pharma blister line have wildly different plausible rates) — this is
+// the first consumer of the per-client OEE profile (WS3). The guard is INERT when
+// idealRate/interval/marginK is non-positive or the increment is ≤0 (falls back to
+// the raw value, so mis-configuration can never drop legitimate production).
+//
+// Pure — no state, no I/O — exhaustively unit-testable.
+func clampSpikeIncrement(incr int64, idealRate float64, intervalMs int64, marginK float64) (clamped int64, didClamp bool) {
+	if incr <= 0 || idealRate <= 0 || intervalMs <= 0 || marginK <= 0 {
+		return incr, false
+	}
+	ceiling := int64(marginK * idealRate * float64(intervalMs) / 60000.0)
+	if ceiling > 0 && incr > ceiling {
+		return ceiling, true
+	}
+	return incr, false
+}
+
+// spikeGuardRate picks the rated-speed bound for the WS1 spike guard (FU#3):
+// the counters-only IdealRate when it is set (>0), otherwise the per-equipment
+// GuardRatedSpeed (equipments.production_speed, from the client OEE profile).
+// This decouples guard COVERAGE from counters-only MODE: a tenant that reports
+// MachSpeed (IdealRate stays 0) still gets its counter anomalies bounded by its
+// nameplate speed. Returns 0 when neither is set ⇒ the guard stays inert.
+func spikeGuardRate(idealRate, guardRatedSpeed float64) float64 {
+	if idealRate > 0 {
+		return idealRate
+	}
+	if guardRatedSpeed > 0 {
+		return guardRatedSpeed
+	}
+	return 0
+}
+
 // applyTrigCorrections implements Phase 4 — the ***TRIG_* suffix corrections.
 // Ordering matters: the JS's `count_zeros` gate makes TRIG_CS and TRIG_CI
 // exclusive (only one fires per message even if both suffixes present, which

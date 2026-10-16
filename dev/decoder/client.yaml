@@ -1,0 +1,7 @@
+# dev/decoder/client.yaml — the decoder's client config for the local dev environment (ADR-0060 P3).
+# Same skeleton schema as docs/clients/cpack.yaml (tenant_id, customer, environment, equipments); only tenant_id is
+# used at runtime (metric labels). Identity comes from the births' declared device_key, never from this file.
+tenant_id:    dev
+customer:     "Dev seed (anonymized)"
+environment:  dev
+equipments: []

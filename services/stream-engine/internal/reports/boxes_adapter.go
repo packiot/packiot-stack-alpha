@@ -1,7 +1,7 @@
 // boxes_adapter.go — the label-adapter boxes pipeline (design:
 // docs/adr/reference/designs/0014-label-adapter-design.md). Replaces the
 // per-customer boxes13.go: one pool table (customer_reports.boxes),
-// per-tenant DESCRIPTOR rows (public.label_formats), two archetypes.
+// per-tenant DESCRIPTOR rows (config.label_formats), two archetypes.
 // Onboarding another scanner enterprise = one descriptor INSERT,
 // zero code.
 //
@@ -21,7 +21,13 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/jobs"
 )
 
-// LabelFormat is one tenant descriptor (public.label_formats row).
+// LabelFormat is one tenant descriptor (config.label_formats row).
+// reportBucketOrigin is TimescaleDB time_bucket's default origin (Monday 2000-01-03 UTC). The box
+// reports bucket with date_bin(bucket, ts, reportBucketOrigin), which equals time_bucket(bucket, ts)
+// for every interval without months (ADR-0063 C1; months are forbidden by CHECK on the configured
+// bucket columns). Bound as a parameter, not written into the SQL text (caggsplit ratchet).
+var reportBucketOrigin = time.Date(2000, time.January, 3, 0, 0, 0, 0, time.UTC)
+
 type LabelFormat struct {
 	Enterprise                                                      int
 	LabelKey, Archetype                                             string
@@ -35,7 +41,7 @@ const loadFormatsSQL = `
 	       COALESCE(workcenter_field,''), COALESCE(date_field,''),
 	       COALESCE(time_field,''), COALESCE(tz,'UTC'),
 	       COALESCE(bucket::text,'')
-	  FROM %[2]s.label_formats`
+	  FROM %[1]s.label_formats`
 
 // delivery archetype: each label carries its own date + ISO-8601
 // duration time (composed at the descriptor's tz) and workcenter.
@@ -72,7 +78,7 @@ const deliverySQL = `
 const counterSQL = `
 	INSERT INTO customer_reports.boxes
 	       (customer_id, label_key, ts_value, id_order, id_equipment, id_area, id_site, net_production, qty)
-	SELECT $2::int, $1::text, time_bucket($3::interval, ts_value),
+	SELECT $2::int, $1::text, date_bin($3::interval, ts_value, $6::timestamptz),
 	       (analogs -> $1::text ->> $4::text),
 	       id_equipment, id_area, id_site,
 	       sum((analogs -> $1::text ->> $5::text)::double precision), count(*)
@@ -86,7 +92,7 @@ const counterSQL = `
 // RunBoxes executes one pass for one destination: load descriptors,
 // run each through its archetype.
 func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
-	rows, err := d.Pool.Query(ctx, fmt.Sprintf(loadFormatsSQL, d.EvSchema, d.RefSchema))
+	rows, err := d.Pool.Query(ctx, fmt.Sprintf(loadFormatsSQL, d.ConfigSchema))
 	if err != nil {
 		return 0, fmt.Errorf("load label_formats: %w", err)
 	}
@@ -111,7 +117,7 @@ func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
 		var tag int64
 		switch f.Archetype {
 		case "delivery":
-			t, err := d.Pool.Exec(ctx, fmt.Sprintf(deliverySQL, d.EvSchema, d.RefSchema),
+			t, err := d.Pool.Exec(ctx, fmt.Sprintf(deliverySQL, d.SilverSchema, d.RefSchema),
 				f.LabelKey, f.OrderField, f.QtyField, f.WorkcenterField,
 				f.DateField, f.TimeField, f.Enterprise, f.TZ)
 			if err != nil {
@@ -119,8 +125,8 @@ func RunBoxes(ctx context.Context, d flows.Dest) (int64, error) {
 			}
 			tag = t.RowsAffected()
 		case "counter":
-			t, err := d.Pool.Exec(ctx, fmt.Sprintf(counterSQL, d.EvSchema),
-				f.LabelKey, f.Enterprise, f.Bucket, f.OrderField, f.QtyField)
+			t, err := d.Pool.Exec(ctx, fmt.Sprintf(counterSQL, d.SilverSchema),
+				f.LabelKey, f.Enterprise, f.Bucket, f.OrderField, f.QtyField, reportBucketOrigin)
 			if err != nil {
 				return total, fmt.Errorf("counter %d/%s: %w", f.Enterprise, f.LabelKey, err)
 			}

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "cpack_staging_tee",
+    "type": "function",
+    "z": "cpack_reader_tab",
+    "name": "STAGING twin tee \u2192 /v2/tags",
+    "func": "// Phase-2 twin cutover: re-POST the SAME rawtag payload to the CLOUD agent\n// via cpack-ingest.staging:8447/v2/tags. Runs on a CLONED msg (2nd wire off\n// normalize) so the PROD branch is untouched. Mutate+return (proven pattern).\nconst key = env.get(\"STAGING_TEE_INGEST_KEY\") || \"pk_cpack_af247745a1669a72bd82d70094a47d1588153422b03a4e6d\";\nconst url = env.get(\"STAGING_TEE_URL\") || \"https://cpack-ingest.staging.packiot.app:8447/v2/tags\";\nif (!msg.payload || !Array.isArray(msg.payload.tags) || msg.payload.tags.length===0) return null;\nmsg.url = url;\nmsg.headers = { \"Content-Type\":\"application/json\", \"X-Ingest-Key\": key };\nnode.warn(\"__TEE__ key=\"+key.slice(0,10)+\" tags=\"+msg.payload.tags.length);\nreturn msg;\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1120,
+    "y": 643,
+    "wires": [
+      [
+        "cpack_staging_http"
+      ]
+    ]
+  },
+  {
+    "authType": "",
+    "headers": [],
+    "id": "cpack_staging_http",
+    "insecureHTTPParser": false,
+    "method": "POST",
+    "name": "POST -> cloud :8447/v2/tags (twin)",
+    "paytoqs": "ignore",
+    "persist": false,
+    "proxy": "",
+    "ret": "obj",
+    "senderr": true,
+    "tls": "",
+    "type": "http request",
+    "url": "",
+    "wires": [
+      [
+        "cpack_staging_dbg"
+      ]
+    ],
+    "x": 1370,
+    "y": 643,
+    "z": "cpack_reader_tab"
+  },
+  {
+    "id": "cpack_staging_dbg",
+    "type": "debug",
+    "z": "cpack_reader_tab",
+    "name": "twin tee resp",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "complete": "statusCode",
+    "x": 1600,
+    "y": 643,
+    "wires": []
+  }
+]

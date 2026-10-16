@@ -14,7 +14,7 @@
 // The F3 single-flow collapse DROPPED the F2 (shadow_go_port) plane, so GATE 1/3
 // (which compare F2 to F3) no longer have a second plane and were retired. GATE 2
 // was never a comparison — it is a per-plane invariant — so it SURVIVES, now run
-// on F3 (`public` in packiot_analytics) only. That is this file.
+// on F3 (gold/core in packiot_analytics; #251 de-shim) only. That is this file.
 //
 // The overflow class also has a DB-layer backstop now: the `*_oee_bounds` CHECK
 // constraints (BETWEEN 0 AND 1, #663) reject an overflow-driven oee blow-up at the
@@ -54,7 +54,7 @@ var overflowSurfaces = []struct{ Name, SQL string }{
 		       s.running_time::text,
 		       EXTRACT(epoch FROM (s.ts_end - s.ts_value))::text AS span
 		  FROM %s.equipment_oee_shift s
-		  JOIN public.equipments e ON e.id_equipment = s.id_equipment
+		  JOIN core.equipments e ON e.id_equipment = s.id_equipment
 		 WHERE e.id_enterprise = $1
 		   AND s.ts_value >= now() - interval '3 days'
 		   AND s.ts_end   <  now() - interval '3 hours'
@@ -67,7 +67,7 @@ var overflowSurfaces = []struct{ Name, SQL string }{
 		       r.running_time::text,
 		       EXTRACT(epoch FROM (upper(r.runtime_timerange) - lower(r.runtime_timerange)))::text AS span
 		  FROM %s.production_orders_runtime r
-		  JOIN public.equipments e ON e.id_equipment = r.id_equipment
+		  JOIN core.equipments e ON e.id_equipment = r.id_equipment
 		 WHERE e.id_enterprise = $1
 		   AND lower(r.runtime_timerange) >= now() - interval '3 days'
 		   AND upper(r.runtime_timerange) <  now() - interval '3 hours'
@@ -150,7 +150,7 @@ func RunSentinel(ctx context.Context, f3 *pgxpool.Pool, enterprises []int) (*Sen
 	rep := &SentinelReport{}
 	for _, ent := range enterprises {
 		for _, o := range overflowSurfaces {
-			v, err := fetchOverflow(ctx, f3, o.SQL, "public", ent)
+			v, err := fetchOverflow(ctx, f3, o.SQL, "gold", ent)
 			if err != nil {
 				return rep, fmt.Errorf("overflow %s ent=%d: %w", o.Name, ent, err)
 			}

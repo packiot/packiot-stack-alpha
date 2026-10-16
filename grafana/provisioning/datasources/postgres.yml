@@ -14,7 +14,9 @@ datasources:
     secureJsonData:
       password: $POSTGRES_PASSWORD
     jsonData:
-      database: $POSTGRES_DB
+      # packiot_analytics, not $POSTGRES_DB: on staging that is the retired F1 `packiot` DB, where the
+      # dashboards' gold tables (equipment_oee_shift, area_oee_shift) do not exist (2026-10-15)
+      database: packiot_analytics
       sslmode: disable
       maxOpenConns: 25
       maxIdleConns: 10

@@ -9,7 +9,7 @@ func TestDeriverPortFidelity(t *testing.T) {
 	both := upsertSQL + correctSQL
 	for _, m := range []string{"interval '25 hours'", "interval '10 seconds'", "status_type = 4",
 		"tp_equipment > 0", "ON CONFLICT (id_equipment, ts_event)",
-		"interval '1 day'", "forced_creation_system", "ca_discrete_changes_1s"} {
+		"interval '1 day'", "forced_creation_system", "date_trunc('second', ev.ts_value)", "equipment_values ev"} {
 		if !strings.Contains(both, m) {
 			t.Errorf("port lost rule: %q", m)
 		}

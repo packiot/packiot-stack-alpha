@@ -61,6 +61,33 @@ output "github_runner_next_step" {
   EOT
 }
 
+output "ssm_connect_ci_runner" {
+  description = "Connect to the dedicated CI runner via SSM (no SSH/inbound; SSM-only)"
+  value       = "aws ssm start-session --target ${aws_instance.ci_runner.id} --region ${var.aws_region}"
+}
+
+output "ci_runner_next_steps" {
+  description = "How to activate the self-hosted org CI runner (full runbook: docs/ci-selfhosted-runner-runbook.md)"
+  value       = <<-EOT
+    1. Create a GitHub PAT that can register ORG runners:
+       - Fine-grained: Organization permissions → "Self-hosted runners" =
+         Read and write (the `manage_runners:org` capability), org = ${var.github_org}
+       - OR classic PAT with `admin:org` scope
+    2. Store it (replaces the terraform placeholder; ignore_changes keeps it):
+         aws secretsmanager put-secret-value \
+           --secret-id packiot/production/ci-runner-github-pat \
+           --secret-string '{"pat":"github_pat_XXX","org":"${var.github_org}"}' \
+           --region ${var.aws_region}
+    3. terraform apply  (boots the box; its user_data auto-registers the runner)
+    4. Verify "Idle" at:
+         https://github.com/organizations/${var.github_org}/settings/actions/runners
+       (or SSM in and: sudo /opt/packiot/register-ci-runner.sh)
+    5. ONLY THEN flip front4's .github/workflows/ci.yml:
+         runs-on: ubuntu-latest  →  runs-on: [self-hosted, linux, packiot-ci]
+       (flipping before the runner is Idle queues jobs forever.)
+  EOT
+}
+
 output "rescue_root_password_retrieval" {
   description = "How to retrieve the EC2 Serial Console rescue root password"
   value       = "aws secretsmanager get-secret-value --secret-id packiot/production/ec2-rescue --region ${var.aws_region} --query SecretString --output text"
@@ -75,6 +102,8 @@ output "estimated_monthly_cost" {
   description = "Approximate AWS bill for the production environment (post W2 ingest + W6 DB split)"
   value = {
     app_ec2_on_demand = "~$24.00  (t4g.medium on-demand, 730h — bump to t4g.large in W6.3 once the 8 extra services land)"
+    ci_runner_ec2     = "~$30.00  (t3.medium on-demand, 730h; ~$9 on spot — pays for itself vs GitHub Free's 2,000-min cap that halts CI org-wide)"
+    ci_runner_ebs     = "~$3.20   (40GB gp3)"
     app_ebs_volume    = "$5.12    (64GB gp3)"
     db_ec2_on_demand  = "~$118.00 (r7g.large 16GB on-demand, 730h; ~$236 if bumped to r7g.xlarge)"
     db_ebs_volume     = "~$13.00  (100GB gp3 + 1000 provisioned IOPS + 125 extra MB/s over baseline)"

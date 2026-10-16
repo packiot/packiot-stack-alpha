@@ -108,7 +108,7 @@ func mapDowntime(req *DowntimeRequest, idEnterprise int) (*edgeCall, error) {
 // tree), not in the raw operator click, so the tee node must resolve them.
 func mapPO(req *PORequest, idEnterprise int) (*edgeCall, error) {
 	switch {
-	case req.IDOrder == nil:
+	case req.IDOrder.IsZero():
 		return nil, unmapped("id_order is required but was not supplied (operator-selected order number, msg.payload.new_po)")
 	case req.IDSite == nil:
 		return nil, unmapped("id_site is required but was not resolved from packml_topic %q", req.PackmlTopic)
@@ -127,7 +127,8 @@ func mapPO(req *PORequest, idEnterprise int) (*edgeCall, error) {
 		IDSite:                  *req.IDSite,
 		IDArea:                  *req.IDArea,
 		IDEquipment:             *req.IDEquipment,
-		IDOrder:                 *req.IDOrder,
+		IDOrder:                 req.IDOrder.String(),
+		OrderNumber:             req.IDOrder.String(),
 		ProductionOrderQuantity: *req.ProductionOrderQuantity,
 		Timestamp:               req.Timestamp,
 		IDLabel:                 req.IDLabel, // nil → omitted (optional/nullable in edge DTO)

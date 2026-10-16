@@ -40,6 +40,7 @@ tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
   - topic: ACME/SP/LINE1/M1
+    device_key: dk_3beaa1e16902625a8ee875e605e4cc14
     id_equipment: 9001
     tp_equipment: 1
     id_unit: 9001
@@ -216,6 +217,7 @@ tee:
   ingest_url: https://localhost:8444/v1/tags
 equipment:
   - topic: ACME/SP/LINE1/M1
+    device_key: dk_a690ddb746fdb2f3796ab344fde8e321
     id_equipment: 9001
     tp_equipment: 1
     id_unit: 9001

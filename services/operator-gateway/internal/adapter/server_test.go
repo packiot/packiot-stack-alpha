@@ -418,7 +418,8 @@ func TestPO_Create_Mapping(t *testing.T) {
 		IDSite:                  resSite,      // resolved
 		IDArea:                  resArea,      // resolved
 		IDEquipment:             resEquipment, // resolved
-		IDOrder:                 218237,
+		IDOrder:                 "218237",
+		OrderNumber:             "218237",
 		ProductionOrderQuantity: 5000,
 		Timestamp:               "2026-07-08 13:56:55",
 		NmProductionOrder:       "FILME OPACO 50MIC",
@@ -428,6 +429,68 @@ func TestPO_Create_Mapping(t *testing.T) {
 	}
 	if v := counterValue(t, reg, "po", outcomeAccepted); v != 1 {
 		t.Fatalf("want 1 accepted metric, got %v", v)
+	}
+}
+
+// ADR-0062: the client number is TEXT — alphanumeric, zero-padded and dotted
+// numbers pass through verbatim (string or JSON number in), and go out to
+// edge-api as a STRING in both idOrder and orderNumber.
+func TestPO_Create_OrderNumberText(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`"ORD-2026/77"`, "ORD-2026/77"},
+		{`"08396260"`, "08396260"},
+		{`834.058`, "834.058"},
+		{`"  A1 "`, "A1"},
+		{`218237`, "218237"},
+	} {
+		fp := &fakePoster{result: &edgeResult{statusCode: 201, body: []byte(`Success!`)}}
+		srv, _, _ := newTestServer(t, fp)
+		body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_order":` + c.in +
+			`,"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
+		rec := do(t, srv, "/operator/po", testKey, body)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("%s: want 202, got %d (%s)", c.in, rec.Code, rec.Body.String())
+		}
+		got := fp.last.body.(edgeCreateAndStartPO)
+		if got.IDOrder != c.want || got.OrderNumber != c.want {
+			t.Fatalf("%s: idOrder=%q orderNumber=%q, want %q", c.in, got.IDOrder, got.OrderNumber, c.want)
+		}
+		wire, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantWire := `"idOrder":"` + c.want + `","orderNumber":"` + c.want + `"`
+		if !strings.Contains(string(wire), wantWire) {
+			t.Fatalf("%s: wire body %s lacks %s", c.in, wire, wantWire)
+		}
+	}
+}
+
+// An empty / blank / null order number is "not supplied" → 422 naming id_order.
+func TestPO_422_BlankOrderNumber(t *testing.T) {
+	for _, in := range []string{`""`, `"   "`, `null`} {
+		fp := &fakePoster{}
+		srv, _, _ := newTestServer(t, fp)
+		body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_order":` + in +
+			`,"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
+		rec := do(t, srv, "/operator/po", testKey, body)
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "id_order") {
+			t.Fatalf("%s: want 422 naming id_order, got %d (%s)", in, rec.Code, rec.Body.String())
+		}
+		if fp.last != nil {
+			t.Fatalf("%s: edge-api must NOT be called", in)
+		}
+	}
+}
+
+// A non-scalar order number is malformed JSON for the contract → 400, no call.
+func TestPO_400_ObjectOrderNumber(t *testing.T) {
+	fp := &fakePoster{}
+	srv, _, _ := newTestServer(t, fp)
+	body := `{"enterprise":4,"packml_topic":"GRANADO/L","id_order":{"x":1},"production_order_quantity":100,"timestamp":"2026-07-08 10:00:00"}`
+	rec := do(t, srv, "/operator/po", testKey, body)
+	if rec.Code != http.StatusBadRequest || fp.last != nil {
+		t.Fatalf("want 400 and no edge call, got %d (called=%v)", rec.Code, fp.last != nil)
 	}
 }
 

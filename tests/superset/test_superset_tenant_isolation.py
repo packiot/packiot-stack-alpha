@@ -22,7 +22,7 @@ Two independent classes of check:
 import psycopg2
 import pytest
 
-from conftest import TENANT_A, TENANT_B
+from conftest import EXACT_GROSS_TOTAL, TENANT_A, TENANT_B
 
 
 # ── catalog helpers ──────────────────────────────────────────────────────────
@@ -232,3 +232,19 @@ def test_guest_clause_cannot_reach_sentinel(applied_db, views):
         rows = _ro_rows(applied_db, v, tenant=TENANT_A,
                         where=f"WHERE id_enterprise = {SUPER_ADMIN_SENTINEL}")
         assert rows == [], f"bi.{v}: tenant-A session + id_enterprise=-1 clause leaked rows {set(rows)}"
+
+
+# t-counter-totals-readers (2026-10-07): bi.live_status appends exact float8 totals.
+# *_total = the stored float8 when stream-engine wrote it, else the float4 *_val (no NULL hole for history).
+def test_live_status_exposes_exact_totals_with_fallback(applied_db):
+    rows = _ro_rows(applied_db, "live_status", TENANT_A)
+    assert rows, "tenant A must see its live_status rows"
+    with psycopg2.connect(applied_db[1]) as conn, conn.cursor() as cur:
+        cur.execute("SET app.tenant_id = %s", (str(TENANT_A),))
+        cur.execute("SELECT gross_production_total, net_production_total, net_production_val, scrap_total, scrap_val,"
+                    " pg_typeof(gross_production_total)::text FROM bi.live_status ORDER BY id_equipment")
+        got = cur.fetchall()
+    for gross_total, net_total, net_val, scrap_total, scrap_val, typ in got:
+        assert typ == "double precision"
+        assert gross_total == EXACT_GROSS_TOTAL, "exact float8 total must win, unrounded"
+        assert net_total == net_val and scrap_total == scrap_val, "NULL total must fall back to *_val"

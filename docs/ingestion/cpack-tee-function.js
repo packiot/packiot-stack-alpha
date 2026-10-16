@@ -15,7 +15,7 @@
 //   3. Leaves msg.payload as the envelope so the downstream `http request`
 //      node POSTs it verbatim. The shim republishes it VERBATIM onto the
 //      `oee` exchange (routing key sparkplug.data.cpack) → oeecloud-worker →
-//      packiot_shadow (F3), tenant-routed to CPACK (ent 3 staging) via the
+//      packiot_analytics (F3), tenant-routed to CPACK (ent 3 staging) via the
 //      already-seeded packml_register rows.
 //
 // KEY HANDLING (do NOT paste the secret into this flow):

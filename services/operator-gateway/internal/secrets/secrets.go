@@ -28,7 +28,7 @@ import (
 
 // credsSourceEnv is the literal value of $CREDS_SOURCE that switches
 // FetchDBCreds from AWS Secrets Manager to plain env vars. Used ONLY in
-// compose.development.yml — never in staging/prod. On a local dev laptop
+// dev/ (ADR-0060, formerly compose.development.yml) — never in staging/prod. On a local dev laptop
 // there's no IAM role + no SM reachability, so the SM call would block ~30s
 // then fail. CREDS_SOURCE=env tells the adapter "trust the compose env vars".
 //
@@ -164,7 +164,7 @@ func (c *DBCreds) Redacted(appName string) string {
 }
 
 // fetchDBCredsFromEnv is the CREDS_SOURCE=env path. Reads DB_* env vars with
-// sensible defaults for host/port/database (matching compose.development.yml's
+// sensible defaults for host/port/database (matching dev/ (ADR-0060, formerly compose.development.yml)'s
 // postgres service). User + password have no defaults — a loud crash at boot
 // beats an adapter that mysteriously can't auth.
 func fetchDBCredsFromEnv() (*DBCreds, error) {

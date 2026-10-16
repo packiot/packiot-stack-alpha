@@ -1,14 +1,15 @@
 package clientdescriptor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// TestScaffold_RoundTrips is the core scaffold contract: whatever Scaffold emits
-// must be a VALID descriptor — i.e. the commented YAML round-trips back through
-// Parse (the same path onboard-gen and the onboard API run). A scaffold that does
-// not parse would hand the CS engineer a broken starting point.
+// TestScaffold_RoundTrips is the core scaffold contract (ADR-0061 P1): Scaffold emits a valid DRAFT — every
+// rule holds except the device_key requirement, because a fresh tenant's equipment has no core.device_bindings
+// rows yet (edge-api stamps the keys when the real descriptor is saved). So: the emitted YAML is rejected by
+// Parse ONLY for the missing keys, and once keys are stamped the descriptor validates fully.
 func TestScaffold_RoundTrips(t *testing.T) {
 	opts := ScaffoldOptions{Tenant: "acme", Site: "sp", Lines: 2, Protocols: []string{"s7", "modbus"}}
 
@@ -16,12 +17,23 @@ func TestScaffold_RoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScaffoldYAML: %v", err)
 	}
+	if _, err := Parse(yamlBytes); err == nil || !strings.Contains(err.Error(), "device_key") {
+		t.Fatalf("an unstamped scaffold must fail Parse on device_key only, got: %v\n%s", err, yamlBytes)
+	}
 
-	// The emitted document (header comments + spine + commented tag-map guide) must
-	// parse + validate as-is.
-	d, err := Parse(yamlBytes)
+	d, err := Scaffold(opts)
 	if err != nil {
-		t.Fatalf("scaffold output does not round-trip through Parse: %v\n%s", err, yamlBytes)
+		t.Fatalf("Scaffold: %v", err)
+	}
+	if err := d.ValidateDraft(); err != nil {
+		t.Fatalf("scaffold must be a valid draft: %v", err)
+	}
+	// what edge-api's stampDeviceKeys does on save: the active binding key per equipment
+	for i := range d.Equipment {
+		d.Equipment[i].DeviceKey = fmt.Sprintf("dk_%032x", i+1)
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("stamped scaffold must validate fully: %v", err)
 	}
 
 	// Identity: uppercased tenant + <TENANT>/<SITE> prefix.

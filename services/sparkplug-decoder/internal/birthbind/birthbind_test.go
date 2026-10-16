@@ -39,27 +39,15 @@ type fixtureMetric struct {
 
 func ptr[T any](v T) *T { return &v }
 
-// birthPayload re-hydrates one device's fixture metrics into a SparkPlug B
-// DBIRTH payload. counter_role rides in properties (contract §3); device_key is
-// carried as the SparkPlug <device_id> (the deviceID arg to ApplyBirth) — the
-// common case where the device fixes identity and no per-metric device_key
-// override is needed.
-func birthPayload(dev fixtureDevice) *sparkplug.Payload {
+// nbirthPayload re-hydrates the whole fixture into ONE node-scoped NBIRTH — the
+// sparkplug-agent's real shape: every counter metric carries counter_role AND its
+// declared device_key as properties (contract §3; ADR-0061 D1).
+func nbirthPayload(fx fixture) *sparkplug.Payload {
 	p := &sparkplug.Payload{}
-	for _, m := range dev.Metrics {
-		metric := &sparkplug.Metric{
-			Name:  ptr(m.Name),
-			Alias: ptr(m.Alias),
+	for _, dev := range fx.Devices {
+		for _, m := range dev.Metrics {
+			p.Metrics = append(p.Metrics, metricWithRole(m.Name, m.Alias, m.CounterRole, dev.DeviceKey))
 		}
-		if m.CounterRole != "" {
-			metric.Properties = &sparkplug.PropertySet{
-				Keys: []string{birthbind.PropCounterRole},
-				Values: []*sparkplug.PropertyValue{
-					{Value: &sparkplug.PropertyValue_StringValue{StringValue: m.CounterRole}},
-				},
-			}
-		}
-		p.Metrics = append(p.Metrics, metric)
 	}
 	return p
 }
@@ -115,16 +103,14 @@ type routed struct {
 func TestBirthBoundRouting_CPACK(t *testing.T) {
 	fx := loadFixture(t, "cpack-birth-example.json")
 
-	// device_key → id_equipment, as packml_register (the SSoT) would resolve.
+	// device_key → (id_equipment, id_enterprise), as core.device_bindings resolves (ADR-0061).
 	// L5 = 40004 is the contract's worked example (Appendix B).
-	resolver := birthbind.MapResolver{
-		"CPACK-SC-LINHAS-L5":        40004,
-		"CPACK-SC-LINHAS-L5-BREYER": 40010,
-	}
-	table := birthbind.NewTable(resolver)
-
-	for _, dev := range fx.Devices {
-		table.ApplyBirth(fx.EdgeNodeID, dev.DeviceKey, birthPayload(dev), nil)
+	table := birthbind.NewTable(entResolver{
+		"dk_00000000000000000000000000040004": {IDEquipment: 40004, IDEnterprise: 3},
+		"dk_00000000000000000000000000040010": {IDEquipment: 40010, IDEnterprise: 3},
+	})
+	if res := table.ApplyBirth(fx.GroupID, fx.EdgeNodeID, "", true, nbirthPayload(fx), nil); res.Bound != 5 || res.Skipped() != 0 {
+		t.Fatalf("ApplyBirth = %+v, want 5 bound, 0 skipped", res)
 	}
 
 	// Synthetic DDATA: alias → value. Values mirror the contract's Appendix B.
@@ -144,7 +130,7 @@ func TestBirthBoundRouting_CPACK(t *testing.T) {
 	}
 
 	for alias, value := range ddata {
-		b, ok := table.Lookup(fx.EdgeNodeID, alias)
+		b, ok := table.Lookup(fx.GroupID, fx.EdgeNodeID, alias)
 		if !ok {
 			t.Fatalf("alias %d: expected a live binding, got none", alias)
 		}
@@ -152,11 +138,14 @@ func TestBirthBoundRouting_CPACK(t *testing.T) {
 		if got != want[alias] {
 			t.Errorf("alias %d routed to %+v, want %+v", alias, got, want[alias])
 		}
+		if b.IDEnterprise != 3 {
+			t.Errorf("alias %d: tenant = %d, want 3 (from the binding, D3)", alias, b.IDEnterprise)
+		}
 	}
 
 	// Fail-closed: an alias never declared at birth has no binding → the caller
 	// requests a rebirth and drops the sample (contract §5).
-	if _, ok := table.Lookup(fx.EdgeNodeID, 9999); ok {
+	if _, ok := table.Lookup(fx.GroupID, fx.EdgeNodeID, 9999); ok {
 		t.Errorf("unbound alias 9999 must not resolve")
 	}
 }
@@ -167,13 +156,8 @@ func TestBirthBoundRouting_CPACK(t *testing.T) {
 func TestBirthBoundRouting_Bisnago(t *testing.T) {
 	fx := loadFixture(t, "bisnago-birth-example.json")
 
-	resolver := birthbind.MapResolver{
-		"BISNAGO-SP-LINHAS-L71": 40071,
-	}
-	table := birthbind.NewTable(resolver)
-	for _, dev := range fx.Devices {
-		table.ApplyBirth(fx.EdgeNodeID, dev.DeviceKey, birthPayload(dev), nil)
-	}
+	table := birthbind.NewTable(birthbind.MapResolver{"dk_00000000000000000000000000040071": 40071})
+	table.ApplyBirth(fx.GroupID, fx.EdgeNodeID, "", true, nbirthPayload(fx), nil)
 
 	want := map[uint64]routed{
 		670: {40071, birthbind.RoleGross, 500000},
@@ -181,7 +165,7 @@ func TestBirthBoundRouting_Bisnago(t *testing.T) {
 	}
 	ddata := map[uint64]int64{670: 500000, 671: 480000}
 	for alias, value := range ddata {
-		b, ok := table.Lookup(fx.EdgeNodeID, alias)
+		b, ok := table.Lookup(fx.GroupID, fx.EdgeNodeID, alias)
 		if !ok {
 			t.Fatalf("alias %d: expected a live binding, got none", alias)
 		}
@@ -192,67 +176,122 @@ func TestBirthBoundRouting_Bisnago(t *testing.T) {
 	}
 }
 
-// TestApplyBirth_FailClosed covers the three fail-closed skips: an unresolvable
-// device_key, an unknown counter_role, and a non-counter metric (no role).
+// TestApplyBirth_FailClosed covers every fail-closed outcome: an unresolvable
+// key, an unknown role, a counter with NO declared key (even when the topic has a
+// <device_id> — no fallback, ADR-0061 P2), and a non-counter (ignored, uncounted).
 func TestApplyBirth_FailClosed(t *testing.T) {
-	// Resolver deliberately knows NOTHING → device_key never resolves.
-	table := birthbind.NewTable(birthbind.MapResolver{})
+	const known = "dk_0000000000000000000000000000000a"
+	table := birthbind.NewTable(birthbind.MapResolver{known: 10, "UNKNOWN-DEVICE": 11})
 	p := &sparkplug.Payload{
 		Metrics: []*sparkplug.Metric{
-			// counter with a valid role but unresolvable device_key
-			metricWithRole("L9/gross", 1, "gross"),
-			// unknown role
-			metricWithRole("L9/weird", 2, "banana"),
-			// non-counter: no counter_role property at all
-			{Name: ptr("L9/Status/MachSpeed"), Alias: ptr(uint64(3))},
+			metricWithRole("L9/gross", 1, "gross", "dk_ffffffffffffffffffffffffffffffff"), // no binding
+			metricWithRole("L9/weird", 2, "banana", known),                                // bad role
+			metricWithRole("L9/net", 4, "net", ""),                                        // undeclared
+			{Name: ptr("L9/Status/MachSpeed"), Alias: ptr(uint64(3))},                     // non-counter
 		},
 	}
-	bound, skipped := table.ApplyBirth("edge-x", "UNKNOWN-DEVICE", p, nil)
-	if bound != 0 {
-		t.Errorf("bound = %d, want 0 (nothing should resolve)", bound)
+	// deviceID "UNKNOWN-DEVICE" IS in the resolver: proves it is never used as a key.
+	res := table.ApplyBirth("G", "edge-x", "UNKNOWN-DEVICE", false, p, nil)
+	want := birthbind.BirthResult{Unresolved: 1, BadRole: 1, NoKey: 1}
+	if res != want {
+		t.Errorf("ApplyBirth = %+v, want %+v", res, want)
 	}
-	// alias 1 (unresolvable) + alias 2 (bad role) are skips; alias 3 (non-counter)
-	// is silently ignored, not counted as a skip.
-	if skipped != 2 {
-		t.Errorf("skipped = %d, want 2", skipped)
-	}
-	for _, alias := range []uint64{1, 2, 3} {
-		if _, ok := table.Lookup("edge-x", alias); ok {
+	for _, alias := range []uint64{1, 2, 3, 4} {
+		if _, ok := table.Lookup("G", "edge-x", alias); ok {
 			t.Errorf("alias %d must remain unbound (fail-closed)", alias)
 		}
 	}
 }
 
-// TestApplyBirth_PerMetricDeviceKeyOverride verifies properties["device_key"]
-// overrides the SparkPlug <device_id> fallback (contract §3).
-func TestApplyBirth_PerMetricDeviceKeyOverride(t *testing.T) {
-	table := birthbind.NewTable(birthbind.MapResolver{"OVERRIDE-KEY": 555})
-	m := metricWithRole("x/net", 7, "net")
-	m.Properties.Keys = append(m.Properties.Keys, birthbind.PropDeviceKey)
-	m.Properties.Values = append(m.Properties.Values,
-		&sparkplug.PropertyValue{Value: &sparkplug.PropertyValue_StringValue{StringValue: "OVERRIDE-KEY"}})
-
-	// deviceID fallback is a DIFFERENT key the resolver doesn't know — proving
-	// the per-metric override wins.
-	bound, _ := table.ApplyBirth("edge-y", "DEVICE-ID-FALLBACK", &sparkplug.Payload{Metrics: []*sparkplug.Metric{m}}, nil)
-	if bound != 1 {
-		t.Fatalf("bound = %d, want 1 (override key must resolve)", bound)
+// TestTable_ScopesAndRebirth: bindings are scoped by (group_id, edge_node) — two
+// tenants reusing an edge-node name never see each other's aliases; an NBIRTH
+// replaces the node's bindings (aliases are re-issued), a DBIRTH extends them;
+// LookupName finds the same binding by the birth-declared name.
+func TestTable_ScopesAndRebirth(t *testing.T) {
+	const ka, kb = "dk_000000000000000000000000000000a1", "dk_000000000000000000000000000000b1"
+	table := birthbind.NewTable(entResolver{ka: {IDEquipment: 1, IDEnterprise: 3}, kb: {IDEquipment: 2, IDEnterprise: 5}})
+	nb := func(name string, alias uint64, key string) *sparkplug.Payload {
+		return &sparkplug.Payload{Metrics: []*sparkplug.Metric{metricWithRole(name, alias, "gross", key)}}
 	}
-	b, ok := table.Lookup("edge-y", 7)
-	if !ok || b.IDEquipment != 555 || b.Role != birthbind.RoleNet {
-		t.Errorf("lookup = %+v ok=%v, want {555 net}", b, ok)
+	table.ApplyBirth("CPACK", "agent", "", true, nb("CPACK/L1/gross", 7, ka), nil)
+	table.ApplyBirth("BISPHARMA", "agent", "", true, nb("BISPHARMA/L1/gross", 7, kb), nil)
+
+	if b, _ := table.Lookup("CPACK", "agent", 7); b.IDEquipment != 1 || b.IDEnterprise != 3 {
+		t.Errorf("CPACK alias 7 = %+v, want equipment 1 / enterprise 3", b)
+	}
+	if b, _ := table.Lookup("BISPHARMA", "agent", 7); b.IDEquipment != 2 || b.IDEnterprise != 5 {
+		t.Errorf("BISPHARMA alias 7 = %+v, want equipment 2 / enterprise 5", b)
+	}
+	if b, ok := table.LookupName("CPACK", "agent", "CPACK/L1/gross"); !ok || b.IDEquipment != 1 {
+		t.Errorf("LookupName = %+v ok=%v, want equipment 1", b, ok)
+	}
+	if _, ok := table.LookupName("BISPHARMA", "agent", "CPACK/L1/gross"); ok {
+		t.Error("a name must not resolve across groups")
+	}
+
+	// DBIRTH extends; NBIRTH replaces.
+	table.ApplyBirth("CPACK", "agent", "dev1", false, nb("CPACK/L2/gross", 8, ka), nil)
+	if _, ok := table.Lookup("CPACK", "agent", 7); !ok {
+		t.Error("DBIRTH must not drop the node's other bindings")
+	}
+	table.ApplyBirth("CPACK", "agent", "", true, nb("CPACK/L3/gross", 9, ka), nil)
+	if _, ok := table.Lookup("CPACK", "agent", 7); ok {
+		t.Error("NBIRTH must drop the node's previous aliases")
+	}
+	if _, ok := table.LookupName("CPACK", "agent", "CPACK/L1/gross"); ok {
+		t.Error("NBIRTH must drop the node's previous names")
+	}
+	if table.Len() != 2 { // CPACK alias 9 + BISPHARMA alias 7
+		t.Errorf("Len = %d, want 2", table.Len())
 	}
 }
 
-func metricWithRole(name string, alias uint64, role string) *sparkplug.Metric {
-	return &sparkplug.Metric{
-		Name:  ptr(name),
-		Alias: ptr(alias),
-		Properties: &sparkplug.PropertySet{
-			Keys: []string{birthbind.PropCounterRole},
-			Values: []*sparkplug.PropertyValue{
-				{Value: &sparkplug.PropertyValue_StringValue{StringValue: role}},
-			},
-		},
+// entResolver is a test DeviceResolver that also knows the tenant (like refdata).
+type entResolver map[string]birthbind.Device
+
+func (r entResolver) Resolve(k string) (birthbind.Device, bool) {
+	d, ok := r[k]
+	return d, ok
+}
+
+// metricWithRole builds a birth counter metric; deviceKey "" declares none.
+func metricWithRole(name string, alias uint64, role, deviceKey string) *sparkplug.Metric {
+	ps := &sparkplug.PropertySet{
+		Keys:   []string{birthbind.PropCounterRole},
+		Values: []*sparkplug.PropertyValue{{Value: &sparkplug.PropertyValue_StringValue{StringValue: role}}},
+	}
+	if deviceKey != "" {
+		ps.Keys = append(ps.Keys, birthbind.PropDeviceKey)
+		ps.Values = append(ps.Values, &sparkplug.PropertyValue{Value: &sparkplug.PropertyValue_StringValue{StringValue: deviceKey}})
+	}
+	return &sparkplug.Metric{Name: ptr(name), Alias: ptr(alias), Properties: ps}
+}
+
+// TestApplyBirth_DeclaredRolesBeyondCounters: a non-counter with a declared role and
+// key binds (ADR-0061 D2), a counter's Declared defaults to counter.<role>, and a
+// malformed role is rejected.
+func TestApplyBirth_DeclaredRolesBeyondCounters(t *testing.T) {
+	const k = "dk_000000000000000000000000000000d1"
+	table := birthbind.NewTable(birthbind.MapResolver{k: 7})
+	withRole := func(name string, alias uint64, role string) *sparkplug.Metric {
+		sv := func(v string) *sparkplug.PropertyValue {
+			return &sparkplug.PropertyValue{Value: &sparkplug.PropertyValue_StringValue{StringValue: v}}
+		}
+		return &sparkplug.Metric{Name: ptr(name), Alias: ptr(alias), Properties: &sparkplug.PropertySet{
+			Keys: []string{birthbind.PropRole, birthbind.PropDeviceKey}, Values: []*sparkplug.PropertyValue{sv(role), sv(k)}}}
+	}
+	res := table.ApplyBirth("G", "n", "", true, &sparkplug.Payload{Metrics: []*sparkplug.Metric{
+		withRole("L/Status/StateCurrent", 1, "state.current"),
+		withRole("L/Status/Weird", 2, "Not A Role"),
+		metricWithRole("L/Admin/ProdConsumedCount/1/Unit", 3, "gross", k),
+	}}, nil)
+	if res.Bound != 2 || res.BadRole != 1 {
+		t.Fatalf("ApplyBirth = %+v, want 2 bound / 1 bad_role", res)
+	}
+	if b, _ := table.Lookup("G", "n", 1); b.Declared != "state.current" || b.Role != "" || b.IDEquipment != 7 {
+		t.Errorf("state binding = %+v", b)
+	}
+	if b, _ := table.Lookup("G", "n", 3); b.Declared != "counter.gross" || b.Role != birthbind.RoleGross {
+		t.Errorf("counter binding = %+v", b)
 	}
 }

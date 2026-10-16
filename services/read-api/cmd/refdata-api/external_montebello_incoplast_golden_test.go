@@ -101,19 +101,20 @@ func TestMontebelloDataSyncRawPageQuirk(t *testing.T) {
 	}}
 
 	// (a) page present + non-numeric → echoed as the raw string; no site ⇒
-	//     LIMIT $1 OFFSET $2, default limit 600, offset (1-1)*600 = 0 (page "x"
-	//     parses to the default 1 for the offset math).
+	//     t244: serving.production_data_sync($1=cid) LIMIT $2 OFFSET $3, default
+	//     limit 600, offset (1-1)*600 = 0 (page "x" parses to the default 1 for the
+	//     offset math).
 	req := httptest.NewRequest("GET", "/ext/montebello/data-sync?page=x", nil)
 	req.Header.Set("x-api-key", montebelloKey)
 	_, _, body := serveShim(sh, reader, mbKeys(), montebelloOwner, req)
 	if want := `{"page":"x","results":0,"data":[]}`; body != want {
 		t.Errorf("raw string page: body = %s, want %s", body, want)
 	}
-	if !strings.Contains(gotSQL, "limit $1 offset $2") {
-		t.Errorf("no-site SQL should be `limit $1 offset $2`, got %s", gotSQL)
+	if !strings.Contains(gotSQL, "serving.production_data_sync($1) limit $2 offset $3") {
+		t.Errorf("no-site SQL should be `serving.production_data_sync($1) limit $2 offset $3`, got %s", gotSQL)
 	}
-	if len(gotArgs) != 2 || gotArgs[0] != 600 || gotArgs[1] != 0 {
-		t.Errorf("no-site args = %v, want [600 0]", gotArgs)
+	if len(gotArgs) != 3 || gotArgs[0] != montebelloOwner || gotArgs[1] != 600 || gotArgs[2] != 0 {
+		t.Errorf("no-site args = %v, want [%d 600 0]", gotArgs, montebelloOwner)
 	}
 
 	// (b) page absent → the INT default 1 (not "1").
@@ -124,15 +125,16 @@ func TestMontebelloDataSyncRawPageQuirk(t *testing.T) {
 		t.Errorf("default int page: body = %s, want %s", body2, want)
 	}
 
-	// (c) site present → filter $1, LIMIT $2 OFFSET $3, offset (3-1)*50 = 100.
+	// (c) site present → t244: serving.production_data_sync($1=cid), filter $2,
+	//     LIMIT $3 OFFSET $4, offset (3-1)*50 = 100.
 	req3 := httptest.NewRequest("GET", "/ext/montebello/data-sync?site=abc&page=3&limit=50", nil)
 	req3.Header.Set("x-api-key", montebelloKey)
 	serveShim(sh, reader, mbKeys(), montebelloOwner, req3)
-	if !strings.Contains(gotSQL, "where site = UPPER($1) limit $2 offset $3") {
+	if !strings.Contains(gotSQL, "serving.production_data_sync($1) where site = UPPER($2) limit $3 offset $4") {
 		t.Errorf("site SQL wrong: %s", gotSQL)
 	}
-	if len(gotArgs) != 3 || gotArgs[0] != "abc" || gotArgs[1] != 50 || gotArgs[2] != 100 {
-		t.Errorf("site args = %v, want [abc 50 100]", gotArgs)
+	if len(gotArgs) != 4 || gotArgs[0] != montebelloOwner || gotArgs[1] != "abc" || gotArgs[2] != 50 || gotArgs[3] != 100 {
+		t.Errorf("site args = %v, want [%d abc 50 100]", gotArgs, montebelloOwner)
 	}
 }
 
@@ -184,8 +186,15 @@ func TestMontebelloDataSyncErrorMatrix(t *testing.T) {
 func TestMontebelloEventsGoldenShape(t *testing.T) {
 	sh := shimByPath(t, "/ext/montebello/events")
 	reader := &scriptedReader{fn: func(sql string, args []any) (externalRows, error) {
+		// t244: serving.downtime_sync($1=cid) — the tenant is now an explicit param.
+		if !strings.Contains(sql, "serving.downtime_sync($1)") {
+			t.Errorf("expected serving.downtime_sync, got %s", sql)
+		}
+		if len(args) < 1 || args[0] != montebelloOwner {
+			t.Errorf("serving.downtime_sync must bind $1 = cid (%d); got %v", montebelloOwner, args)
+		}
 		return externalRows{
-			// pack_id is id_equipment_event::bigint (get_downtime_sync_enterprsie_06)
+			// pack_id is id_equipment_event::bigint (serving.downtime_sync)
 			// → node-pg string "88"/"89", NOT a number. duration (int4) would stay a
 			// number but isn't projected by this envelope.
 			cols: []string{"nm_site", "nm_equipment", "ts_event", "ts_end", "pack_id", "last_update"},
@@ -250,10 +259,11 @@ func TestIncoplastEventsGoldenShape(t *testing.T) {
 			// node-pg's stored key order (rawJSON, the reader's reserialized form —
 			// this is a REAL production_orders.custom_field shape). duration (int4) is
 			// not in this envelope.
-			cols: []string{"id_order", "nm_site", "nm_equipment", "cd_shift", "ts_event", "ts_end", "pack_id", "custom_field", "packml_topic", "last_update"},
+			// order_number (ADR-0062 D3, additive, last) = the client's PO number as text.
+			cols: []string{"id_order", "nm_site", "nm_equipment", "cd_shift", "ts_event", "ts_end", "pack_id", "custom_field", "packml_topic", "last_update", "order_number"},
 			rows: [][]any{{5501, "INCO-SITE", "Extrusora 2", "T1", tsUTC(6, 0, 0), tsUTC(6, 10, 0), "1234",
 				rawJSON([]byte(`{"STATUS":1,"id_order":357226,"priority":10,"cd_client":34407,"scrap_factor":44.32910965352669,"PRODUCTION_STEP":62,"VERSION_PRODUCT":"9"}`)),
-				"spBv1.0/inco/DDATA/EX2", tsUTC(6, 11, 0)}},
+				"spBv1.0/inco/DDATA/EX2", tsUTC(6, 11, 0), "5501"}},
 		}, nil
 	}}
 	req := httptest.NewRequest("GET", "/ext/incoplast/events?api_key="+incoplastKey, nil)
@@ -298,10 +308,12 @@ func TestIncoplastJobsGoldenShape(t *testing.T) {
 			// both drivers, no stringify): net_production 1234.5 stays unquoted here,
 			// proving the numeric fix is scoped to numeric/int8 and does NOT touch
 			// float8. custom_field is JSONB → an OBJECT in node-pg's stored key order.
-			cols: []string{"id_production_order", "id_order", "net_production", "gross_production", "ts_start", "ts_end", "id_equipment", "status", "topic", "custom_field", "last_update"},
-			rows: [][]any{{"9001", "OP-778", 1234.5, 1300.0, tsUTC(6, 0, 0), tsUTC(14, 0, 0), 42, 3, "spBv1.0/inco/DDATA/EX2",
+			// ADR-0062: an alphanumeric client number — id_order (int4) holds the internal
+			// negative placeholder; order_number (additive, last) carries "OP-778".
+			cols: []string{"id_production_order", "id_order", "net_production", "gross_production", "ts_start", "ts_end", "id_equipment", "status", "topic", "custom_field", "last_update", "order_number"},
+			rows: [][]any{{"9001", -7, 1234.5, 1300.0, tsUTC(6, 0, 0), tsUTC(14, 0, 0), 42, 3, "spBv1.0/inco/DDATA/EX2",
 				rawJSON([]byte(`{"STATUS":1,"id_order":356337,"priority":10,"cd_client":542113,"scrap_factor":20.895905129091858,"PRODUCTION_STEP":62,"VERSION_PRODUCT":"5"}`)),
-				tsUTC(14, 0, 5)}},
+				tsUTC(14, 0, 5), "OP-778"}},
 		}, nil
 	}}
 	req := httptest.NewRequest("GET", "/ext/incoplast/jobs?api_key="+incoplastKey, nil)
@@ -359,10 +371,14 @@ func TestMomentZFormat(t *testing.T) {
 
 // ── Drift gate: the frozen Montebello/Incoplast objects are carried in ────────
 
-// TestMontebelloIncoplastBackingObjectsAreDriftGated proves the frozen view,
-// the set-returning function (with its arity), and the guard relations all land
-// in the contract-drift dump as external objects (existence-only), so a dropped/
-// renamed prod object blocks the flip fail-closed instead of 500ing a contract.
+// TestMontebelloIncoplastBackingObjectsAreDriftGated proves the generic serving.*
+// functions (with their arity) and the guard relations all land in the
+// contract-drift dump as external objects, so a dropped/renamed/re-signatured prod
+// object blocks the flip fail-closed instead of 500ing a contract. t244
+// enterprise-06/13 parameterization repointed data-sync and events off the frozen
+// ent-6 objects (v_piot_production_data_sync_cust6 / get_downtime_sync_enterprsie_06)
+// onto serving.production_data_sync($1) / serving.downtime_sync($1) — the arity 1 on
+// each is the new load-bearing assertion (the tenant is now an explicit param).
 func TestMontebelloIncoplastBackingObjectsAreDriftGated(t *testing.T) {
 	objs, err := extractContract()
 	if err != nil {
@@ -373,12 +389,16 @@ func TestMontebelloIncoplastBackingObjectsAreDriftGated(t *testing.T) {
 		name string
 	}
 	want := map[key]bool{
-		{"relation", "v_piot_production_data_sync_cust6"}: false,
-		{"function", "get_downtime_sync_enterprsie_06"}:   false,
-		{"relation", "equipment_events"}:                  false,
-		{"relation", "equipment_events_man"}:              false,
-		{"relation", "production_orders"}:                 false,
-		{"relation", "packml_register"}:                   false,
+		{"function", "serving.production_data_sync"}: false,
+		{"function", "serving.downtime_sync"}:        false,
+		{"relation", "equipment_events"}:             false,
+		{"relation", "equipment_events_man"}:         false,
+		{"relation", "production_orders"}:            false,
+		{"relation", "packml_register"}:              false,
+	}
+	wantArgc := map[string]int{
+		"serving.production_data_sync": 1,
+		"serving.downtime_sync":        1,
 	}
 	for _, o := range objs {
 		if o.Source != "external" {
@@ -387,14 +407,20 @@ func TestMontebelloIncoplastBackingObjectsAreDriftGated(t *testing.T) {
 		k := key{o.Kind, o.Name}
 		if _, tracked := want[k]; tracked {
 			want[k] = true
-			if o.Kind == "function" && o.Name == "get_downtime_sync_enterprsie_06" && o.ArgC != 0 {
-				t.Errorf("get_downtime_sync_enterprsie_06 argc = %d, want 0", o.ArgC)
+			if o.Kind == "function" {
+				if exp, ok := wantArgc[o.Name]; ok && o.ArgC != exp {
+					t.Errorf("%s argc = %d, want %d", o.Name, o.ArgC, exp)
+				}
 			}
+		}
+		// The legacy frozen ent-6 objects must be GONE after the repoint.
+		if o.Name == "v_piot_production_data_sync_cust6" || o.Name == "get_downtime_sync_enterprsie_06" {
+			t.Errorf("legacy frozen object %q still referenced by an external shim after the t244 repoint", o.Name)
 		}
 	}
 	for k, found := range want {
 		if !found {
-			t.Errorf("frozen external %s %q not present in the drift-gate contract dump", k.kind, k.name)
+			t.Errorf("generic external %s %q not present in the drift-gate contract dump", k.kind, k.name)
 		}
 	}
 }

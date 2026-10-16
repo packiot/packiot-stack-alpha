@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -58,7 +59,6 @@ var grains = map[string]struct {
 	maxWindow time.Duration
 }{
 	"1min":  {"agg_equipment_values_1min", 7 * 24 * time.Hour},
-	"10min": {"agg_equipment_values_10min", 30 * 24 * time.Hour},
 	"1hour": {"agg_equipment_values_1hour", 90 * 24 * time.Hour},
 }
 
@@ -140,7 +140,7 @@ func parseAPIKeys(raw string) map[string]int {
 	return out
 }
 
-func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
+func registerQueryAPI(mux routeMux, pool *pgxpool.Pool, qcache *cache.Cache) {
 	// ADR-0027 Surface-1: tenant auth is now whole-mux middleware (auth.go),
 	// not a per-handler closure. Handlers read the resolved customer_id from
 	// request context (customerIDFromContext) — the middleware guarantees a
@@ -165,11 +165,11 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+		body, ok := readBodyCapped(w, r, maxRequestBody)
+		if !ok {
 			return
 		}
+		var err error
 		// Two request shapes share the endpoint: {"dataset", ...} routes
 		// to the named-dataset registry (datasets.go, front4 census);
 		// otherwise the metric×dimension composer (legacy shape).
@@ -182,6 +182,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		}
 		var sql string
 		var args []any
+		var windowFrom time.Time     // T2 coverage: the requested window start (dataset path)
 		datasetName := probe.Dataset // "" ⇒ legacy composer path (never cached)
 		if probe.Dataset != "" {
 			var dq datasetReq
@@ -191,10 +192,13 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			}
 			// task #70: the caller's id_user_role — server-derived, set only on
 			// the verified-JWT path (userRoleFromContext). The X-Api-Key operator
-			// path leaves it unset; the two role datasets then fail closed
+			// path leaves it unset; the per-user-role datasets then fail closed
 			// (errRoleDatasetNeedsUser → 403 below). NEVER from the request body.
 			roleID, roleOK := userRoleFromContext(r.Context())
 			sql, args, err = compileDataset(dq, cid, callerRole{id: roleID, present: roleOK})
+			if dq.Window != nil {
+				windowFrom = dq.Window.From
+			}
 		} else {
 			var q queryReq
 			if err := json.Unmarshal(body, &q); err != nil {
@@ -202,6 +206,21 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 				return
 			}
 			sql, args, err = compile(q, cid)
+			// T2 honest windows: the composer reads ONE cagg whose lifetime is declared
+			// in ops.retention_policy. A window starting before that floor used to return
+			// a silently SHORT series; now it is an explicit 422 pointing at the archive.
+			if err == nil {
+				if g, ok := grains[q.Grain]; ok {
+					if keep, ok := covIdx.relationKeep(g.table); ok {
+						if floor := time.Now().Add(-keep); q.From.Before(floor) {
+							msg := fmt.Sprintf("window starts before %s: %s keeps %s; for older data use /v1/historian/production-series",
+								floor.UTC().Format(time.RFC3339), g.table, humanDuration(keep))
+							http.Error(w, `{"error":`+fmt.Sprintf("%q", msg)+`}`, http.StatusUnprocessableEntity)
+							return
+						}
+					}
+				}
+			}
 		}
 		if err != nil {
 			// task #70: a role dataset invoked without user context is
@@ -214,13 +233,22 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			http.Error(w, `{"error":`+fmt.Sprintf("%q", err.Error())+`}`, code)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		// 40s (was 20s): the heaviest named dataset, downtimes-events
+		// (serving.downtime_events_v2), is sub-second WARM (~300-540ms) but ~18-21s
+		// COLD — it decompresses ~2 months of silver.equipment_events columnar chunks
+		// per request (the fn pads the window by ±1 month before the tstzrange overlap
+		// filter). At 20s a cold load tripped context-deadline → load() error → the
+		// front4 Downtimes submenu 500'd ("query failed"). 40s clears the cold load so
+		// it completes and populates the cache (then served in <1s). The durable fix is
+		// to make downtime_events_v2 cheap cold (early id_enterprise filter + a tighter
+		// pad + chunk-exclusion-friendly predicates) — tracked as a DB follow-up.
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 		defer cancel()
 
 		// The DB read → JSON-array bytes. Shared verbatim by the cached and
 		// uncached paths so the served bytes are identical either way.
 		load := func(ctx context.Context) ([]byte, error) {
-			return runQueryJSON(ctx, pool, sql, args)
+			return runQueryJSON(ctx, pool, cid, sql, args)
 		}
 
 		var payload []byte
@@ -241,12 +269,17 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 			return
 		}
 		served.Add(1)
+		if datasetName != "" {
+			if cov, ok := covIdx.dataset(datasetName); ok {
+				setCoverageHeaders(w.Header(), cov, windowFrom, time.Now())
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(payload)
 	})
 
 	// ── Screen config (P2) — layout JSON per (user, screen).
-	// Table ensured by ensureSchema at startup (main.go).
+	// Table owned by db/migrations/t-readapi-screen-config; checked (never created) at boot.
 
 	mux.HandleFunc("/v1/screen-config", func(w http.ResponseWriter, r *http.Request) {
 		// ADR-0027 Surface-1: a saved layout is tenant-private. Scope both the
@@ -267,28 +300,40 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 		case http.MethodGet:
 			var cfg []byte
 			err := pool.QueryRow(r.Context(),
-				`SELECT config FROM user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
+				`SELECT config FROM identity.user_screen_config WHERE id_enterprise=$1 AND id_user=$2 AND screen=$3`,
 				cid, user, screen).Scan(&cfg)
-			if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Nothing saved yet for (tenant, user, screen): the contract is 200 {}.
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{}`)
+				return
+			}
+			if err != nil {
+				// A real DB failure is NOT "no layout": answering 200 {} here made
+				// the SPA render (and then save over) an empty layout on any outage.
+				failed.Add(1)
+				http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(cfg)
 		case http.MethodPut:
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-			if err != nil || !json.Valid(body) {
+			body, ok := readBodyCapped(w, r, maxRequestBody)
+			if !ok {
+				return
+			}
+			if !json.Valid(body) {
 				http.Error(w, `{"error":"config must be valid JSON <= 64KB"}`, http.StatusBadRequest)
 				return
 			}
-			_, err = pool.Exec(r.Context(), `INSERT INTO user_screen_config (id_enterprise, id_user, screen, config)
+			_, err := pool.Exec(r.Context(), `INSERT INTO identity.user_screen_config (id_enterprise, id_user, screen, config)
 				VALUES ($1,$2,$3,$4) ON CONFLICT (id_enterprise, id_user, screen)
 				DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, cid, user, screen, string(body))
 			if err != nil {
 				http.Error(w, `{"error":"store failed"}`, http.StatusInternalServerError)
 				return
 			}
+			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"ok":true}`)
 		default:
 			http.Error(w, `{"error":"GET or PUT"}`, http.StatusMethodNotAllowed)
@@ -297,7 +342,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 
 	// ── Dashboard config (F2) — baseline ⊕ override, tenant-fenced.
 	// dashboard_config baseline is ensured by 28-refdata-tables.sql (prod-gated);
-	// user_screen_config override is ensured by ensureSchema (startup).
+	// user_screen_config override: db/migrations/t-readapi-screen-config.
 	mux.HandleFunc("/v1/dashboard-config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
@@ -338,6 +383,30 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 	})
 }
 
+// maxRequestBody caps every read-api JSON request body (/v1/query, the
+// historian series, PUT /v1/screen-config).
+const maxRequestBody = 1 << 16 // 64 KB
+
+// readBodyCapped reads the request body under http.MaxBytesReader. Over the cap
+// is 413 {"error":"payload too large"}; any other read failure is 400
+// {"error":"bad request body"}. It replaced io.LimitReader, which silently
+// truncated an oversized body and then failed (or, for a truncation that is
+// still valid JSON, succeeded) on the cut-off bytes. ok=false ⇒ the response
+// has been written.
+func readBodyCapped(w http.ResponseWriter, r *http.Request, limit int64) (body []byte, ok bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, `{"error":"payload too large"}`, http.StatusRequestEntityTooLarge)
+			return nil, false
+		}
+		http.Error(w, `{"error":"bad request body"}`, http.StatusBadRequest)
+		return nil, false
+	}
+	return body, true
+}
+
 // ── Dashboard config (ADR-0029 §D2 / Phase F2) ───────────────────────────────
 //
 // GET /v1/dashboard-config?dashboard_id=<id>[&user=<uid>] resolves the config
@@ -345,7 +414,7 @@ func registerQueryAPI(mux *http.ServeMux, pool *pgxpool.Pool, qcache *cache.Cach
 // components/dashboard/useDashboardConfig.js). Two tables compose it:
 //
 //	BASELINE  dashboard_config       (id_enterprise, dashboard_id, version) → config   [28-refdata-tables.sql]
-//	OVERRIDE  user_screen_config     (id_enterprise, id_user, screen)       → config   [ensureSchema]
+//	OVERRIDE  user_screen_config     (id_enterprise, id_user, screen)       → config   [t-readapi-screen-config]
 //
 // with `screen` == dashboard_id for the override. The served document is the
 // jsonb top-level SHALLOW MERGE `baseline || override` — override keys win — so a
@@ -368,7 +437,7 @@ WITH baseline AS (
 ),
 override AS (
     SELECT config
-    FROM user_screen_config
+    FROM identity.user_screen_config
     WHERE id_enterprise = $1 AND id_user = $3 AND screen = $2
 )
 SELECT
@@ -438,17 +507,54 @@ func writeDashboardConfig(w http.ResponseWriter, resp dashboardConfigResp) {
 // the cached and uncached paths share ONE query+encode implementation, and so
 // the cache-aside loader can hand back ready-to-cache bytes. A DB/scan/marshal
 // error is returned (never cached); the caller maps it to a 500.
-func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []any) ([]byte, error) {
-	rows, err := pool.Query(ctx, sql, args...)
+func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]byte, error) {
+	out, err := runQueryRows(ctx, pool, cid, sql, args)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return json.Marshal(out)
+}
+
+// runQueryRows is runQueryJSON without the final marshal: the tenant-stamped read,
+// returned as one map per row keyed by column name (the historian split path merges
+// two such result sets before serializing).
+func runQueryRows(ctx context.Context, pool *pgxpool.Pool, cid int, sql string, args []any) ([]map[string]any, error) {
+	// task #264 — defense-in-depth tenant fence. read-api connects as a NOBYPASSRLS
+	// role (readapi_ro), and the analytics DB puts FORCE ROW LEVEL SECURITY on the
+	// tenant tables (core.equipments / production_orders / production_targets,
+	// gold.equipment_oee_hourly / _shift / production_orders_runtime), keyed on the
+	// session GUC `app.tenant_id` (public.current_tenant()). The app-layer
+	// `WHERE id_enterprise = $1` fence stays the PRIMARY isolator; stamping the GUC to
+	// the SAME server-derived tenant makes Postgres RLS a CO-ENFORCER — so if a future
+	// dataset ever ships without the $1 fence, RLS scopes it to this tenant instead of
+	// leaking every tenant's rows (under the old `postgres`/BYPASSRLS connection RLS
+	// never bit, so an unfenced dataset would have leaked all tenants).
+	//
+	// set_config(..., is_local => true) is TRANSACTION-LOCAL, so it is safe under the
+	// pgbouncer transaction pooling this pool runs behind (the setting is discarded when
+	// the server connection is returned to the pool) — a plain SET would leak the tenant
+	// onto the next borrower. We therefore run the stamp + the read inside ONE explicit
+	// transaction. cid is a SERVER-DERIVED int (from the resolved credential, never the
+	// request body), so the literal interpolation carries no injection risk and sidesteps
+	// the simple-protocol parameter path this pool uses.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT set_config('app.tenant_id', '%d', true)", cid)); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
 	cols := rows.FieldDescriptions()
 	out := make([]map[string]any, 0, 256)
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		m := make(map[string]any, len(cols))
@@ -458,9 +564,14 @@ func runQueryJSON(ctx context.Context, pool *pgxpool.Pool, sql string, args []an
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
-	return json.Marshal(out)
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func keysOf[V any](m map[string]V) []string {
@@ -471,25 +582,48 @@ func keysOf[V any](m map[string]V) []string {
 	return out
 }
 
-// ensureSchema is the startup migration hook — called once from main
-// before routes register, not as a route-registration side effect.
+// screenConfigCheckSQL reports whether identity.user_screen_config exists and
+// whether the login can read and upsert it. read-api issues NO DDL: the table is
+// owned by db/migrations/t-readapi-screen-config (and t276 grants readapi_ro
+// SELECT, INSERT, UPDATE on it). to_regclass and has_table_privilege need no
+// privilege on the table, so this works for any login.
+const screenConfigCheckSQL = `
+SELECT t IS NOT NULL,
+       COALESCE(has_table_privilege(t::oid, 'SELECT')
+            AND has_table_privilege(t::oid, 'INSERT')
+            AND has_table_privilege(t::oid, 'UPDATE'), false)
+  FROM (SELECT to_regclass('identity.user_screen_config') AS t) x`
+
+// rowQuerier is the slice of *pgxpool.Pool the boot check uses (fakeable in tests).
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// checkScreenConfigTable is the boot-time readiness probe for /v1/screen-config
+// and the /v1/dashboard-config override. It replaced ensureSchema, which ran
+// CREATE SCHEMA / CREATE TABLE / ALTER TABLE at every boot: a read API running
+// as the least-privilege readapi_ro has no CREATE or ownership, so that DDL was
+// always "permission denied" (swallowed) on staging and the dev seed. Schema
+// changes belong in db/migrations, not in a service's startup path.
 //
-// ADR-0027 Surface-1: user_screen_config is tenant-private. A fresh table is
-// keyed on (id_enterprise, id_user, screen). The ALTER/DROP/CREATE lines are
-// the idempotent forward-migration for a table created before Surface-1 (the
-// old PK was (id_user, screen)): add the owning enterprise, drop the old PK,
-// and re-key on a unique index that includes id_enterprise — the ON CONFLICT
-// target the upsert now uses. Backfilled rows get id_enterprise = 0 (an
-// unreachable tenant), so they are invisible to any real key. Multi-statement
-// Exec is fine on the simple protocol this pool uses.
-func ensureSchema(pool *pgxpool.Pool) {
-	_, _ = pool.Exec(context.Background(), `
-		CREATE TABLE IF NOT EXISTS user_screen_config (
-			id_enterprise int NOT NULL DEFAULT 0,
-			id_user text NOT NULL, screen text NOT NULL, config jsonb NOT NULL,
-			updated_at timestamptz NOT NULL DEFAULT now());
-		ALTER TABLE user_screen_config ADD COLUMN IF NOT EXISTS id_enterprise int NOT NULL DEFAULT 0;
-		ALTER TABLE user_screen_config DROP CONSTRAINT IF EXISTS user_screen_config_pkey;
-		CREATE UNIQUE INDEX IF NOT EXISTS user_screen_config_tenant_key
-			ON user_screen_config (id_enterprise, id_user, screen);`)
+// Non-fatal by design (same as before): the rest of the read plane does not
+// depend on this table. It logs an ERROR naming the migration when the table is
+// missing or the login cannot read/upsert it, so the gap is visible at boot
+// instead of as a 500 on the first PUT.
+func checkScreenConfigTable(ctx context.Context, q rowQuerier, logger *slog.Logger) (exists, writable bool) {
+	if err := q.QueryRow(ctx, screenConfigCheckSQL).Scan(&exists, &writable); err != nil {
+		logger.Warn("screen-config readiness check failed", slog.String("err", err.Error()))
+		return false, false
+	}
+	switch {
+	case !exists:
+		logger.Error("identity.user_screen_config is missing: /v1/screen-config and the dashboard-config override will 500",
+			slog.String("fix", "apply db/migrations/t-readapi-screen-config/01-up.sql"))
+	case !writable:
+		logger.Error("login lacks SELECT/INSERT/UPDATE on identity.user_screen_config: /v1/screen-config will 500",
+			slog.String("fix", "apply db/migrations/t-readapi-screen-config/01-up.sql (grants readapi_ro)"))
+	default:
+		logger.Info("screen-config table ready")
+	}
+	return exists, writable
 }

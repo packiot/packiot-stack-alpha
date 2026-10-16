@@ -186,6 +186,52 @@ NGINX
 %{ endif ~}
 %{ endfor ~}
 
+# ── API docs portal (api.<domain>/docs/) ──────────────────────────────────────
+# One Swagger UI for every new-stack API, behind the same cs-admin SSO gate as
+# edge-api's /packiot/docs. Each service owns its OpenAPI contract and serves it
+# at GET /openapi.json in-network; nginx fetches the specs on the browser's behalf
+# under /docs/specs/ (also gated), so no spec has to be public. Read-only:
+# Prod lists only services in compose.production.yml (no barcode-service /
+# sparkplug-agent yet); client-ingest-profile services 502 while that profile is off.
+# "Try it out" is off (supportedSubmitMethods: []), same as edge-api's Swagger.
+# swagger-ui-dist is pinned with SRI. NOTE: this file is a Terraform templatefile,
+# so the page must not contain dollar-brace or percent-brace sequences.
+mkdir -p /var/www/api-docs
+cat > /var/www/api-docs/index.html <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PackIOT API docs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.2/swagger-ui.css"
+        integrity="sha384-Ov4/wv3j2bmct8cDc5X4ngJZohVPzEmc6uDPH8WeljUxO5vtoykvMEfbu9Vh6RaW" crossorigin="anonymous">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.2/swagger-ui-bundle.js"
+          integrity="sha384-gNnUp++d7WqR9OKX4OMoUmV2w0JxEs1uu6NPXgcynGClIX5DOu6ol4Lp+lINyZcJ" crossorigin="anonymous"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      dom_id: "#swagger-ui",
+      urls: [
+        { name: "edge-api (control plane)",            url: "specs/edge-api.json" },
+        { name: "read-api (refdata / query)",          url: "specs/read-api.json" },
+        { name: "onboard API (sparkplug-decoder)",     url: "specs/onboard-api.json" },
+        { name: "ingest-shim",                         url: "specs/ingest-shim.json" },
+        { name: "operator-gateway",                    url: "specs/operator-gateway.json" }
+      ],
+      "urls.primaryName": "edge-api (control plane)",
+      supportedSubmitMethods: [],
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: "BaseLayout"
+    });
+  </script>
+</body>
+</html>
+HTML
+
 # ── api vhost (edge-api) ──────────────────────────────────────────────────────
 # origin-verify + cs-admin gate on /, but /api/* bypasses the gate (edge-api's
 # AuthMiddleware enforces x-api-key there — a browser 302 login would break
@@ -217,6 +263,38 @@ server {
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_read_timeout 300s;
+    }
+
+    # /session/* — edge-api does its OWN Cognito-Bearer auth (login.service authenticate),
+    # so bypass the SSO gate exactly like /api/. Without this the front4 super-admin
+    # enterprise switcher's GET /session/enterprises hits the shell gate (302 to oauth2/start)
+    # and never reaches edge-api, so the picker is empty and the switcher stays hidden.
+    location ~ ^/session(/|\$) {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    # API docs portal: the Swagger UI page + every service's spec, fetched
+    # in-network. Nested locations inherit the cs-admin gate. ingest-shim and
+    # operator-gateway listen TLS-only with the stack's internal certs (nginx's
+    # proxy_ssl_verify defaults to off). A service that isn't running answers
+    # 502 for its own spec only.
+    location = /docs { return 301 /docs/; }
+    location ^~ /docs/ {
+        auth_request /oauth2/auth-csadmin;
+        error_page 401 = @oauth2_signin;
+        alias /var/www/api-docs/;
+        index index.html;
+
+        location = /docs/specs/edge-api.json        { proxy_pass http://127.0.0.1:8080/packiot/docs-json; }
+        location = /docs/specs/read-api.json        { proxy_pass http://172.18.0.26:9104/openapi.json; }
+        location = /docs/specs/onboard-api.json     { proxy_pass http://172.18.0.23:9105/openapi.json; }
+        location = /docs/specs/ingest-shim.json     { proxy_pass https://172.18.0.29:8444/openapi.json; }
+        location = /docs/specs/operator-gateway.json { proxy_pass https://172.18.0.31:8443/openapi.json; }
     }
 
     location / {
@@ -331,11 +409,16 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     include snippets/origin-verify.conf;
+    # Ops/contract routes are not for the internet (CloudFront reaches everything
+    # here): Prometheus scrapes read-api:9104 in-network and the docs portal fetches
+    # /openapi.json in-network (api.<domain>/docs/). Same lockdown as staging.
+    location = /metrics      { return 404; }
+    location = /openapi.json { return 404; }
     location / {
         if (\$request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin  \$refdata_cors always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Packiot-Agent, x-operator-superadmin-token" always;
             add_header Access-Control-Max-Age 86400 always;
             add_header Vary Origin always;
             return 204;
@@ -418,6 +501,36 @@ NGINX
 
 nginx -t && nginx -s reload
 echo "oauth2-proxy forward-auth + origin-verify configured for all services"
+
+# ── shared multi-tenant reader front-door (ingest.<domain>:8449) — Bispharma go-live 2026-10 ──────────────────────
+# Same block as staging's nginx_setup.sh: TLS on 8449 (the wildcard cert), /v1/tags → sparkplug-agent-shared
+# (compose static 172.18.0.44:9104), which routes by the envelope's group. Auth = the box's X-Ingest-Key, checked by the
+# agent (fails closed without a key). Inbound 8449 is admitted per-box egress /32 only (security_groups.tf). Not behind
+# CloudFront: ingest.<domain> is an A record to the EIP (dns.tf), like the 8883 mTLS door.
+cat > /etc/nginx/conf.d/ingest.conf <<NGINX
+server {
+    listen 8449 ssl;
+    server_name ingest.$PRODUCTION_DOMAIN;
+
+    ssl_certificate     /etc/letsencrypt/live/$PRODUCTION_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRODUCTION_DOMAIN/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 1m;   # matches the agent's MaxBodyBytes cap
+
+    location = /v1/tags {
+        proxy_pass         http://172.18.0.44:9104/v1/tags;   # sparkplug-agent-shared
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+NGINX
+nginx -t && nginx -s reload
+echo "Shared reader ingest front-door configured at https://ingest.$PRODUCTION_DOMAIN:8449/v1/tags"
 
 # ── oauth2-proxy vhost (auth.<domain>) ────────────────────────────────────────
 # NO origin-verify + NO auth_request — this IS the authentication endpoint.

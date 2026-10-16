@@ -44,7 +44,7 @@ ingress on `edge-transformer`), also specified below.
 | Entry service | `ingest-shim` (`:8444`) | `mqtt-ingress` broker → internal `mosquitto` |
 | Decode / alias resolve | **none** — republished verbatim | `edge-transformer` `sparkplug.Decode` + `StateStore` |
 | **Go Calc runs?** | **NO** — lands on worker's legacy JSON decode | **YES** — `USE_GO_PORT` + `CALC_CUTOVER_REFACTORED` |
-| RabbitMQ target | `oee` / `sparkplug.data.<tenant>` (direct) | `oee` via `edge-transformer`'s `shadowpub`/outbox |
+| RabbitMQ target | `oee` / `sparkplug.data.<tenant>` (direct) | `oee` via `sparkplug-decoder`'s `analyticspub`/outbox |
 | Faithful `MachSpeed`/`P30700`/delta-counter shape | **NO** | **YES** |
 
 Source evidence:
@@ -52,12 +52,12 @@ Source evidence:
   scope-guards on the topic/group first segment, stamps `source_type`, and `Publisher.Publish`es **verbatim**
   to `oee`/`sparkplug.data.<tenant>`. **No `sparkplug.Decode`, no `StateStore`, no Calc.** It is a pure
   authenticated transport front-door so RabbitMQ stays internal.
-- `services/edge-transformer/cmd/edge-transformer/main.go` — the MQTT `sparkplugHandler`
+- `services/sparkplug-decoder/cmd/edge-transformer/main.go` — the MQTT `sparkplugHandler`
   (`main.go:416`) decodes, resolves aliases via `sparkplug.StateStore`, runs the Calc Production Counters port
   (`runShadow`/`buildCutoverMetrics`, `main.go:858-1017`), and triple-emits. This is the "Go Calc brain."
-- `services/edge-transformer/internal/sparkplug/decoder.go:77` — `Decode(body)` is
+- `services/sparkplug-decoder/internal/sparkplug/decoder.go:77` — `Decode(body)` is
   `proto.Unmarshal` — **"Sparkplug B is binary-only over the wire … NOT the JSON representation."**
-- `services/edge-transformer/cmd/plc-sim/main.go` — `sparkplug.EncodeSim(...)` → `proto.Marshal`,
+- `services/sparkplug-decoder/cmd/plc-sim/main.go` — `sparkplug.EncodeSim(...)` → `proto.Marshal`,
   `c.Publish("spBv1.0/CPACK/NBIRTH/<edge>", 0, true, body)` (retained NBIRTH establishes aliases) then
   `spBv1.0/CPACK/NDATA/<edge>` (alias-only). **This is exactly the wire shape a real PLC/Node-RED must
   reproduce for Path B.**
@@ -120,7 +120,7 @@ direct SG:8883 can — and NLB TCP-passthrough keeps TLS/mTLS end-to-end to the 
    decode(protobuf) → StateStore(alias) → Calc(USE_GO_PORT, CALC_CUTOVER_REFACTORED)
    → triple-emit (ADR-0032: refactored-only)
    ▼
- RabbitMQ `oee` → oeecloud-worker → packiot_shadow (F3)
+ RabbitMQ `oee` → oeecloud-worker → packiot_analytics (F3)
 ```
 
 ### Prod-evolution note

@@ -22,6 +22,7 @@ metric_templates:
     - {leaf: "/Status/MachSpeed", type: double}
 equipment:
   - topic: ACME/SP/L5/FLEXO
+    device_key: dk_6d1a1a325e256e186270525ab951d163
     id_equipment: 5001
     tp_equipment: 1
     id_unit: 5001
@@ -56,12 +57,12 @@ func TestDerivedMetric_Validation(t *testing.T) {
 		{
 			name:    "both integral and sum → one-of violation",
 			derived: []DerivedMetric{{Emit: []string{emit}, Type: "double", Integral: integralSrc(speed, 1, 0, 0), Sum: sumSrc("/Status/CountA", "/Status/CountB")}},
-			wantErr: "exactly one of {integral, sum}",
+			wantErr: "exactly one of {integral, sum, expr}",
 		},
 		{
 			name:    "neither integral nor sum → one-of violation",
 			derived: []DerivedMetric{{Emit: []string{emit}, Type: "double"}},
-			wantErr: "exactly one of {integral, sum}",
+			wantErr: "exactly one of {integral, sum, expr}",
 		},
 		{
 			name:    "empty emit",

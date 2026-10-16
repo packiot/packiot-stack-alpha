@@ -1,0 +1,15 @@
+-- APPLIED on staging. Root cause: piot_create_equipment_runtime_shift_1week/_1month
+-- read FROM their OWN output table (self-referential; can never bootstrap -> 0 rows
+-- -> front4 week/month production-target overlay silently blank).
+-- Fix: repoint the inner FROM to the base tier `equipment_runtime_shift`.
+-- The INSERT INTO destination is unchanged.
+--
+--   piot_create_equipment_runtime_shift_1week:  from equipment_runtime_shift_1week ers  ->  from equipment_runtime_shift ers
+--   piot_create_equipment_runtime_shift_1month: from equipment_runtime_shift_1month ers ->  from equipment_runtime_shift ers
+--
+-- Proof after fix + trigger: week 0->3,830 rows (340 w/target), month 0->1,532 (136).
+--
+-- !! SEED PARITY (must patch so a re-seed does not reintroduce the bug):
+--   edge-node-red/db/20-oee-engine-parity.sql            (week ~:9173, month ~:9123)
+--   db/init-f3/snapshot/00-packiot_analytics-schema.sql  (week ~:17312, month ~:17259)
+-- Apply the same FROM repoint in those files (CREATE OR REPLACE FUNCTION bodies).

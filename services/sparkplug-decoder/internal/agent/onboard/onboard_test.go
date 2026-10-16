@@ -206,8 +206,8 @@ func TestDescribe_ScaffoldThenValidate(t *testing.T) {
 	// Fill in one line + one member and re-describe → valid.
 	filled := strings.Replace(string(body), "equipment: []",
 		"equipment:\n"+
-			"  - {topic: ACME/PLANT/L1, id_equipment: 1, tp_equipment: 3}\n"+
-			"  - {topic: ACME/PLANT/L1/M1, id_equipment: 2, tp_equipment: 1, id_unit: 2, count_index: {value: 5, confidence: confirmed}}\n",
+			"  - {topic: ACME/PLANT/L1, device_key: dk_00000000000000000000000000000001, id_equipment: 1, tp_equipment: 3}\n"+
+			"  - {topic: ACME/PLANT/L1/M1, device_key: dk_00000000000000000000000000000002, id_equipment: 2, tp_equipment: 1, id_unit: 2, count_index: {value: 5, confidence: confirmed}}\n",
 		1)
 	if err := os.WriteFile(desc, []byte(filled), 0o644); err != nil {
 		t.Fatal(err)

@@ -3,7 +3,7 @@
 **Status:** Built · flag-gated (default OFF) · **Date:** 2026-07-27 · **Task:** #13 / #54 ·
 **Governs:** [ADR-0045 §2.3 Option-B](../adr/0045-client-onboarding-architecture.md),
 [canonical model §2](../clients/bispharma-bisnago-canonical-model.md) ·
-**Code:** `services/edge-transformer/internal/agent/numeric`,
+**Code:** `services/sparkplug-decoder/internal/agent/numeric`,
 `internal/agent/httpingest` (`POST /v1/counters`), `cmd/sparkplug-agent` (flag),
 `cmd/numeric-sim` (staging driver).
 
@@ -115,7 +115,7 @@ numeric-sim --url https://localhost:9104/v1/counters --key "$AGENT_INGEST_API_KE
 
 ### 4.3 Shadow-DB verification (SELECT-only, done 2026-07-27)
 
-On `packiot_shadow` (F3), `BEGIN TRANSACTION READ ONLY`:
+On `packiot_analytics` (F3), `BEGIN TRANSACTION READ ONLY`:
 
 | Check | Result |
 |---|---|

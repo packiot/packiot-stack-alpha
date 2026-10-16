@@ -1,0 +1,175 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# compose.onprem-edge.yml — the FAT-EDGE on-prem stack (ADR-0053 B-minimal)
+#
+# Runs on the CLIENT'S factory box, ALONGSIDE the existing packiot-edge-reader.
+# Its whole reason to exist: keep the shop floor seeing LIVE production during an
+# internet outage. It is additive — it does not touch the reader's primary cloud
+# path (reader → cloud shared-agent over HTTPS, already durable via the reader
+# spool). If this stack is down, the client is exactly where they are today.
+#
+# Data flow on the box:
+#
+#   PLC ──raw tags──> packiot-edge-reader ──┬──> cloud shared-agent (HTTPS)   [cloud: unchanged, authoritative]
+#                                           └──> local sparkplug-agent :9104  [the tee]
+#                                                       │ SparkPlug B
+#                                                       ▼
+#                                                 mosquitto (local broker)
+#                                                       │
+#                                                       ▼
+#                                              edge-transformer  (LOCAL_DECODE_ONLY)
+#                                                       │ current-state upsert
+#                                                       ▼
+#                                              edge_localstate volume (SQLite)
+#                                                       │ read
+#                                                       ▼
+#                                              edge-dashboard :8080  ← the floor's browser
+#
+# Why LOCAL_DECODE_ONLY: the factory firewall egresses HTTPS only (it blocks
+# AMQP/8883 — the reason the reader uses HTTPS). So the on-box transformer CANNOT
+# publish to cloud RabbitMQ, and it doesn't need to: the cloud already gets this
+# tenant's data from the reader's primary tee. Here the transformer decodes purely
+# to feed the local current-state DB the dashboard reads.
+#
+# Deploy (on the box, source already fetched):
+#   docker compose -f compose.onprem-edge.yml --env-file .env.onprem up -d --build
+#
+# .env.onprem must set: TENANT (lowercased group_id), AGENT_INGEST_API_KEY
+# (the reader's local X-Ingest-Key), DASHBOARD_PORT (default 8080). The generator
+# emits agent.yaml + client.yaml + .env.onprem for the tenant (see onboard-gen).
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: onprem-mosquitto
+    init: true # reap zombies (matches the cloud stack — incident 2026-07-09)
+    restart: unless-stopped
+    volumes:
+      - ./configs/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - onprem_mosquitto_data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t 'healthcheck/ping' -m 'ok' -q 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+
+  # The local half of the reader tee. Receives the same raw-tag envelopes the
+  # reader posts to the cloud, and republishes them as a SparkPlug B session onto
+  # the LOCAL mosquitto (its uplink target is set to tcp://mosquitto:1883 in the
+  # generated agent.yaml — NOT the cloud). Birth-completeness ON so a line idle
+  # at connect is still aliased the instant it first reports.
+  sparkplug-agent:
+    build:
+      context: ./services/sparkplug-decoder
+    image: packiot-sparkplug-decoder:local # built once by the agent service; reused below
+    container_name: onprem-agent
+    entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      AGENT_CONFIG: /etc/packiot/agent.yaml
+      HEALTH_PORT: "9103"
+      # Tags arrive via HTTP, not a live raw-tag MQTT publisher → idle by design.
+      MQTT_STALE_THRESHOLD_SECONDS: "-1"
+      AGENT_HTTP_INGEST_ENABLED: "true"
+      AGENT_INGEST_PORT: "9104"
+      # The reader's local X-Ingest-Key. REQUIRED — the agent refuses ingest unset.
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env.onprem}
+      AGENT_BIRTH_ALL_MAPPED: "true"
+    volumes:
+      - ./onprem/agent.yaml:/etc/packiot/agent.yaml:ro
+    ports:
+      # Loopback only — the reader (also on this box) posts to 127.0.0.1:9104.
+      - "127.0.0.1:9104:9104"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Decodes the local SparkPlug stream and tees each metric to the local
+  # current-state DB. LOCAL_DECODE_ONLY: no cloud AMQP publisher, no outbox — the
+  # cloud path is the reader's job, this is purely for local visibility.
+  edge-transformer:
+    image: packiot-sparkplug-decoder:local
+    container_name: onprem-transformer
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      EDGE_TRANSFORMER_MODE: factory
+      MQTT_ENABLED: "true"
+      MQTT_BROKER_URL: "tcp://mosquitto:1883"
+      AMQP_SOURCE_ENABLED: "false"
+      # ADR-0053: decode → localstate only; skip the cloud publisher + outbox.
+      LOCAL_DECODE_ONLY: "true"
+      LOCAL_STATE_DB: /var/lib/edge-transformer/current-state.db
+      # Phase-9 line aggregation so line-metered tenants (bispharma) get line
+      # counts locally too (no competing local writer on the box).
+      PHASE9_LINE_AGG_ENABLED: "true"
+      CLIENT_YAML_PATH: /etc/packiot/client.yaml
+      HEALTH_PORT: "9102"
+    volumes:
+      - ./onprem/client.yaml:/etc/packiot/client.yaml:ro
+      - edge_localstate:/var/lib/edge-transformer
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-decoder", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 192m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # The floor-facing board. Reads the SAME current-state volume the transformer
+  # writes and serves it on :8080. Works with zero internet — that is the point.
+  edge-dashboard:
+    image: packiot-sparkplug-decoder:local
+    container_name: onprem-dashboard
+    entrypoint: ["/usr/local/bin/edge-dashboard"]
+    restart: unless-stopped
+    environment:
+      LOCAL_STATE_DB: /var/lib/edge-transformer/current-state.db
+      TENANT: ${TENANT:?set TENANT (lowercased group_id) in .env.onprem}
+      DASHBOARD_PORT: "8080"
+    volumes:
+      # RW: SQLite WAL bookkeeping touches -wal/-shm even for a reader.
+      - edge_localstate:/var/lib/edge-transformer
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    depends_on:
+      edge-transformer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/edge-dashboard", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 64m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+
+volumes:
+  onprem_mosquitto_data:
+  edge_localstate:

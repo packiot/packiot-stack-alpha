@@ -62,6 +62,12 @@ AWS_REGION=$AWS_REGION
 POSTGRES_CONTAINER=timescaledb
 POSTGRES_USER=$DB_USER
 POSTGRES_DB=$DB_NAME
+# Back up the legacy DB and the live new-stack DB (2026-09-28), and Superset's
+# metadata DB (dashboards, charts, datasets, RLS rules, users — 2026-09-30).
+POSTGRES_DBS="${POSTGRES_DBS:-packiot packiot_analytics superset}"
+# superset's metadata dump is ~600 KB gz (2026-09-30); the 1 MB default guard is for the big DBs.
+MIN_DUMP_BYTES_superset=102400
+DUMP_DIR=/var/lib/packiot-backup
 RETAIN_DAILY=14
 RETAIN_WEEKLY=4
 RETAIN_MONTHLY=3

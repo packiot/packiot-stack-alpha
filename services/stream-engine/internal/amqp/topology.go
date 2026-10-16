@@ -136,7 +136,11 @@ func DeclareTopology(ctx context.Context, conn *amqp.Connection, cfg *config.Con
 	}); err != nil {
 		return fmt.Errorf("declare retry queue: %w", err)
 	}
-	if err := ch.QueueBind(cfg.RetryQueue, "#", cfg.RetryExchange, false, nil); err != nil {
+	//    Bound to the legacy key only. It used to be bound to `#`, which also matched every
+	//    per-tenant key (`sparkplug.data.<t>`): a nack on a tenant queue dead-lettered into BOTH
+	//    this queue and the tenant's retry queue, so each nacked message came back twice after the
+	//    TTL (and twice into anything else bound to that key, e.g. the oeecloud-fanout queue).
+	if err := bindLegacyKeyOnly(ch, cfg.RetryQueue, cfg.RetryExchange); err != nil {
 		return fmt.Errorf("bind retry queue: %w", err)
 	}
 
@@ -144,7 +148,9 @@ func DeclareTopology(ctx context.Context, conn *amqp.Connection, cfg *config.Con
 	if _, err := ch.QueueDeclare(cfg.FailedQueue, true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare failed queue: %w", err)
 	}
-	if err := ch.QueueBind(cfg.FailedQueue, "#", cfg.FailedExchange, false, nil); err != nil {
+	//    Same `#` problem: the consumer republishes failures with the original routing key, so
+	//    tenant failures were also copied here.
+	if err := bindLegacyKeyOnly(ch, cfg.FailedQueue, cfg.FailedExchange); err != nil {
 		return fmt.Errorf("bind failed queue: %w", err)
 	}
 
@@ -234,6 +240,25 @@ func DeclareTenant(conn *amqp.Connection, cfg *config.Config, t string, logger *
 	}
 	if err := ch.QueueBind(failedQ, routingKey, cfg.FailedExchange, false, nil); err != nil {
 		return fmt.Errorf("bind tenant failed queue %s: %w", failedQ, err)
+	}
+	return nil
+}
+
+// legacyRoutingKey is the routing key of the pre-per-tenant traffic (see step 2 below).
+const legacyRoutingKey = "sparkplug.data"
+
+// bindLegacyKeyOnly binds queue to exchange on the legacy key and removes any `#` catch-all left
+// by older releases (bindings are durable broker state, so a code change alone doesn't remove it).
+// The exact binding goes in FIRST: unbinding first would leave a moment with no binding, and a
+// message dead-lettered or published in that gap would be dropped (the retry/failed exchanges
+// have no alternate exchange). QueueUnbind of a missing binding is a no-op, so this is safe on
+// every reconnect.
+func bindLegacyKeyOnly(ch *amqp.Channel, queue, exchange string) error {
+	if err := ch.QueueBind(queue, legacyRoutingKey, exchange, false, nil); err != nil {
+		return fmt.Errorf("bind %s to %s on %q: %w", queue, exchange, legacyRoutingKey, err)
+	}
+	if err := ch.QueueUnbind(queue, "#", exchange, nil); err != nil {
+		return fmt.Errorf("unbind %s # from %s: %w", queue, exchange, err)
 	}
 	return nil
 }

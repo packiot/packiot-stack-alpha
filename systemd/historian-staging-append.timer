@@ -1,0 +1,7 @@
+[Unit]
+Description=Run staging historian append daily
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target

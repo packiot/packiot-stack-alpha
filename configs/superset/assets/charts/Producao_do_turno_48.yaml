@@ -1,0 +1,32 @@
+slice_name: "Produ\xE7\xE3o do turno"
+description: bi.oee_shift SUM(net). front4 shiftKpi net_production.
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 6__table
+  viz_type: big_number_total
+  metric: sum_net
+  adhoc_filters: []
+  header_font_size: 0.4
+  subheader_font_size: 0.15
+  y_axis_format: .3~s
+  subtitle: Shift net production
+  annotation_layers: []
+  granularity_sqla: ts_value
+  time_range: 'DATEADD(DATETIME(''now''), -1, day) : now'
+query_context: '{"datasource": {"id": 6, "type": "table"}, "force": false, "queries":
+  [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {},
+  "columns": [], "metrics": ["sum_net"], "annotation_layers": [], "series_limit":
+  0, "order_desc": true, "url_params": {}, "custom_params": {}, "custom_form_data":
+  {}, "granularity": "ts_value", "time_range": "DATEADD(DATETIME(''now''), -1, day)
+  : now"}], "form_data": {"adhoc_filters": [], "annotation_layers": [], "datasource":
+  "6__table", "header_font_size": 0.4, "metric": "sum_net", "slice_id": 31, "subheader_font_size":
+  0.15, "subtitle": "Shift net production", "viz_type": "big_number_total", "y_axis_format":
+  ".3~s", "force": false, "result_format": "json", "result_type": "full", "granularity_sqla":
+  "ts_value", "time_range": "DATEADD(DATETIME(''now''), -1, day) : now"}, "result_format":
+  "json", "result_type": "full"}'
+cache_timeout: null
+uuid: e51140c4-b5da-4be7-970b-aa8ef7c742cc
+version: 1.0.0
+dataset_uuid: 1546df03-4e11-40b8-94d7-aa149b12c58a

@@ -1,7 +1,6 @@
 package rollup
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -13,7 +12,7 @@ import (
 func TestWidenHourWindows_replacesOnlyRecencyBounds(t *testing.T) {
 	// The live events pass: has both the 65-min value-window (none here) and the
 	// 6h UPDATE guard + the el.ts_value-anchored event math that must NOT change.
-	got := widenHourWindows(fmt.Sprintf(hourEventsSQL, "public", plannedDowntimeExpr(false)))
+	got := widenHourWindows(fmtRP(hourEventsSQL, "public", plannedDowntimeExpr(false)))
 
 	if strings.Contains(got, "interval '6 hour'") {
 		t.Error("6h UPDATE guard not widened — old rows would still be blocked")
@@ -36,7 +35,7 @@ func TestWidenHourWindows_replacesOnlyRecencyBounds(t *testing.T) {
 }
 
 func TestWidenHourWindows_valuesPass65Min(t *testing.T) {
-	got := widenHourWindows(fmt.Sprintf(hourValuesSQL, "public"))
+	got := widenHourWindows(fmtRP(hourValuesSQL, "public"))
 	if strings.Contains(got, "interval '65 minutes'") {
 		t.Error("65-min value window not widened — old buckets would be excluded from the cagg join")
 	}
@@ -51,23 +50,51 @@ func TestWidenHourWindows_valuesPass65Min(t *testing.T) {
 // canonical reconcile and the legacy residual must be widened to the 10-day
 // horizon (their live `now()-6h` guard would otherwise block every backfilled row).
 func TestBackfillOeeFinalize_widened(t *testing.T) {
-	rec := widenHourWindows(fmt.Sprintf(hourOeeReconcileSQL, "public"))
+	rec := widenHourWindows(fmtRP(hourOeeReconcileSQL, "public"))
 	if strings.Contains(rec, "interval '6 hour'") {
 		t.Error("canonical reconcile 6h guard not widened — backfilled rows would be skipped")
 	}
 	if !strings.Contains(rec, "oee_a") || !strings.Contains(rec, "oee_p") {
 		t.Error("reconcile finalize must write the A·P·Q waterfall")
 	}
-	oeeP := widenHourWindows(fmt.Sprintf(hourOeePSQL, "public"))
+	oeeP := widenHourWindows(fmtRP(hourOeePSQL, "public"))
 	if strings.Contains(oeeP, "interval '6 hour'") {
 		t.Error("legacy oee_p 6h guard not widened — backfilled rows would be skipped")
+	}
+}
+
+// #207: the backfill now runs the line-from-lead pass so an outage OLDER than the
+// live 6h line-lead lookback still backfills tp=3 LINE hour grains. widen must
+// stretch ONLY the 6h UPDATE guard — never the tp=3 selector or the per-row
+// lead-machine math. The pass must NOT carry a recalc_needed guard: the events
+// step clears the flag on every line row with an event, and a guarded line-lead
+// then left closed hours at net 0 (see line_lead.go).
+func TestBackfillLineLead_widened(t *testing.T) {
+	got := widenHourWindows(fmtRP(hourLineLeadSQL, "public", LineLeadScope{Enterprises: []int{3}}.Predicate(pgIntArrayLiteral([]int{3})), 300))
+	if strings.Contains(got, "interval '6 hour'") {
+		t.Error("line-lead 6h UPDATE guard not widened — outage-old line hours would be skipped")
+	}
+	if !strings.Contains(got, "now() - interval '10 days'") {
+		t.Error("expected the widened 10-day horizon on the line-lead pass")
+	}
+	if strings.Contains(got, "e.recalc_needed = true") {
+		t.Error("line-lead must not be gated on recalc_needed — the events step clears it on every line row with an event")
+	}
+	for _, must := range []string{
+		"eq.tp_equipment = 3",             // lines only
+		"COALESCE(eq.lead_machine,0) > 0", // must have a designated lead machine
+		"eq.id_enterprise = ANY('{3}'::bigint[])", // opted-in enterprise
+	} {
+		if !strings.Contains(got, must) {
+			t.Errorf("widen corrupted the line-lead pass — missing %q", must)
+		}
 	}
 }
 
 // The backfill eligibility must select OLD rows only (RunHour owns recent) and
 // stay inside event retention, bounded and oldest-first.
 func TestHourBackfillEligible_shape(t *testing.T) {
-	q := fmt.Sprintf(hourBackfillEligibleSQL, "public", "public", 200)
+	q := fmtRP(hourBackfillEligibleSQL, "public", 200)
 	for _, must := range []string{
 		"h.recalc_needed",
 		"h.ts_value <  now() - interval '65 minutes'", // outside the live window
@@ -78,5 +105,18 @@ func TestHourBackfillEligible_shape(t *testing.T) {
 		if !strings.Contains(q, must) {
 			t.Errorf("backfill eligibility missing %q", must)
 		}
+	}
+}
+
+// The stable LOCF chunk bound in hourSpeedSQL must widen with the backfill
+// horizon, or backfilled rows (up to 10 days old) would lose their 7-day
+// look-back (2026-09-28).
+func TestWidenHourWindowsWidensLOCFChunkBound(t *testing.T) {
+	if !strings.Contains(hourSpeedSQL, "now() - interval '8 days'") {
+		t.Fatal("hourSpeedSQL lost its stable LOCF chunk bound")
+	}
+	w := widenHourWindows(hourSpeedSQL)
+	if strings.Contains(w, "now() - interval '8 days'") || !strings.Contains(w, "now() - interval '17 days'") {
+		t.Fatal("widenHourWindows must map the 8-day LOCF chunk bound to 17 days")
 	}
 }

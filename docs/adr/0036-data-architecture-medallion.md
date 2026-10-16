@@ -31,7 +31,7 @@ Concretely, trace one SparkPlug sample through the live F3 path and label what e
 
 ```
 PLC ──SparkPlug B (MQTT)──▶ edge-transformer
-    services/edge-transformer/internal/transforms/calc_production_counters/   ← count Calc (delta/reset/rollover)
+    services/sparkplug-decoder/internal/transforms/calc_production_counters/   ← count Calc (delta/reset/rollover)
         │  decode → alias-resolve → per-counter delta → emit increment
         ▼ RabbitMQ (oee exchange, sparkplug.data)
     oeecloud-worker

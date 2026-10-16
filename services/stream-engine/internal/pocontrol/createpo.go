@@ -4,12 +4,19 @@
 // One tx replaces prod's two-round-trip prep/build split. Chain:
 // ensure product family → ensure product → ensure client → resolve
 // ids + inherited conversion_factor → INSERT PO status=1 with
-// ON CONFLICT (id_enterprise, id_order) DO UPDATE custom_field +
+// ON CONFLICT (id_enterprise, id_order_text) DO UPDATE custom_field +
 // id_equipment (the natural-key upsert — bug-247/248 rules).
 //
+// ADR-0062 step 2: the order number is the client's TEXT number
+// (OrderNumber — a JSON string or number, kept as given). It is written to
+// id_order_text; id_order is sent NULL and the production_orders_po_number
+// trigger (t-adr0062-p1-po-number-expand) assigns the deprecated integer.
+//
 // GUARDRAIL STATEMENT (audit rules): relies on production_orders'
-// natural key UNIQUE (id_enterprise, id_order); satisfies the ts
-// CHECK via status=1 with ts_start NULL. product_families/products/
+// natural key UNIQUE (id_enterprise, id_order_text)
+// (production_orders_id_enterprise_order_number_key) and on the trigger
+// filling id_order NOT NULL; satisfies the ts CHECK via status=1 with
+// ts_start NULL. product_families/products/
 // clients are REFERENCE-plane → refSchema (public on both DBs).
 //
 // DEFENSIVE DIVERGENCE (documented): prod's family-id subselect
@@ -34,7 +41,7 @@ import (
 func HandlesCreatePO(id int) bool { return id == 30805 }
 
 type createPOPayload struct {
-	IDOrder         json.Number     `json:"id_order"`
+	IDOrder         OrderNumber     `json:"id_order"` // client PO number: string or number (ADR-0062)
 	OrderQuantity   json.Number     `json:"order_quantity"`
 	NmProduct       string          `json:"nm_product"`
 	CdProduct       string          `json:"cd_product"`
@@ -73,11 +80,11 @@ const cpInsertPO = `
 	       (id_enterprise, id_site, id_area, id_equipment, id_product, id_client,
 	        status, production_programmed, production_ordered, id_order, ts_creation,
 	        txt_production_order_description, conversion_factor, id_order_text, custom_field)
-	VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7, $8, $9, $10, $11, $12, $13)
-	ON CONFLICT (id_enterprise, id_order) DO UPDATE SET
+	VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7, NULL, $8, $9, $10, $11, $12)
+	ON CONFLICT (id_enterprise, id_order_text) DO UPDATE SET
 	       custom_field = EXCLUDED.custom_field, id_equipment = EXCLUDED.id_equipment`
 
-func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, schema string) error {
+func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sparkplug.Metric, s Schemas) error {
 	info, ok, err := h.resolveOrNoop(ctx, m)
 	if err != nil || !ok {
 		return err
@@ -86,16 +93,31 @@ func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sp
 	if err := json.Unmarshal(m.Value, &p); err != nil {
 		return fmt.Errorf("30805 payload: %w", err)
 	}
-	idOrder, err := p.IDOrder.Int64()
-	if err != nil {
-		return fmt.Errorf("30805 id_order required: %w", err)
+	if p.IDOrder.IsZero() {
+		return fmt.Errorf("30805 id_order required: empty or absent")
 	}
-	qty, _ := p.OrderQuantity.Float64()
 	tsMs, terr := p.Timestamp.Int64()
 	if terr != nil || tsMs == 0 {
 		tsMs = m.Timestamp
 	}
 	tsCreated := time.UnixMilli(tsMs).Round(time.Second).UTC()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := createPOTx(ctx, tx, s, info, p, tsCreated); err != nil {
+		return err
+	}
+	h.created.Add(1)
+	return tx.Commit(ctx)
+}
+
+// createPOTx runs the 30805 chain inside tx. Split from executeCreatePO so the
+// golden test drives the exact SQL against a real Postgres without a resolver.
+func createPOTx(ctx context.Context, tx pgx.Tx, s Schemas, info *sparkplug.EquipmentInfo, p createPOPayload, tsCreated time.Time) error {
+	qty, _ := p.OrderQuantity.Float64()
 
 	// Prod: absent family → the '' family (DO UPDATE keeps RETURNING).
 	family := ""
@@ -107,37 +129,30 @@ func (h *Handler) executeCreatePO(ctx context.Context, pool *pgxpool.Pool, m *sp
 		custom = string(p.CustomField)
 	}
 
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
 	var familyID int64
-	if err := tx.QueryRow(ctx, fmt.Sprintf(cpFamilyUpsert, schema, refSchema),
+	if err := tx.QueryRow(ctx, fmt.Sprintf(cpFamilyUpsert, s.Core, s.Core),
 		family, info.IDEnterprise).Scan(&familyID); err != nil {
 		return fmt.Errorf("family upsert: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(cpProductInsert, schema, refSchema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(cpProductInsert, s.Core, s.Core),
 		p.NmProduct, familyID, p.TxtProduct, info.IDEnterprise, p.CdProduct); err != nil {
 		return fmt.Errorf("product insert: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(cpClientUpsert, schema, refSchema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(cpClientUpsert, s.Core, s.Core),
 		p.NmClient, info.IDEnterprise); err != nil {
 		return fmt.Errorf("client upsert: %w", err)
 	}
 	var idProduct, idClient *int64
 	var convFactor *float64
-	if err := tx.QueryRow(ctx, fmt.Sprintf(cpResolve, schema, refSchema),
+	if err := tx.QueryRow(ctx, fmt.Sprintf(cpResolve, s.Core, s.Core),
 		p.CdProduct, p.NmClient, info.IDEnterprise).Scan(&idProduct, &idClient, &convFactor); err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("resolve ids: %w", err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(cpInsertPO, schema),
+	if _, err := tx.Exec(ctx, fmt.Sprintf(cpInsertPO, s.Core),
 		info.IDEnterprise, info.IDSite, info.IDArea, info.IDEquipment,
-		idProduct, idClient, qty, idOrder, tsCreated,
-		p.TxtProduct, convFactor, fmt.Sprint(idOrder), custom); err != nil {
+		idProduct, idClient, qty, tsCreated,
+		p.TxtProduct, convFactor, p.IDOrder.String(), custom); err != nil {
 		return fmt.Errorf("po insert: %w", err)
 	}
-	h.created.Add(1)
-	return tx.Commit(ctx)
+	return nil
 }

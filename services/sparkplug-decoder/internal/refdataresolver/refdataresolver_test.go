@@ -42,7 +42,7 @@ func (f *fakeRefdata) handler() http.HandlerFunc {
 			http.Error(w, `{"error":"not mapped"}`, http.StatusNotFound)
 			return
 		}
-		fmt.Fprintf(w, `{"id_equipment":%d}`, id)
+		fmt.Fprintf(w, `{"id_equipment":%d,"id_enterprise":%d}`, id, id/10000) // tenant derived from the id: test only
 	}
 }
 
@@ -63,9 +63,9 @@ func TestResolveHit(t *testing.T) {
 		PositiveTTL: time.Minute, NegativeTTL: time.Minute,
 	})
 
-	id, ok := r.Resolve("CPACK-SC-LINHAS-L5")
-	if !ok || id != 40004 {
-		t.Fatalf("Resolve = (%d, %v), want (40004, true)", id, ok)
+	dev, ok := r.Resolve("CPACK-SC-LINHAS-L5")
+	if !ok || dev.IDEquipment != 40004 || dev.IDEnterprise != 4 {
+		t.Fatalf("Resolve = (%+v, %v), want ({40004 4}, true)", dev, ok)
 	}
 	if _, ok := r.Resolve("CPACK-SC-LINHAS-L5"); !ok {
 		t.Fatalf("second Resolve should still hit")
@@ -84,8 +84,8 @@ func TestResolveMissFailClosed(t *testing.T) {
 		PositiveTTL: time.Minute, NegativeTTL: time.Minute,
 	})
 
-	if id, ok := r.Resolve("UNKNOWN"); ok || id != 0 {
-		t.Fatalf("Resolve = (%d, %v), want (0, false)", id, ok)
+	if dev, ok := r.Resolve("UNKNOWN"); ok || dev.IDEquipment != 0 {
+		t.Fatalf("Resolve = (%+v, %v), want ({0 0}, false)", dev, ok)
 	}
 	_, _ = r.Resolve("UNKNOWN")
 	if got := f.hits.Load(); got != 1 {

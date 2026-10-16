@@ -54,9 +54,10 @@ import (
 //	│  (terminal, NO TTL, NO DLX — human inspection only)                │
 //	└────────────────────────────────────────────────────────────────────┘
 //
-// The "legacy catch-all" queue from oeecloud-worker is kept here for
+// The "legacy catch-all" queue triple from oeecloud-worker is kept here for
 // symmetry — it gives operators a panic-button queue to bind `#` to if
-// per-tenant routing breaks during onboarding. In normal operation it
+// per-tenant routing breaks during onboarding. Its retry and failed queues are
+// unbound too (see steps 3–4), so a tenant message is dead-lettered once. In normal operation it
 // stays empty (no `#` binding declared; only `sparkplug.data` / equivalent
 // exact bindings if/when added).
 func DeclareTopology(ctx context.Context, ch *amqp.Channel, cfg *config.Config, tenants []string, logger *slog.Logger) error {
@@ -76,23 +77,31 @@ func DeclareTopology(ctx context.Context, ch *amqp.Channel, cfg *config.Config, 
 	}
 
 	// 3. Legacy retry queue with TTL + DLX back to source. Mirrors
-	//    oeecloud-worker so operator runbooks transfer.
+	//    oeecloud-worker so operator runbooks transfer. Declared but NOT
+	//    bound, like the catch-all queue above. It used to be bound to `#`,
+	//    which also matched every tenant's retry key: each nack was
+	//    dead-lettered into BOTH this queue and the tenant's retry queue, both
+	//    expired back to the source, and the message doubled on every retry
+	//    (1+2+4+8 handler runs for MAX_RETRIES=3). Same bug stream-engine fixed
+	//    in #1567. Unbinding `#` is idempotent, so this also repairs brokers
+	//    older releases left behind.
 	if _, err := ch.QueueDeclare(cfg.RetryQueue, true, false, false, false, amqp.Table{
 		"x-message-ttl":          int32(cfg.RetryTTLMs),
 		"x-dead-letter-exchange": cfg.SourceExchange,
 	}); err != nil {
 		return fmt.Errorf("declare retry queue: %w", err)
 	}
-	if err := ch.QueueBind(cfg.RetryQueue, "#", cfg.RetryExchange, false, nil); err != nil {
-		return fmt.Errorf("bind retry queue: %w", err)
+	if err := ch.QueueUnbind(cfg.RetryQueue, "#", cfg.RetryExchange, nil); err != nil {
+		return fmt.Errorf("unbind legacy # from retry queue: %w", err)
 	}
 
-	// 4. Legacy terminal failed queue.
+	// 4. Legacy terminal failed queue. Unbound for the same reason (a `#`
+	//    binding put every parked tenant message in two failed queues).
 	if _, err := ch.QueueDeclare(cfg.FailedQueue, true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare failed queue: %w", err)
 	}
-	if err := ch.QueueBind(cfg.FailedQueue, "#", cfg.FailedExchange, false, nil); err != nil {
-		return fmt.Errorf("bind failed queue: %w", err)
+	if err := ch.QueueUnbind(cfg.FailedQueue, "#", cfg.FailedExchange, nil); err != nil {
+		return fmt.Errorf("unbind legacy # from failed queue: %w", err)
 	}
 
 	// 5. Per-tenant queues (one tenant per transformer instance in the

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +18,7 @@ type fakeTx struct {
 	total     map[int64]int64       // id_po → total_qty
 	ownsPO    map[int64]int         // id_po → owning enterprise
 	ownsEquip map[int]int           // id_equipment → owning enterprise
+	owner     map[string]int        // scan_uuid → enterprise that wrote it
 	inserts   int                   // how many rows were actually written
 	nextBox   int64
 }
@@ -23,6 +26,7 @@ type fakeTx struct {
 func newFakeTx() *fakeTx {
 	return &fakeTx{
 		existing:  map[string]ScanResult{},
+		owner:     map[string]int{},
 		last:      map[int64]int64{},
 		total:     map[int64]int64{},
 		ownsPO:    map[int64]int{},
@@ -31,9 +35,9 @@ func newFakeTx() *fakeTx {
 	}
 }
 
-func (f *fakeTx) existingByUUID(_ context.Context, uuid string) (ScanResult, bool, error) {
+func (f *fakeTx) existingByUUID(_ context.Context, uuid string) (ScanResult, int, bool, error) {
 	r, ok := f.existing[uuid]
-	return r, ok, nil
+	return r, f.owner[uuid], ok, nil
 }
 
 func (f *fakeTx) tenantOwns(_ context.Context, ent int, idPO int64, idEquip int) (bool, error) {
@@ -44,7 +48,7 @@ func (f *fakeTx) lastLabelSeq(_ context.Context, idPO int64) (int64, error) {
 	return f.last[idPO], nil
 }
 
-func (f *fakeTx) insertScan(_ context.Context, _ int, req ScanRequest, labelSeq *int64, counterSeq, delta int64) (int64, int64, error) {
+func (f *fakeTx) insertScan(_ context.Context, ent int, req ScanRequest, labelSeq *int64, counterSeq, delta int64) (int64, int64, error) {
 	f.inserts++
 	box := f.nextBox
 	f.nextBox++
@@ -55,6 +59,7 @@ func (f *fakeTx) insertScan(_ context.Context, _ int, req ScanRequest, labelSeq 
 		res.LabelSeq = *labelSeq
 	}
 	f.existing[req.ScanUUID] = res // model the UNIQUE(scan_uuid) row now being present
+	f.owner[req.ScanUUID] = ent
 	return box, f.total[req.IDProductionOrder], nil
 }
 
@@ -237,5 +242,71 @@ func TestValidateScanRequest(t *testing.T) {
 	bt := ScanRequest{ScanUUID: "a", IDProductionOrder: 1, IDEquipment: 1, ScanType: "bogus"}
 	if derr := validateScanRequest(&bt); derr == nil || derr.Code != "scan_type_invalid" {
 		t.Fatalf("bad scan_type not rejected: %+v", derr)
+	}
+}
+
+// A scan_uuid that another enterprise already used must NOT replay that
+// tenant's row: 409 scan_uuid_conflict, nothing leaked, nothing written.
+func TestReplay_ForeignTenantUUIDIsConflictNotLeak(t *testing.T) {
+	ctx := context.Background()
+	tx := newFakeTx()
+	tx.seed(testEnt, testPO, testEquip)
+	if _, derr, err := applyScan(ctx, tx, testEnt, prodReq("shared-uuid", modeAssign)); err != nil || derr != nil {
+		t.Fatalf("first scan: derr=%v err=%v", derr, err)
+	}
+	inserts := tx.inserts
+
+	const otherEnt = testEnt + 1
+	res, derr, err := applyScan(ctx, tx, otherEnt, prodReq("shared-uuid", modeAssign))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if derr == nil || derr.Status != http.StatusConflict || derr.Code != "scan_uuid_conflict" {
+		t.Fatalf("derr = %+v, want 409 scan_uuid_conflict", derr)
+	}
+	if res != (ScanResult{}) {
+		t.Fatalf("foreign replay leaked a row: %+v", res)
+	}
+	if tx.inserts != inserts {
+		t.Fatalf("foreign replay wrote a row (%d → %d)", inserts, tx.inserts)
+	}
+}
+
+// TestPostScan_OversizedBodyIs413 pins the size cap: any body over
+// maxScanBodyBytes answers 413 (not 400), including the 64–128 KiB band where
+// the decoder hit the cap mid-parse and the old code reported "invalid json body".
+func TestPostScan_OversizedBodyIs413(t *testing.T) {
+	srv := &scanServer{} // decode fails before the store/broker are touched
+	for _, size := range []int{maxScanBodyBytes + 1, 70 << 10, 127 << 10, 200 << 10} {
+		pad := strings.Repeat("x", size)
+		body := `{"scan_uuid":"u1","id_production_order":1,"id_equipment":1,"raw_barcode":"` + pad + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/scans", strings.NewReader(body))
+		req = req.WithContext(withEnterpriseID(req.Context(), testEnt))
+		rec := httptest.NewRecorder()
+		srv.handlePostScan(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("size=%d: status = %d, want 413 (body %s)", size, rec.Code, rec.Body.String())
+		}
+		if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"request body too large"}` {
+			t.Fatalf("size=%d: body = %s", size, got)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("size=%d: Content-Type = %q", size, ct)
+		}
+	}
+}
+
+// TestPostScan_MalformedSmallBodyStays400 keeps the syntax error path a 400.
+func TestPostScan_MalformedSmallBodyStays400(t *testing.T) {
+	srv := &scanServer{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/scans", strings.NewReader(`{"scan_uuid":`))
+	req = req.WithContext(withEnterpriseID(req.Context(), testEnt))
+	rec := httptest.NewRecorder()
+	srv.handlePostScan(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"invalid json body"}` {
+		t.Fatalf("body = %s", got)
 	}
 }

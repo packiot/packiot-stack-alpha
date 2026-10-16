@@ -1,5 +1,5 @@
 -- 06-eqvalues-index-prune.MANUAL.sql — REFACTORED schemas only
--- (F3 public in packiot_shadow; F2 shadow_go_port in packiot). NEVER legacy packiot.public.
+-- (F3 public in packiot_analytics; F2 shadow_go_port in packiot). NEVER legacy packiot.public.
 --
 -- ⚠️  RUN THIS MANUALLY, OUTSIDE ANY TRANSACTION. It is NOT part of the
 -- ⚠️  transactional migration (05-…). Every statement here is either
@@ -7,7 +7,7 @@
 -- ⚠️  refuses to run inside a transaction block. Run with autocommit on:
 -- ⚠️
 -- ⚠️      sed 's/__SCH__/public/g' 06-eqvalues-index-prune.MANUAL.sql \
--- ⚠️        | psql -d packiot_shadow -v ON_ERROR_STOP=0
+-- ⚠️        | psql -d packiot_analytics -v ON_ERROR_STOP=0
 -- ⚠️
 -- ⚠️  (do NOT wrap in BEGIN/COMMIT; do NOT run via a knex/DO migration.)
 -- ⚠️  IF EXISTS on every drop makes it re-runnable; a CONCURRENTLY drop that is
@@ -15,7 +15,7 @@
 --
 -- ─────────────────────────────────────────────────────────────────────────────
 -- WHY — approved DBA review, TASK 1: prune ~630 MB of dead/redundant indexes on
--- the equipment_values hypertable. Measured on staging packiot_shadow (TSDB 2.27,
+-- the equipment_values hypertable. Measured on staging packiot_analytics (TSDB 2.27,
 -- 29 chunks): total equipment_values index footprint 987 MB → 359 MB. All scan
 -- counts below are lifetime totals aggregated across the parent + every chunk
 -- index (a hypertable's real scans land on the chunk indexes, not the parent).

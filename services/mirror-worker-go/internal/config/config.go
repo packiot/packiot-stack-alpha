@@ -45,10 +45,10 @@ type Config struct {
 
 	// ADR-0012 3-flow parity fan-out for equipment_values deltas.
 	// ShadowValueFanout gates the whole feature (shadow_go_port +
-	// packiot_shadow writes). ShadowDBName names the Flow 3 database
+	// packiot_analytics writes). ShadowDBName names the Flow 3 database
 	// (empty = shadow_go_port only). ShadowDBHost overrides the host for
 	// the shadow pool — pgbouncer's static database list doesn't include
-	// packiot_shadow, so staging passes the DB EC2 address directly.
+	// packiot_analytics, so staging passes the DB EC2 address directly.
 	ShadowValueFanout bool
 	// ShadowFanoutF2 gates the F2 (shadow_go_port) leg of the fan-out (ADR-0032
 	// collapse). Default true = fan both F2+F3; false = fan ONLY F3 so
@@ -281,7 +281,7 @@ func Load() (*Config, error) {
 		StagingAPIBaseURL:     getenv("STAGING_API_URL", "http://edge-api:8080"),
 		ShadowValueFanout:     getenvBool("SHADOW_VALUE_FANOUT", false),
 		ShadowFanoutF2:        getenvBool("SHADOW_FANOUT_F2", true),
-		ShadowDBName:          getenv("POSTGRES_SHADOW_DB_NAME", ""),
+		ShadowDBName:          getenv("POSTGRES_ANALYTICS_DB_NAME", ""),
 		ShadowDBHost:          getenv("SHADOW_DB_HOST", ""),
 		EventMinOverlapSec:    getenvInt("EVENT_MIN_OVERLAP_SEC", 30),
 		EventMaxStartDriftSec: getenvInt("EVENT_MAX_START_DRIFT_SEC", 600),

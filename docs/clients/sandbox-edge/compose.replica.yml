@@ -1,0 +1,301 @@
+# compose.replica.yml — SEVERED-DATA-PATH replica of the real CPACK edge box.
+#
+# WHAT THIS IS
+# =============================================================================
+# A FULL-TOPOLOGY replica of the productized Mode-B client edge
+# (docs/clients/edge-deployment/compose.edge.yml): the SAME service names, ports,
+# healthchecks and image roles, so Box Ops (health · logs · restart · connect /
+# port-forward) behaves BYTE-FOR-BYTE like a real client box. It runs on the
+# staging sandbox VM (SSM mi-0114b66366e2d6613, tenant sbxcpack, ent 2000003)
+# and REPLACES the earlier public-image MOCK (docs/clients/sandbox-edge on
+# branch chore/codify-sandbox-edge-box: alpine/redis/vanilla-nodered).
+#
+# It is deliberately unable to write to real CPACK. The data path is CUT at FIVE
+# independent layers — remove any one and the other four still hold:
+#
+#   L1  NETWORK   edge-net is `internal: true` → the bridge has NO gateway, so
+#                 NO container can route off-box to ingest.prod / any WAN host.
+#   L2  UPLINK    the agent's uplink_broker is the INTERNAL loopback mosquitto
+#                 (Mode-A) — the SparkPlug session terminates inside the box.
+#                 Any ssl:// fallback in env points at a .invalid blackhole.
+#   L3  IDENTITY  the mTLS cert is CN=sbxcpack, signed by a THROWAWAY sandbox CA
+#                 (never the real Packiot Edge Uplink CA) — the real broker ACL
+#                 would reject it even if L1+L2 failed.
+#   L4  PLC IN    the readers have NO reachable PLC (hosts point at RFC-5737
+#                 TEST-NET-1 192.0.2.x, which L1 also blackholes) → no factory
+#                 data is ever ingested to sever in the first place.
+#   L5  NO DB     AGENT_TAGMAP_FROM_REGISTER=false + no AGENT_REGISTER_DSN → the
+#                 agent never dials the cloud packml_register DB.
+#
+# See docs/clients/sandbox-edge/README-severance.md for the post-deploy proof
+# checklist, and scripts/provision-cpack-replica-sandbox.sh for image acquisition
+# + cert mint + guarded deploy.
+#
+# DEPLOY (via the provision script, which fills .env + mounts the sandbox certs):
+#   MI=mi-0114b66366e2d6613 ./scripts/provision-cpack-replica-sandbox.sh
+# The script sets COMPOSE_PROFILES so `up` needs no --profile flag.
+
+name: packiot-edge-${TENANT_SLUG:-sbxcpack}
+
+networks:
+  edge-net:
+    driver: bridge
+    # ── SEVERANCE L1 — WHY THIS IS A NORMAL BRIDGE, NOT `internal: true` ───────
+    # An `internal: true` bridge has NO host gateway, which is the strongest
+    # network cut — BUT it also means Docker cannot PUBLISH container ports to the
+    # host (no NAT/DNAT path), so :9103 (agent healthz) and :1880 (Node-RED UI)
+    # become unreachable from the box host. Box Ops health (`curl localhost:9103`
+    # run on the box over SSM) and Connect (:1880 SSM port-forward) then BOTH
+    # break — and Box Ops parity is the entire reason this replica exists. A real
+    # client box also publishes these ports, so publishing them is the FAITHFUL
+    # behaviour too.
+    #
+    # Severance therefore does NOT rely on the network layer. The data path is
+    # cut by FOUR layers that hold regardless of WAN reachability, plus a
+    # namespace cut: L2 the agent uplink loops back to the in-box mosquitto (it
+    # never dials the cloud even with a route); L3 the mTLS identity is CN=sbxcpack
+    # from a throwaway CA (the real broker ACL rejects it); L4 no PLC is reachable
+    # (readers off / TEST-NET hosts); L5 no cloud register DB is dialed. Leaking
+    # to real CPACK would require deliberately re-pointing the uplink AND swapping
+    # in the real client cert — not a single typo. See README-severance.md.
+
+volumes:
+  agent-outbox:        # store-and-forward — mirrors the real box (harmless here)
+  nodered-data:        # Node-RED flow/credential store
+  mosquitto-data:      # retained NBIRTHs survive a broker restart
+
+# Shared base for the config-as-data Go readers (s7/modbus/opcua). Top-level
+# x-extension so the &anchor merges into each reader without being a service.
+x-reader-base: &reader-base
+  image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+  restart: on-failure           # a reader with no endpoints exits 0 → must NOT loop
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    TZ: ${TZ:-UTC}
+    # ── SEVERANCE L4 (data IN) ────────────────────────────────────────────────
+    # Protocol-wide fallback hosts point at RFC-5737 TEST-NET-1 (192.0.2.0/24),
+    # which is reserved for documentation and is guaranteed non-routable — and L1
+    # blackholes it regardless. No real factory PLC is ever dialed.
+    S7_HOST: ${S7_HOST:-192.0.2.1}
+    MODBUS_HOST: ${MODBUS_HOST:-192.0.2.1:502}
+    OPCUA_ENDPOINT_URL: ${OPCUA_ENDPOINT_URL:-opc.tcp://192.0.2.1:4840}
+  volumes:
+    - ${CLIENT_CONFIG_FILE:-./sbxcpack/sbxcpack-client.yaml}:/etc/packiot/client.yaml:ro
+  networks: [edge-net]
+  depends_on:
+    mosquitto:
+      condition: service_healthy
+  mem_limit: 128m
+  cpus: 0.25
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+
+  # ── Tier-1 CONNECTIVITY PLANE (Node-RED) ─────────────────────────────────────
+  # Mirrors the real box's edge-nodered exactly (PLC-capable image, :1880 UI =
+  # the Connect / port-forward target). On the sandbox it has no PLC to read
+  # (L1+L4), so its reader flow simply produces nothing — the container is up,
+  # healthy and connectable so Box Ops parity holds.
+  nodered:
+    image: ${NODERED_IMAGE:-packiot/nodered-reader:4.0}
+    build:
+      # context `.` = this dir, which ships Dockerfile.nodered-reader, so an
+      # on-box `docker compose build` works when egress is available (before L1
+      # is applied). The provision script prefers a pre-loaded image.
+      context: .
+      dockerfile: Dockerfile.nodered-reader
+    container_name: edge-${TENANT_SLUG:-sbxcpack}-nodered
+    profiles: ["nodered"]
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /data/.reader-seeded ] && [ -s /data/reader-flow.seed.json ]; then
+          cp /data/reader-flow.seed.json /data/flows.json
+          touch /data/.reader-seeded
+          echo "[edge-seed] first boot: seeded /data/flows.json from the generated reader-flow"
+        else
+          echo "[edge-seed] already seeded or no seed mounted — leaving active flows as-is"
+        fi
+        cd /usr/src/node-red
+        exec ./entrypoint.sh
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+      FLOWS: flows.json
+      # Box-LOCAL ingest key for the nodered→agent :9104 hop. Never leaves the box.
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+    volumes:
+      - nodered-data:/data
+      # The generated reader flow (onboard-gen artifact). Unset ⇒ /dev/null ⇒ skip.
+      - ${NODERED_READER_FLOW:-/dev/null}:/data/reader-flow.seed.json:ro
+    ports:
+      - "${NODERED_UI_PORT:-1880}:1880"   # editor UI — the Connect target
+    networks: [edge-net]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Tier-1 CONNECTIVITY PLANE (config-as-data Go READERS) ────────────────────
+  # The productized reader trio. On the sandbox each one starts, finds its PLC
+  # host unreachable (L4) / unroutable (L1), and self-retires — proving the
+  # data-IN path is cut while keeping the real container topology on the box.
+  s7-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG:-sbxcpack}-s7-reader
+    profiles: ["reader", "reader-s7"]
+    entrypoint:
+      - /usr/local/bin/s7-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER:-SBXCPACK}
+      - --tenant
+      - ${TENANT_SLUG:-sbxcpack}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
+
+  modbus-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG:-sbxcpack}-modbus-reader
+    profiles: ["reader", "reader-modbus"]
+    entrypoint:
+      - /usr/local/bin/modbus-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER:-SBXCPACK}
+      - --tenant
+      - ${TENANT_SLUG:-sbxcpack}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
+
+  opcua-reader:
+    <<: *reader-base
+    container_name: edge-${TENANT_SLUG:-sbxcpack}-opcua-reader
+    profiles: ["reader", "reader-opcua"]
+    entrypoint:
+      - /usr/local/bin/opcua-reader
+      - --client-config
+      - /etc/packiot/client.yaml
+      - --endpoint
+      - ${READER_ENDPOINT:-}
+      - --group
+      - ${TENANT_UPPER:-SBXCPACK}
+      - --tenant
+      - ${TENANT_SLUG:-sbxcpack}
+      - --broker
+      - ${MQTT_BROKER_URL:-tcp://mosquitto:1883}
+      - --raw-emit=true
+
+  # ── INTERNAL LOOPBACK BUS ────────────────────────────────────────────────────
+  # Identical to the real box: plain-JSON raw-tag hop, no TLS, no WAN. On the
+  # sandbox it is ALSO the agent's uplink target (L2), so the SparkPlug session
+  # loops back here and never leaves the box.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: edge-${TENANT_SLUG:-sbxcpack}-mosquitto
+    restart: unless-stopped
+    init: true
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    networks: [edge-net]
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 mosquitto_pub -h 127.0.0.1 -t healthcheck/ping -m ok -q 0"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # ── Tier-2 TRANSMISSION PLANE (sparkplug-agent) ──────────────────────────────
+  # The uniform Go SparkPlug agent — same image, same :9103 healthz/metrics, same
+  # :9104 HTTP tee front-door as the real box. The ONLY differences are severance:
+  # the uplink loops back (L2), the cert is the sandbox CN (L3), and there is no
+  # DB dial (L5). Health/logs/restart therefore look identical to a real edge.
+  sparkplug-agent:
+    image: ${AGENT_IMAGE:-packiot/sparkplug-agent:local}
+    container_name: edge-${TENANT_SLUG:-sbxcpack}-agent
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/sparkplug-agent", "--config", "/etc/packiot/agent.yaml"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AGENT_CONFIG: /etc/packiot/agent.yaml
+      AGENT_PROFILE_PATH: /etc/packiot/profile.yaml
+      HEALTH_PORT: "9103"
+      OUTBOX_PATH: /var/lib/edge-transformer/agent-outbox.db
+
+      # HTTP raw-tag front-door (the tee target). Box-local only.
+      AGENT_HTTP_INGEST_ENABLED: "${AGENT_HTTP_INGEST_ENABLED:-true}"
+      AGENT_INGEST_PORT: "9104"
+      AGENT_INGEST_API_KEY: ${AGENT_INGEST_API_KEY:?set AGENT_INGEST_API_KEY in .env}
+
+      # ── SEVERANCE L3 (identity) ───────────────────────────────────────────────
+      # The uplink is a PLAINTEXT loopback to the in-box mosquitto (L2), so the
+      # agent must NOT enable mTLS: wiring AGENT_UPLINK_TLS_* here makes the agent
+      # attempt a TLS handshake against the plaintext broker → connect timeout →
+      # crash loop. So we leave these EMPTY (the generated agent.yaml also carries
+      # empty *_ref). L3 is instead: the ONLY uplink identity material anywhere on
+      # this box is the sandbox cert (CN=sbxcpack, throwaway CA) that the provision
+      # script drops under CERTS_DIR — there is NO real client cert/key on the box.
+      # So a manual re-point to a real ssl:// broker has no valid credential to
+      # present and the real broker ACL rejects it. NEVER copy the real cpack
+      # cert/key here.
+      AGENT_UPLINK_TLS_CERT: ""
+      AGENT_UPLINK_TLS_KEY:  ""
+      AGENT_UPLINK_CA:       ""
+
+      # ── SEVERANCE L5 (no cloud DB) ────────────────────────────────────────────
+      # MUST stay false: the register-driven tag map queries the cloud packml_register
+      # DB, which (a) the sandbox must not reach and (b) L1 blackholes anyway →
+      # turning it on would crash-loop the agent on a dial it can never satisfy.
+      # No AGENT_REGISTER_DSN is set, so there is no DSN to dial even if flipped.
+      AGENT_TAGMAP_FROM_REGISTER: "${AGENT_TAGMAP_FROM_REGISTER:-false}"
+      AGENT_PARAM_DECOMPOSITION: "${AGENT_PARAM_DECOMPOSITION:-false}"
+      # Birth-completeness — harmless on the sandbox (no cloud consumer); kept ON
+      # to mirror the real box's flag posture exactly.
+      AGENT_BIRTH_ALL_MAPPED: "${AGENT_BIRTH_ALL_MAPPED:-true}"
+    volumes:
+      - ${AGENT_CONFIG_FILE:-./sbxcpack/sbxcpack-agent.yaml}:/etc/packiot/agent.yaml:ro
+      - ${AGENT_PROFILE_FILE:-./sbxcpack/sbxcpack-profile.yaml}:/etc/packiot/profile.yaml:ro
+      # Sandbox mTLS material (CN=sbxcpack). The agent runs as non-root uid 65532;
+      # the provision script chowns uplink-key.pem to 65532 so the TLS load works.
+      - ${CERTS_DIR:-./certs}:/etc/packiot/certs:ro
+      - agent-outbox:/var/lib/edge-transformer
+    ports:
+      - "${AGENT_HEALTH_PORT:-9103}:9103"   # /healthz + /metrics
+    networks: [edge-net]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sparkplug-agent", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 256m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

@@ -34,6 +34,16 @@ resource "random_password" "grafana_admin" {
   special = false
 }
 
+# Grafana "dev@packiot.com" Org Admin user — previously hand-created directly
+# in the running Grafana's sqlite store (never codified), so it silently
+# vanishes on any Grafana volume wipe/re-init. app_init.sh bootstraps it via
+# the Grafana HTTP API the same way it bootstraps the RabbitMQ client user
+# below — idempotent PUT-shaped calls gated on Grafana being healthy.
+resource "random_password" "grafana_dev_user" {
+  length  = 24
+  special = false
+}
+
 # ── DB credentials ────────────────────────────────────────────────────────────
 
 resource "aws_secretsmanager_secret" "db" {
@@ -73,6 +83,10 @@ resource "aws_secretsmanager_secret_version" "hasura" {
 }
 
 # ── Application secrets ───────────────────────────────────────────────────────
+# packiot/staging/app also carries out-of-band keys Terraform never generates
+# (values stay out of state/plan), e.g. REQUIRED `edge_session_broker_token`
+# (≥32 chars, `openssl rand -hex 32`): edge-api <-> edge-session-broker shared
+# secret (ADR-0057); deploy-staging.yml fails without it.
 
 resource "aws_secretsmanager_secret" "app" {
   name                    = "packiot/staging/app"
@@ -82,11 +96,27 @@ resource "aws_secretsmanager_secret" "app" {
 resource "aws_secretsmanager_secret_version" "app" {
   secret_id = aws_secretsmanager_secret.app.id
   secret_string = jsonencode({
-    edge_api_key       = random_password.edge_api_key.result
-    rabbitmq_user      = "packiot"
-    rabbitmq_password  = random_password.rabbitmq.result
-    grafana_admin_pass = random_password.grafana_admin.result
+    edge_api_key          = random_password.edge_api_key.result
+    rabbitmq_user         = "packiot"
+    rabbitmq_password     = random_password.rabbitmq.result
+    grafana_admin_pass    = random_password.grafana_admin.result
+    grafana_dev_user_pass = random_password.grafana_dev_user.result
   })
+  # NOTE: this resource has ignore_changes on the whole secret_string, so a
+  # `terraform apply` on an EXISTING live secret will NOT retroactively add
+  # grafana_dev_user_pass to it (same caveat that already applies to every
+  # other key here — see the comment at the top of this file). On a box where
+  # the secret predates this change, merge the new key in once:
+  #   aws secretsmanager get-secret-value --secret-id packiot/staging/app \
+  #     --query SecretString --output text | jq '. + {grafana_dev_user_pass:"<random>"}' \
+  #   | aws secretsmanager put-secret-value --secret-id packiot/staging/app --secret-string file:///dev/stdin
+  # A brand-new `terraform apply` (fresh secret) picks it up automatically.
+  #
+  # REQUIRED out-of-band keys (never generated here — values must stay out of
+  # state/plan): query_api_keys ("key:enterprise_id,…" read-api map),
+  # operator_refdata_api_key, operator_sbx_refdata_api_key,
+  # operator_bispharma_refdata_api_key (each must be a key of query_api_keys).
+  # deploy-staging.yml fails without them; docs/runbooks/rotate-readapi-keys.md.
   lifecycle { ignore_changes = [secret_string] }
 }
 
@@ -109,6 +139,20 @@ resource "aws_secretsmanager_secret" "agent_ingest" {
   name                    = "packiot/staging/agent-ingest"
   recovery_window_in_days = 0
   description             = "CPACK sparkplug-agent X-Ingest-Key (ADR-0042 P1) — populate manually, see comment above"
+}
+
+# ── per-tenant ingest key map (shared ingest door, 2026-10-14) ────────────────
+# sparkplug-agent-shared reads this when compose sets AGENT_INGEST_KEYS_SECRET_ID.
+# Value: {"<sha256-hex of an ingest key>": ["GROUP", ...], ...} — key HASHES
+# only; the keys themselves are generated on the app host and handed to each
+# client's Node-RED, never stored here. No secret_version on purpose (Terraform
+# must not hold the value); the app instance role already reads
+# packiot/staging/* (ec2.tf). Populate per the runbook in
+# services/sparkplug-decoder/README.md ("Per-tenant ingest keys").
+resource "aws_secretsmanager_secret" "agent_ingest_keys" {
+  name                    = "packiot/staging/agent-ingest-keys"
+  recovery_window_in_days = 0
+  description             = "sparkplug-agent-shared per-tenant X-Ingest-Key map: sha256(key) -> [groups]. Hashes only."
 }
 
 # ── Node-RED admin auth ────────────────────────────────────────────────────────

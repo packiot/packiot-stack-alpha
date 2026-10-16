@@ -1,5 +1,5 @@
 -- 03-purge-nonstate-event-pollution.sql — REFACTORED schemas only
--- (shadow_go_port in packiot, public in packiot_shadow). Never legacy.
+-- (shadow_go_port in packiot, public in packiot_analytics). Never legacy.
 --
 -- One-time cleanup paired with the BuildEventMint status_type=4 gate. Before
 -- the gate, BuildEventMint minted a raw open (ts_end NULL) equipment_events row

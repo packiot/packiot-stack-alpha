@@ -1,5 +1,5 @@
 -- 09-packml-register-device-key.sql — ADR-0046 §2 declared equipment identity.
--- __SCH__ = target schema (public on packiot_shadow / F3). Idempotent.
+-- __SCH__ = target schema (public on packiot_analytics / F3). Idempotent.
 --
 -- CONTEXT. ADR-0046 (edge-source topic contract §2 "identity is DECLARED at birth,
 -- never derived") makes each equipment carry a STABLE `device_key` — a flat string

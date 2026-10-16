@@ -1,0 +1,106 @@
+# bi.scanned_boxes — per-scan box detail (source: bronze.box_scans ⋈ equipments/sites/
+# areas/production_orders). Barcode station scans. Tenant-fenced via the equipments
+# join (see db/superset/05-bi-scanned-boxes.sql). Time-series on ts_value.
+table_name: scanned_boxes
+main_dttm_col: ts_value
+description: Per-scan box detail from barcode stations. scan_type production|void, label_seq, qty, per line/site/PO.
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: bi
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: b5c1d2e3-0a1b-4c2d-8e3f-000000000001
+metrics:
+- metric_name: box_count
+  verbose_name: Boxes scanned
+  expression: COUNT(*) FILTER (WHERE counts_toward_total)
+  d3format: ',d'
+  description: Valid boxes (excludes voids).
+  extra: null
+- metric_name: total_qty
+  verbose_name: Units
+  expression: SUM(qty)
+  d3format: .3~s
+  description: Total units across scanned boxes.
+  extra: null
+- metric_name: void_count
+  verbose_name: Voids
+  expression: COUNT(*) FILTER (WHERE scan_type = 'void')
+  d3format: ',d'
+  description: Voided/rejected scans.
+  extra: null
+- metric_name: void_rate
+  verbose_name: Void rate
+  expression: COUNT(*) FILTER (WHERE scan_type = 'void')::float / NULLIF(COUNT(*),0)
+  d3format: .1%
+  extra: null
+columns:
+- column_name: id_enterprise
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+  description: Tenant key (RLS). Never charted; used by the RLS fence.
+- column_name: ts_value
+  type: TIMESTAMP
+  is_dttm: true
+  is_active: true
+- column_name: nm_equipment
+  verbose_name: Line
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_site
+  verbose_name: Site
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_area
+  verbose_name: Area
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: nm_production_order
+  verbose_name: Production order
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: scan_type
+  type: VARCHAR
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+- column_name: label_seq
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: qty
+  type: INTEGER
+  is_dttm: false
+  is_active: true
+- column_name: counts_toward_total
+  type: BOOLEAN
+  is_dttm: false
+  is_active: true
+  groupby: true
+  filterable: true
+version: 1.0.0
+database_uuid: 88990db1-738a-46c8-a74c-4dfe02ae481a

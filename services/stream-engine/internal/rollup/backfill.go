@@ -65,7 +65,7 @@ import (
 const hourBackfillEligibleSQL = `
 	CREATE TEMP TABLE hour_elig ON COMMIT DROP AS
 	SELECT h.id_equipment, h.ts_value, h.target_customized
-	  FROM %[1]s.equipment_oee_hourly h
+	  FROM %[4]s.equipment_oee_hourly h
 	 WHERE h.recalc_needed
 	   AND h.ts_value <  now() - interval '65 minutes'
 	   AND h.ts_value >= now() - interval '10 days'
@@ -73,7 +73,7 @@ const hourBackfillEligibleSQL = `
 	        WHERE tp_equipment > 1
 	          AND NOT (id_area = ANY($1)) AND NOT (id_enterprise = ANY($2)))
 	 ORDER BY h.ts_value ASC
-	 LIMIT %[3]d`
+	 LIMIT %[6]d`
 
 // hourBackfillClearSQL settles every backfilled row. The live rollup relies on
 // re-selecting event-less hours each tick within its 65-min window; the backfill
@@ -82,7 +82,7 @@ const hourBackfillEligibleSQL = `
 // eligible batch here (after the passes have written their values) drains those
 // too. recalc_needed is an internal processing flag, not a bake-compared column.
 const hourBackfillClearSQL = `
-	UPDATE %[1]s.equipment_oee_hourly e SET recalc_needed = false
+	UPDATE %[4]s.equipment_oee_hourly e SET recalc_needed = false
 	  FROM hour_elig el
 	 WHERE e.id_equipment = el.id_equipment AND e.ts_value = el.ts_value`
 
@@ -96,6 +96,10 @@ func widenHourWindows(sql string) string {
 	return strings.NewReplacer(
 		"now() - interval '65 minutes'", "now() - interval '10 days'",
 		"now() - interval '6 hour'", "now() - interval '10 days'",
+		// hourSpeedSQL's stable LOCF chunk bound: live rows are <= 65 min old
+		// (8 days = 7-day look-back + slack); backfilled rows are up to 10 days
+		// old, so the look-back needs 17 days to stay a no-op widening.
+		"now() - interval '8 days'", "now() - interval '17 days'",
 	).Replace(sql)
 }
 
@@ -122,11 +126,10 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	if !gotLock {
 		return 0, tx.Commit(ctx) // another backfill tick holds it — retry next tick
 	}
-	tag, err := tx.Exec(ctx, fmt.Sprintf(hourBackfillEligibleSQL, d.EvSchema, d.RefSchema, limit), exclAreas, exclEnterprises)
+	n, err := fillElig(ctx, tx, "hour_elig", fmtRD(hourBackfillEligibleSQL, d, limit), exclAreas, exclEnterprises)
 	if err != nil {
 		return 0, fmt.Errorf("hour-backfill eligible: %w", err)
 	}
-	n := tag.RowsAffected()
 	if n == 0 {
 		return 0, tx.Commit(ctx) // backlog drained for this dest
 	}
@@ -137,38 +140,14 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	// the values pass then blows the 5-min tick budget. Index + ANALYZE so the
 	// planner drives from hour_elig via nested-loop index-seeks into the big
 	// tables; the widened window collapses to a cheap redundant filter.
-	if _, err := tx.Exec(ctx, `CREATE INDEX ON hour_elig (id_equipment, ts_value)`); err != nil {
+	if _, err := tx.Exec(ctx, `CREATE INDEX IF NOT EXISTS hour_elig_key ON hour_elig (id_equipment, ts_value)`); err != nil {
 		return 0, fmt.Errorf("hour-backfill index: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `ANALYZE hour_elig`); err != nil {
 		return 0, fmt.Errorf("hour-backfill analyze: %w", err)
 	}
-	steps := []struct{ name, sql string }{
-		{"values", widenHourWindows(fmt.Sprintf(hourValuesSQL, d.EvSchema))},
-		{"cascade-day", fmt.Sprintf(hourCascadeDaySQL, d.EvSchema)},
-		// #186: cascade-area removed (area hourly grain retired).
-		{"speed", widenHourWindows(fmt.Sprintf(hourSpeedSQL, d.EvSchema, d.RefSchema))},
-		{"events", widenHourWindows(fmt.Sprintf(hourEventsSQL, d.EvSchema, plannedDowntimeExpr(changeoverAvailability)))},
-		{"targets", widenHourWindows(fmt.Sprintf(hourTargetsSQL, d.EvSchema, d.RefSchema))},
-		{"clear", fmt.Sprintf(hourBackfillClearSQL, d.EvSchema)},
-	}
-	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q
-	// with a last pass (canonical A·P·Q reconcile when engaged, else the legacy oee_p
-	// residual); the backfill previously OMITTED it, so a stranded hour it drained got
-	// oee / oee_a / oee_q recomputed by the events pass while oee_p kept its stale
-	// value → the identity broke on every backfilled row (measured live: CPACK tp=3
-	// line hours with oee ≠ oee_a·oee_p·oee_q). Run the SAME finalize the live path
-	// runs, widened to the backfill's 10-day horizon and AFTER the clear so the legacy
-	// residual's `NOT recalc_needed` guard matches (the reconcile is guard-free).
-	if ca.engagedCanonical() {
-		steps = append(steps, struct{ name, sql string }{"oee-reconcile",
-			widenHourWindows(fmt.Sprintf(hourOeeReconcileSQL, d.EvSchema))})
-	} else {
-		steps = append(steps, struct{ name, sql string }{"oee-p",
-			widenHourWindows(fmt.Sprintf(hourOeePSQL, d.EvSchema))})
-	}
-	for _, s := range steps {
-		if _, err := tx.Exec(ctx, s.sql); err != nil {
+	for _, s := range hourBackfillSteps(d, ca, changeoverAvailability) {
+		if err := execStep(ctx, tx, s); err != nil {
 			return 0, fmt.Errorf("hour-backfill %s: %w", s.name, err)
 		}
 	}
@@ -178,17 +157,83 @@ func RunHourBackfill(ctx context.Context, d flows.Dest, exclAreas, exclEnterpris
 	return n, nil
 }
 
+// hourBackfillSteps is the ordered statement list RunHourBackfill executes after
+// hour_elig is built. Split out so the history-recompute renderer (history.go)
+// emits exactly the passes the engine runs — never a hand-maintained copy.
+func hourBackfillSteps(d flows.Dest, ca CountersAvail, changeoverAvailability bool) []rollupStep {
+	steps := []rollupStep{
+		passStep("values", hourValuesPass.Map(rd(d)).Map(widenHourWindows)),
+		{name: "cascade-day", sql: fmtRD(hourCascadeDaySQL, d)},
+		// #186: cascade-area removed (area hourly grain retired).
+		passStep("speed", hourSpeedPass.Map(rd(d)).Map(widenHourWindows)),
+		passStep("events", hourEventsPass.Map(rd(d, plannedDowntimeExpr(changeoverAvailability))).Map(widenHourWindows)),
+	}
+	// #207: LINE-FROM-LEAD backfill. Same position as the live RunHour (after
+	// events, which it overrides for line-lead lines — single writer, like the
+	// shift pass) and BEFORE "clear". WIDENED to the 10-day horizon:
+	// hourLineLeadSQL's live UPDATE guard is `e.ts_value >= now()-6 hour`, so an
+	// outage older than that lookback (e.g. the #196 Sept 1–5 CPACK gap) never had
+	// its tp=3 LINE hour grains recomputed by the backfill — they stayed 0/stranded.
+	// widenHourWindows stretches only that 6h guard to 10 days (row-selection, not
+	// per-row math), so the drained old line hours now get their lead-derived
+	// gross/net/availability. The day LINE grain follows via cascade-day (RunDay
+	// sums the hour grain over a 1-month window — never stranded). Inert (not
+	// appended) when line-lead isn't engaged, so the disabled path is unchanged.
+	if ca.engagedLineLead() {
+		steps = append(steps, passStep("line-lead", hourLineLeadPass.Map(func(s string) string {
+			return widenHourWindows(fmtRD(withPlannedPred(s, changeoverAvailability), d, ca.LineLead().Predicate(pgIntArrayLiteral(ca.LineLeadEnterprises)), ca.IdleTimeoutSec))
+		})))
+	}
+	if ca.engagedExclusions() {
+		steps = append(steps, rollupStep{name: "exclusions", sql: fmtRD(hourExclusionsSQL, d, d.ConfigSchema)})
+	}
+	steps = append(steps,
+		rollupStep{name: "targets", sql: widenHourWindows(fmtRD(withOosTarget(hourTargetsSQL, ca.engagedExclusions(), hourOosTargetTerm), d, d.ConfigSchema))},
+		rollupStep{name: "clear", sql: fmtRD(hourBackfillClearSQL, d)},
+	)
+	// FINALIZE the OEE decomposition — the live RunHour closes oee = oee_a·oee_p·oee_q
+	// with a last pass (canonical A·P·Q reconcile when engaged, else the legacy oee_p
+	// residual); the backfill previously OMITTED it, so a stranded hour it drained got
+	// oee / oee_a / oee_q recomputed by the events pass while oee_p kept its stale
+	// value → the identity broke on every backfilled row (measured live: CPACK tp=3
+	// line hours with oee ≠ oee_a·oee_p·oee_q). Run the SAME finalize the live path
+	// runs, widened to the backfill's 10-day horizon and AFTER the clear so the legacy
+	// residual's `NOT recalc_needed` guard matches (the reconcile is guard-free).
+	if ca.engagedCanonical() {
+		steps = append(steps, rollupStep{name: "oee-reconcile", sql: widenHourWindows(fmtRD(hourOeeReconcileSQL, d))})
+	} else {
+		steps = append(steps, rollupStep{name: "oee-p", sql: widenHourWindows(fmtRD(hourOeePSQL, d))})
+	}
+	return steps
+}
+
 // LoopHourBackfill drains the stranded-hour backlog in bounded batches until it
 // is empty, then keeps ticking cheaply (each tick is a single indexed count once
 // drained). Runs alongside LoopGrains; the shared advisory lock keeps them from
 // racing on grain rows.
-func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+//
+// Each batch runs under budget with an adaptive size (batch.go): a batch that
+// overruns rolls back alone and the next one is half its size, so the backlog
+// drains even when a batch of `limit` rows costs more than a tick. 0 →
+// defaultBackfillBudget.
+func LoopHourBackfill(ctx context.Context, dests []flows.Dest, exclAreas, exclEnterprises []int, limit int, budget time.Duration, ca CountersAvail, changeoverAvailability bool, every time.Duration, logger *slog.Logger, obs jobs.Observer) {
+	if budget <= 0 {
+		budget = defaultBackfillBudget
+	}
+	batch := newBatchSizer("runtime-rollup-hour-backfill", limit)
 	logger.Info("runtime-rollup-hour-backfill started (drains stranded recalc hours)",
-		slog.Int("limit_per_tick", limit), slog.Duration("every", every))
+		slog.Int("limit_per_tick", limit), slog.Duration("budget", budget), slog.Duration("every", every))
 	jobs.Loop(ctx, jobs.Job{Name: "runtime-rollup-hour-backfill", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {
-			n, err := RunHourBackfill(ctx, d, exclAreas, exclEnterprises, limit, ca, changeoverAvailability)
+			lim, n, over, err := runAdaptive(ctx, batch, d.Name, budget, logger, func(c context.Context, lim int) (int64, error) {
+				return RunHourBackfill(c, d, exclAreas, exclEnterprises, lim, ca, changeoverAvailability)
+			})
+			if over {
+				logger.Warn("hour-backfill over budget (rolled back; next batch halved)", slog.String("dest", d.Name),
+					slog.Int("batch", lim), slog.Duration("budget", budget))
+				continue
+			}
 			if err != nil {
 				logger.Warn("hour-backfill failed", slog.String("dest", d.Name), slog.String("err", err.Error()))
 				if firstErr == nil {

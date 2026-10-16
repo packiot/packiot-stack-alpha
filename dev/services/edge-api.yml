@@ -1,0 +1,79 @@
+# ── edge-api (Tier 3) — ADR-0060 P4 ──────────────────────────────────────────
+# contract (docs/dev/contracts.md §2, contracts/ui-services.md §edge-api):
+#   inputs:   postgres packiot_analytics (config/core, POs, shifts, identity, user_logs; knex ledger
+#             public.knex_migrations), app-redis (plumbed, unused by code today)
+#   outputs:  HTTP :8080 (/health, /api/* x-api-key or Bearer, /session); writes core/identity tables + user_logs
+#   external: dev Cognito pool JWKS (Bearer verify, internet). NOT in dev: AWS SSM / Cognito admin API (box ops,
+#             user management → those routes fail; no AWS credentials and IMDS is disabled), Superset, Power BI,
+#             GitHub dispatch, RabbitMQ edge.commands (COMMANDS_ENABLED off), sparkplug-decoder onboard API.
+# Mirrors compose.staging.yml `db-migrate` + `edge-api`: same Dockerfile targets (migrate / production), same DB
+# (packiot_analytics), same auth flags. Differences on purpose:
+#   - direct to postgres, no pgbouncer (staging: transaction pooling). edge-api uses pg-promise sessions only.
+#   - dev Cognito pool instead of staging's; no cs-admin group exists in it yet (contracts.md F12).
+#   - box-ops / SSM / teardown / onboarding-generate env left unset → those features answer 503/"not configured".
+# The seed ships edge-api's knex ledger (public.knex_migrations), so edge-api-migrate applies only the migrations
+# newer than the seed snapshot — exactly what db-migrate does on a staging deploy.
+#   make dev SVC=edge-api            # API on http://127.0.0.1:8080 (x-api-key = dev-api-key-3, the seed's fake key: GET /api/lines)
+services:
+  edge-api-migrate:
+    build:
+      context: ../../edge-api
+      target: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      POSTGRES_DB: packiot_analytics
+    restart: "no"
+
+  edge-api:
+    build:
+      context: ../../edge-api
+      target: production
+    depends_on:
+      edge-api-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      NEW_RELIC_ENABLED: "false"
+      NEW_RELIC_NO_CONFIG_FILE: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:?set in dev/.env.dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in dev/.env.dev}
+      POSTGRES_DB: packiot_analytics
+      POSTGRES_ANALYTICS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/packiot_analytics
+      REDIS_URL: redis://app-redis:6379/0
+      # Bearer JWT: the dev pool (public ids). The x-api-key path (enterprises.api_key; the seed sets
+      # dev-api-key-<tenant>) works without login.
+      AUTH_BEARER_ENABLED: "true"
+      COGNITO_ISSUER: ${DEV_COGNITO_ISSUER:?set in dev/.env.dev}
+      COGNITO_CLIENT_ID: ${DEV_COGNITO_CLIENT_ID:?set in dev/.env.dev}
+      EDGE_API_COGNITO_AUTH_ENABLED: "true"
+      COGNITO_CS_ADMIN_GROUP: cs-admin
+      EDGE_API_ONBOARDING_ENABLED: "true"
+      OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED: "false"
+      PO_STALENESS_GATE_ENABLED: "true"
+      PO_STALENESS_GATE_ENTERPRISES: "3"
+      # No AWS from dev: the SDK must not find credentials anywhere (IMDS off, no static keys).
+      AWS_EC2_METADATA_DISABLED: "true"
+      # edge-ssm defaults the reader ingest URL to PROD; a dev reader bundle must never point there.
+      SSM_EDGE_INGEST_URL: http://127.0.0.1:9/v1/tags
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    ports:
+      - "127.0.0.1:${DEV_EDGE_API_PORT:-8080}:8080"
+    healthcheck:
+      # /health is outside the /api auth chain (staging uses the same probe)
+      test: ["CMD", "wget", "-q", "-T", "4", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 40s

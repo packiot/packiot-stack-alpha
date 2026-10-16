@@ -1,5 +1,5 @@
 -- widen-rollup-bigint.sql — REFACTORED schemas only (F2 shadow_go_port in
--- packiot, F3 public in packiot_shadow). NEVER legacy packiot.public.
+-- packiot, F3 public in packiot_analytics). NEVER legacy packiot.public.
 --
 -- The week/month runtime + UNS rollups SUM daily int4 aggregate columns. A
 -- shadow compute-parity divergence for eq=51 (CPACK-Staging L8, a line)

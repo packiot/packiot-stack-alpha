@@ -166,6 +166,72 @@ type Message struct {
 	// so the golden comparator and existing reset tests are untouched; the
 	// caller flips it via CALC_RESET_HEAL_ENABLED.
 	ResetHeal bool
+
+	// CounterSpikeMargin (WS1 guard, resolved PER-CLIENT by WS3). When > 0 AND
+	// this message carries a positive per-equipment IdealRate (parts/min), a
+	// counter increment implying a derived rate above CounterSpikeMargin·IdealRate
+	// is a physically-impossible forward JUMP (a bad reading that is neither a
+	// reset nor a rollover — those guards don't cover it) and is CLAMPED to that
+	// ceiling before it reaches gross/net/scrap aggregates. This is what inflated
+	// CPACK eq47/L5 POs 25–73× vs legacy (a 108951-in-a-minute consumed increment
+	// on a ~100/min line).
+	//
+	// It lives on the Message (not Config) because the margin is a PER-CLIENT OEE
+	// knob: the caller resolves it per equipment from the client's OEE profile
+	// (client_descriptors.descriptor->oee_profile->spike_margin, served by the
+	// oeeprofile.Watcher) and falls back to the CALC_COUNTER_SPIKE_MARGIN env
+	// default. The bound itself is per-equipment (via IdealRate). Default 0 ⇒
+	// INERT (byte-identical parity), so it activates only when a client opts in.
+	// This is the first consumer of the per-client OEE profile (WS3 / ADR-0058).
+	CounterSpikeMargin float64
+
+	// GuardRatedSpeed (FU#3) decouples the spike guard's plausibility bound from
+	// counters-only mode. The bound is CounterSpikeMargin × ratedSpeed × interval;
+	// the rated speed used to be IdealRate, which the caller sets ONLY for
+	// counters-only-mapped topics — so a tenant's counter anomalies on lines that
+	// report MachSpeed (or aren't in the ideal-rates map) went unguarded (measured:
+	// 96% of CPACK's >10× anomaly-minutes). When IdealRate is 0 the guard falls
+	// back to this per-equipment rated speed (equipments.production_speed, resolved
+	// from the client's OEE profile), so authoring a spike_margin guards the WHOLE
+	// tenant — with no change to any OEE computation (guard-only). Default 0 ⇒ the
+	// guard only fires where IdealRate is set (the pre-FU#3 behavior, parity).
+	GuardRatedSpeed float64
+
+	// Uint16Counter marks this counter as an UNSIGNED 16-bit PLC register that
+	// the edge read through a SIGNED 16-bit path (S7 `type: int` = INT, int16).
+	// The PLC counts 0..65535 and wraps to 0, but a signed read shows the upper
+	// half as -32768..-1, so every sample above 32767 arrived negative. Without
+	// this flag the calc treats 32767 → -32768 as a genuine counter DROP (reset)
+	// and the Phase-8 `cur >= 0` gate refuses every negative sample, so ~half of
+	// each 65536-count cycle was lost (CPACK L8-PTH / L10-PTH, 2026-09).
+	//
+	// When true, a payload in [-32768, -1] is reinterpreted as payload+65536
+	// (the same bits read unsigned) BEFORE any phase runs, so the stream is the
+	// true 0..65535 sawtooth and the existing isUint16Rollover rule credits the
+	// 65535 → 0 wrap. A value below -32768 is NOT in int16 range, so it cannot be
+	// a signed-read artifact and is left untouched.
+	//
+	// It is PER-TOPIC config, never a heuristic: the caller sets it only for a
+	// counter metric the client descriptor declares as an S7 `type: int` tag
+	// (oeeprofile.Watcher.Uint16Counters). A blanket "negative counter ⇒ +65536"
+	// rule would turn a 32-bit counter's -1 sentinel/glitch into a +60k phantom.
+	// Default false ⇒ byte-identical.
+	Uint16Counter bool
+}
+
+// int16Span is the size of the 16-bit value space; a signed read of an
+// unsigned 16-bit register differs from the true value by exactly this much
+// whenever the register's top bit is set.
+const int16Span = 1 << 16
+
+// normalizeUint16 reinterprets a signed-16-bit read of an unsigned 16-bit
+// register: [-32768, -1] → [32768, 65535]. Values outside int16's negative
+// half are returned unchanged (already non-negative, or not a 16-bit read).
+func normalizeUint16(v int64) (int64, bool) {
+	if v >= math.MinInt16 && v < 0 {
+		return v + int16Span, true
+	}
+	return v, false
 }
 
 // countersOnlyGuardK is the multiplier for the counters-only glitch guard:
@@ -300,6 +366,17 @@ func Calc(msg Message, state State) (Decision, error) {
 func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 	dec := Decision{
 		EnrichedMsg: map[string]any{},
+	}
+
+	// ── Phase 0: unsigned-16-bit reinterpretation (per-topic config) ───────
+	// Must run before EVERY phase: the first-observation seed, the drop/reset
+	// classifier and the Phase-8 `cur >= 0` gate all read msg.Payload. See
+	// Message.Uint16Counter.
+	if msg.Uint16Counter {
+		if v, ok := normalizeUint16(msg.Payload); ok {
+			dec.EnrichedMsg["uint16_signed_read"] = msg.Payload
+			msg.Payload = v
+		}
 	}
 
 	// ── Phase 1: parse timestamp + SETUP-mode guard ────────────────────────
@@ -560,6 +637,55 @@ func CalcWithConfig(msg Message, state State, cfg Config) (Decision, error) {
 		procIncr = curProcessed - prevProcessed
 		consIncr = curConsumed - prevConsumed
 		defIncr = curDefective - prevDefective
+	}
+
+	// ── WS1: counter-anomaly guard ─────────────────────────────────────────
+	// Clamp a physically-impossible forward JUMP (neither a reset nor a rollover —
+	// those are handled above) to the per-equipment plausible ceiling BEFORE the
+	// increment reaches gross/net/scrap. Uses the same sample interval as ProdSpeed
+	// so the ceiling scales with the real gap between readings. INERT unless the
+	// client configured a margin AND the message carries an IdealRate (default off ⇒
+	// byte-identical parity). The raw counter baseline is kept unchanged (persisted
+	// below), so a one-off spike is discarded and the next reading differences
+	// normally — real production is never carried away.
+	// FU#3: the guard's rated-speed bound is IdealRate for counters-only topics,
+	// else the per-equipment GuardRatedSpeed (production_speed) so the guard
+	// covers every topic of a tenant that authored a margin, not just the
+	// counters-only-mapped ones.
+	//
+	// The ceiling's time window is the gap since THIS counter's previous reading
+	// (its own ___GUARD_TS), not since the unit's last CurMachSpeed update. A
+	// machine that publishes Consumed and Processed in separate messages (CPACK
+	// L6-TEXA: ~0.6 s apart) refreshes CurMachSpeed___TS on the Consumed message,
+	// so the Processed message saw a ~0.6 s window instead of its real ~15 s and
+	// every net increment was clamped to ~14 (2026-09-23 → 09-27).
+	guardRate := spikeGuardRate(msg.IdealRate, msg.GuardRatedSpeed)
+	if msg.CounterSpikeMargin > 0 && guardRate > 0 && curTopic != "" {
+		guardTsKey := curTopic + "___GUARD_TS"
+		prevCounterTs, _ := state.TimeMs(guardTsKey)
+		guardTsKeyCopy, guardTsCopy := guardTsKey, timestampMs
+		dec.StateUpdates = append(dec.StateUpdates, StateMutation{
+			Kind: "counter.guard_ts", Key: guardTsKeyCopy, TimeMs: guardTsCopy,
+			Setter: func(s State) error { return s.SetTimeMs(guardTsKeyCopy, guardTsCopy) },
+		})
+		if prevCounterTs > 0 && timestampMs > prevCounterTs {
+			interval := timestampMs - prevCounterTs
+			if c, did := clampSpikeIncrement(consIncr, guardRate, interval, msg.CounterSpikeMargin); did {
+				dec.EnrichedMsg["counter_spike_clamped_consumed"] = consIncr - c
+				consIncr = c
+			}
+			if c, _ := clampSpikeIncrement(procIncr, guardRate, interval, msg.CounterSpikeMargin); c != procIncr {
+				procIncr = c
+			}
+			if c, _ := clampSpikeIncrement(defIncr, guardRate, interval, msg.CounterSpikeMargin); c != defIncr {
+				defIncr = c
+			}
+			// Re-emit the (possibly clamped) increments — the debug fields above were
+			// set from the pre-clamp values.
+			dec.EnrichedMsg["ProdConsumedIncremet"] = consIncr
+			dec.EnrichedMsg["ProdProcessedIncremet"] = procIncr
+			dec.EnrichedMsg["ProdDefectiveIncremet"] = defIncr
+		}
 	}
 
 	// ── Phase 5: persist new counter values ────────────────────────────────

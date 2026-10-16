@@ -6,7 +6,7 @@
 **Reviewers:** Packiot platform team
 **Supersedes:** none
 **Extends:** [ADR-0009](./0009-edge-transformer-go-service-and-nodered-split.md) — this ADR completes the trajectory ADR-0009 began but stops short of.
-**Companion spike:** `services/edge-transformer/internal/sparkplug/` shipped in the same PR as this ADR — proves the decode path is feasible.
+**Companion spike:** `services/sparkplug-decoder/internal/sparkplug/` shipped in the same PR as this ADR — proves the decode path is feasible.
 
 ---
 
@@ -101,10 +101,10 @@ That said, capturing this end-state **now** matters because:
 
 Specifically:
 
-1. **Vendor Eclipse Tahu's canonical `sparkplug_b.proto`** (proto2 spec, Eclipse Public License 2.0) under `services/edge-transformer/internal/sparkplug/internal/`.
+1. **Vendor Eclipse Tahu's canonical `sparkplug_b.proto`** (proto2 spec, Eclipse Public License 2.0) under `services/sparkplug-decoder/internal/sparkplug/internal/`.
 2. **Generate Go bindings** via `protoc-gen-go` (committed to the repo, regenerated via `go generate`).
-3. **Expose a thin `sparkplug` package** at `services/edge-transformer/internal/sparkplug/` with a single public function: `Decode(body []byte) (*Payload, error)`.
-4. **Add a MQTT subscriber package** at `services/edge-transformer/internal/mqtt/` (paho.mqtt.golang) that connects to the factory broker, subscribes to the Sparkplug topic pattern, and feeds raw bodies into the decoder.
+3. **Expose a thin `sparkplug` package** at `services/sparkplug-decoder/internal/sparkplug/` with a single public function: `Decode(body []byte) (*Payload, error)`.
+4. **Add a MQTT subscriber package** at `services/sparkplug-decoder/internal/mqtt/` (paho.mqtt.golang) that connects to the factory broker, subscribes to the Sparkplug topic pattern, and feeds raw bodies into the decoder.
 5. **The Node-RED Sparkplug subflow is removed** in the cutover PR (per-customer tabs that consume Sparkplug data are migrated to consume from RabbitMQ instead).
 6. **Simulator stays in Node-RED** but generates fake Sparkplug-shaped payloads only; never a production data source.
 
@@ -112,8 +112,8 @@ Specifically:
 
 A companion spike lands in the same PR as this ADR:
 
-- `services/edge-transformer/internal/sparkplug/decoder.go` — the thin wrapper
-- `services/edge-transformer/internal/sparkplug/decoder_test.go` — 3 tests:
+- `services/sparkplug-decoder/internal/sparkplug/decoder.go` — the thin wrapper
+- `services/sparkplug-decoder/internal/sparkplug/decoder_test.go` — 3 tests:
   - `TestDecodeRoundTrip` — encode a known payload, decode, assert structural equality + `proto.Equal`
   - `TestDecodeMalformed` — empty / garbage / truncated inputs all handled gracefully
   - `TestDataTypeEnumStable` — confirms enum integers match Sparkplug B wire format
@@ -133,7 +133,7 @@ Realistic NBIRTH/NDATA fixtures (using actual CPACK packml_register topic names 
 Run:
 
 ```bash
-cd services/edge-transformer
+cd services/sparkplug-decoder
 go test -bench=. -benchmem -benchtime=2s ./internal/sparkplug/
 ```
 
@@ -393,7 +393,7 @@ The right seam is **between MQTT body bytes and decoded Sparkplug struct** — e
 - [Eclipse Tahu Sparkplug B spec](https://github.com/eclipse-tahu/tahu/blob/master/sparkplug_b/sparkplug_b.proto) — canonical proto2 schema
 - [paho.mqtt.golang](https://github.com/eclipse/paho.mqtt.golang) — Go MQTT client we will use in Phase 2
 - [Phase 2.5b PR #17](https://github.com/packiot/edge-node-red/pull/17) — the transitional Node-RED publisher this ADR plans to retire
-- The decoder spike at `services/edge-transformer/internal/sparkplug/` — proves feasibility
+- The decoder spike at `services/sparkplug-decoder/internal/sparkplug/` — proves feasibility
 
 ---
 

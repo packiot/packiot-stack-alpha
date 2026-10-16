@@ -159,6 +159,17 @@ OPERATOR_REFDATA_API_KEY=$(echo "$APP_SECRET" | jq -r '.operator_refdata_api_key
 # up; operator LOGIN just 503s until populated (PO write path is unaffected).
 JWT_SECRET=$(echo "$APP_SECRET" | jq -r '.edge_api_jwt_secret // ""')
 REFDATA_QUERY_API_KEYS=$(get_secret "packiot/production/refdata-query-keys" 2>/dev/null | jq -r '.api_keys // ""' || echo "")
+# PROMOTION 2026-10 (B5): read-api least-privilege login + the decoder↔read-api
+# internal resolver key. // "" keeps an older box booting; read-api's compose
+# requires READAPI_RO_PASSWORD (`:?`), so a missing value stops `compose up`
+# before anything is replaced instead of starting a broken read plane.
+INTERNAL_KEYS=$(get_secret "packiot/production/internal-keys" 2>/dev/null || echo "{}")
+INTERNAL_API_KEY=$(echo "$INTERNAL_KEYS" | jq -r '.internal_api_key // ""')
+READAPI_RO_PASSWORD=$(echo "$INTERNAL_KEYS" | jq -r '.readapi_ro_password // ""')
+# PROMOTION 2026-10 (B11): legacy-replicator source password (SELECT-only
+# awslambda on legacy packiot40). Top-level secret `databaseCredentials`, key
+# DB_PASSWORD. // "" → the profiled service simply can't connect until set.
+LEGACY_DB_PASSWORD=$(get_secret "databaseCredentials" 2>/dev/null | jq -r '.DB_PASSWORD // ""' || echo "")
 
 # historian-gateway (COLD S3 parquet union) — OPT-IN, profile-gated in
 # compose.production.yml (`--profile historian`). All // "" best-effort: a box
@@ -283,6 +294,12 @@ JWT_SECRET=$JWT_SECRET
 # refdata derives customer_id SERVER-SIDE from the presented key (never client-
 # supplied). Empty = deny all X-Api-Key reads (non-blocking; refdata stays healthy).
 REFDATA_QUERY_API_KEYS=$REFDATA_QUERY_API_KEYS
+# Promotion 2026-10 (B5): read-api as readapi_ro + ADR-0061 internal resolver key.
+READAPI_RO_USER=readapi_ro
+READAPI_RO_PASSWORD=$READAPI_RO_PASSWORD
+INTERNAL_API_KEY=$INTERNAL_API_KEY
+# Promotion 2026-10 (B11): legacy-replicator (profile legacy-replicator).
+LEGACY_DB_PASSWORD=$LEGACY_DB_PASSWORD
 
 # Superset embedded-BI guest-token broker (ADR-0045 W2). edge-api reaches
 # Superset through the origin-locked host and stamps X-Origin-Verify. Routes
@@ -517,6 +534,9 @@ echo "docker-prune.timer enabled"
 
 # ── Start Docker Compose stack ────────────────────────────────────────────────
 cd /opt/packiot/stack
+# RabbitMQ least-priv users (B1): rabbitmq.conf load_definitions needs this file
+# BEFORE the broker starts (a missing path is mounted as a directory → exit 127).
+bash scripts/render-rabbitmq-definitions.sh production
 docker compose -f compose.production.yml up -d --build
 echo "Docker Compose stack started"
 echo "NOTE: set ID_ENTERPRISE in /opt/packiot/.env after enterprise onboarding, then:"

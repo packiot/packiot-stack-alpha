@@ -18,7 +18,7 @@ import (
 
 // credsSourceEnv is the literal value of $CREDS_SOURCE that switches
 // FetchDBCreds from AWS Secrets Manager to plain env vars. Used ONLY
-// in compose.development.yml — never in staging/prod.
+// in dev/ (ADR-0060, formerly compose.development.yml) — never in staging/prod.
 //
 // Why this gate exists (issue #52): mirror-worker-go fetches creds for
 // TWO postgres clusters (prod via PROD_DB_SECRET_ID, staging via
@@ -195,7 +195,7 @@ func envPrefixForSecretID(secretID string) string {
 // <prefix>PORT, <prefix>USER, <prefix>PASSWORD, <prefix>NAME where the
 // prefix is derived from the requested secretID.
 //
-// Defaults match compose.development.yml's postgres service. User +
+// Defaults match dev/ (ADR-0060, formerly compose.development.yml)'s postgres service. User +
 // password have NO defaults — if either is empty we error out instead
 // of silently connecting with insecure creds.
 func fetchDBCredsFromEnv(secretID string) (*DBCreds, error) {

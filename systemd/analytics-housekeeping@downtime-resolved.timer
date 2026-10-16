@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh serving.downtime_events_resolved every 2 minutes
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=10s
+[Install]
+WantedBy=timers.target

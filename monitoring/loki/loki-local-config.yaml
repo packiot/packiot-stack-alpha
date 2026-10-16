@@ -34,10 +34,26 @@ query_range:
         enabled: true
         max_size_mb: 100
 
+# retention_period is ENFORCED ONLY by the compactor with retention_enabled: true. Without
+# this block (until 2026-10-02) the 72h was a no-op: chunks piled up since the volume was
+# created (9.2 GB on 10-02, the app host root disk at 88%).
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: filesystem
+
 limits_config:
   retention_period: 72h
   ingestion_rate_mb: 8
   ingestion_burst_size_mb: 16
+  # Truncate over-long lines instead of rejecting the whole entry (2026-10-15): since the TimescaleDB → native
+  # partition move, auto_explain plans of slow queries list every partition and reached 512 KB; Loki rejected
+  # them (400, "Max entry size exceeded") and the Postgres slow-query log lines were lost. Keep the 256 KB limit,
+  # keep the head of the plan.
+  max_line_size: 256KB
+  max_line_size_truncate: true
 
 # Ruler — evaluates the LogQL alert rules in monitoring/loki/rules/ and pushes
 # firing alerts to the SAME Alertmanager the Prometheus rules use. Catches the

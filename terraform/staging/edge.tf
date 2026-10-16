@@ -84,7 +84,11 @@ variable "waf_managed_rules_mode" {
     is a generous DoS guard, not a content filter).
   EOT
   type        = string
-  default     = "count"
+  # ENFORCING LIVE (staging) — flipped at runbook step (e) via `-var` but never codified,
+  # so a plain `terraform apply` would have silently downgraded all 4 managed groups to
+  # observe-only (found by plan review 2026-09-24). Rollout toggles must land in code
+  # the moment they go live (same as edge_cutover above).
+  default = "block"
 
   validation {
     condition     = contains(["count", "block"], var.waf_managed_rules_mode)
@@ -317,7 +321,7 @@ resource "aws_cloudfront_distribution" "edge" {
   price_class     = var.cloudfront_price_class
 
   # Wildcard alias covers api/hasura/grafana/edge-nodered/oeecloud-nodered/rabbitmq/
-  # adminer/operator/auth.staging. No dash alias (dash lives on prod).
+  # db/histdb/operator/auth.staging. No dash alias (dash lives on prod).
   aliases = ["*.${var.staging_domain}"]
 
   # Single origin — the nginx host, reached over its OWN (non-fronted) hostname
@@ -409,6 +413,25 @@ resource "aws_route53_record" "services_edge" {
   }
 }
 
+# RISKY (var.edge_cutover) — Superset BI ALIAS, the CloudFront counterpart of the
+# `aws_route53_record.bi` A→EIP record in dns.tf. `bi` is NOT in var.services (it
+# has a bespoke nginx block), so it needs its own edge record rather than riding the
+# services_edge for_each. The superset.conf vhost includes origin-verify, so the
+# bi hostname MUST enter via CloudFront (matched by the `*.${staging_domain}` alias)
+# once edge_cutover=true — a direct-to-EIP hit would 403.
+resource "aws_route53_record" "bi_edge" {
+  count   = var.edge_cutover ? 1 : 0
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "bi.${var.staging_domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.edge.domain_name
+    zone_id                = "Z2FDTNDATAQYW2"
+    evaluate_target_health = false
+  }
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Outputs
 # ══════════════════════════════════════════════════════════════════════════════
@@ -437,4 +460,27 @@ output "edge_origin_verify_secret" {
   description = "Shared secret CloudFront sends as X-Origin-Verify; configure nginx to require it (runbook step (c))."
   value       = random_password.origin_verify.result
   sensitive   = true
+}
+
+# Per-tenant operator SPA hosts (operator-sbx = sandbox ent 2000003, operator-bispharma =
+# Bispharma ent 5). Like `bi`, they are NOT in var.services — each has a bespoke nginx vhost
+# (nginx_setup.sh) that injects its tenant's api-key — so they need their own CloudFront
+# ALIAS records. operator-sbx's record was created by hand (drift) → adopted via import.
+resource "aws_route53_record" "operator_tenant_edge" {
+  for_each = var.edge_cutover ? toset(["operator-sbx", "operator-bispharma"]) : toset([])
+
+  zone_id = aws_route53_zone.staging.zone_id
+  name    = "${each.key}.${var.staging_domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.edge.domain_name
+    zone_id                = "Z2FDTNDATAQYW2"
+    evaluate_target_health = false
+  }
+}
+
+import {
+  to = aws_route53_record.operator_tenant_edge["operator-sbx"]
+  id = "Z00659693KWZJDVBAEBOT_operator-sbx.staging.packiot.app_A"
 }

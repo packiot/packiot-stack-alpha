@@ -73,6 +73,9 @@ func (c *EdgeClient) post(ctx context.Context, call *edgeCall) (*edgeResult, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)
+	if call.idempotencyKey != "" {
+		req.Header.Set(idempotencyHeader, call.idempotencyKey)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

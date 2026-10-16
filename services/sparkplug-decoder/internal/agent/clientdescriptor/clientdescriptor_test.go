@@ -176,17 +176,16 @@ func TestGenerateRegisterSQL(t *testing.T) {
 		!strings.Contains(sql, "FROM equipments e") {
 		t.Errorf("register SQL must backfill id_site/id_area from equipments; got:\n%s", sql)
 	}
-	// The INSERT must carry the device_key column (ADR-0046 §2 declared identity).
-	if !strings.Contains(sql, "device_key)") {
-		t.Errorf("register INSERT must include the device_key column; got:\n%s", sql)
+	// ADR-0061 step c: the register never carries device_key (identity = core.device_bindings).
+	if strings.Contains(sql, "device_key") {
+		t.Errorf("register SQL must not write device_key (ADR-0061 step c); got:\n%s", sql)
 	}
-	// A line (tp=3) → id_unit NULL; a member (tp=1) → id_unit = its id. Each row now
-	// ends with the resolved device_key (dash form of the topic).
-	if !strings.Contains(sql, "(3, 47, 'CPACK/SC/LINHAS/L5', true, NULL, 'CPACK-SC-LINHAS-L5')") {
-		t.Errorf("expected L5 line row with NULL id_unit + device_key; got:\n%s", sql)
+	// A line (tp=3) → id_unit NULL; a member (tp=1) → id_unit = its id.
+	if !strings.Contains(sql, "(3, 47, 'CPACK/SC/LINHAS/L5', true, NULL)") {
+		t.Errorf("expected L5 line row with NULL id_unit; got:\n%s", sql)
 	}
-	if !strings.Contains(sql, "(3, 53, 'CPACK/SC/LINHAS/L5/BREYER', true, 53, 'CPACK-SC-LINHAS-L5-BREYER')") {
-		t.Errorf("expected L5/BREYER member row id_unit=53 + device_key; got:\n%s", sql)
+	if !strings.Contains(sql, "(3, 53, 'CPACK/SC/LINHAS/L5/BREYER', true, 53)") {
+		t.Errorf("expected L5/BREYER member row id_unit=53; got:\n%s", sql)
 	}
 	// One VALUES row per equipment.
 	rows := strings.Count(sql, "true,")
@@ -374,22 +373,40 @@ func TestValidate_RejectsBadDescriptor(t *testing.T) {
 	// Duplicate DECLARED device_key across two equipment.
 	d = *base
 	d.Equipment = append([]Equipment(nil), base.Equipment...)
-	d.Equipment[0].DeviceKey = "DUPKEY"
-	d.Equipment[1].DeviceKey = "DUPKEY"
-	if err := d.Validate(); err == nil {
-		t.Error("duplicate device_key across equipment must be rejected")
+	d.Equipment[0].DeviceKey = "dk_" + strings.Repeat("ab", 16)
+	d.Equipment[1].DeviceKey = d.Equipment[0].DeviceKey
+	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "device_key") {
+		t.Errorf("duplicate device_key across equipment must be rejected, got %v", err)
+	}
+
+	// ADR-0061 P1: a missing or name-shaped key is rejected (opaque dk_<32 hex> only)…
+	for _, k := range []string{"", "CPACK-SC-LINHAS-L5", "dk_ABC", "dk_" + strings.Repeat("0", 31)} {
+		d = *base
+		d.Equipment = append([]Equipment(nil), base.Equipment...)
+		d.Equipment[0].DeviceKey = k
+		if err := d.Validate(); err == nil {
+			t.Errorf("device_key %q must be rejected", k)
+		}
+	}
+	// …except by ValidateDraft, which allows the unstamped (empty) key of a scaffold.
+	d = *base
+	d.Equipment = append([]Equipment(nil), base.Equipment...)
+	d.Equipment[0].DeviceKey = ""
+	if err := d.ValidateDraft(); err != nil {
+		t.Errorf("ValidateDraft must allow an unstamped key: %v", err)
 	}
 }
 
-// TestResolvedDeviceKey pins the declared-else-derived rule: a declared key is
-// returned verbatim; an absent one is the dash-joined topic (the fixture form).
+// TestResolvedDeviceKey pins the ADR-0061 P1 rule: the key is DECLARED only — returned
+// trimmed, verbatim; an absent one stays empty (no name-derived fallback any more).
 func TestResolvedDeviceKey(t *testing.T) {
-	declared := Equipment{Topic: "CPACK/SC/LINHAS/L5/BREYER", DeviceKey: "CUSTOM-KEY"}
-	if got := declared.ResolvedDeviceKey(); got != "CUSTOM-KEY" {
-		t.Errorf("declared device_key: got %q, want CUSTOM-KEY", got)
+	key := "dk_" + strings.Repeat("c4", 16)
+	declared := Equipment{Topic: "CPACK/SC/LINHAS/L5/BREYER", DeviceKey: " " + key + " "}
+	if got := declared.ResolvedDeviceKey(); got != key {
+		t.Errorf("declared device_key: got %q, want %s", got, key)
 	}
-	derived := Equipment{Topic: "CPACK/SC/LINHAS/L5/BREYER"}
-	if got := derived.ResolvedDeviceKey(); got != "CPACK-SC-LINHAS-L5-BREYER" {
-		t.Errorf("derived device_key: got %q, want CPACK-SC-LINHAS-L5-BREYER", got)
+	undeclared := Equipment{Topic: "CPACK/SC/LINHAS/L5/BREYER"}
+	if got := undeclared.ResolvedDeviceKey(); got != "" {
+		t.Errorf("undeclared device_key must stay empty (no derivation), got %q", got)
 	}
 }

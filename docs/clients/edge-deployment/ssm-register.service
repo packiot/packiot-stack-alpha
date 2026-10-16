@@ -1,0 +1,45 @@
+# ssm-register.service — first-boot SSM enrollment oneshot (ADR-0049).
+#
+# Installs + registers the amazon-ssm-agent against a CS-Admin-minted Hybrid
+# Activation so this factory box becomes a `mi-xxxx` managed instance reachable
+# (outbound 443 only) for RunCommand deploy + Session Manager access. SUPERSEDES
+# the per-factory GitHub runner (ADR-0005 register-runner.sh) for the new-stack
+# edge.
+#
+# INSTALL (once, on the edge box):
+#   sudo cp ssm-register.sh      /opt/packiot/ssm-register.sh
+#   sudo cp edge-ssm.env         /opt/packiot/edge-ssm.env      # filled handoff (0600)
+#   sudo cp ssm-register.service /etc/systemd/system/ssm-register.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ssm-register.service
+#
+# The script is IDEMPOTENT (skips if /var/lib/amazon/ssm/registration exists), so
+# enabling it means the box re-verifies its enrollment on every boot with no
+# side effects. Type=oneshot + RemainAfterExit so `systemctl status` reflects the
+# last run.
+
+[Unit]
+Description=Register this edge box as an AWS SSM managed instance (ADR-0049, first boot)
+Documentation=https://github.com/packiot/packiot-stack-alpha/blob/staging/docs/clients/edge-deployment/README.md
+# Needs the network (outbound 443 to the SSM endpoints) before it can register.
+After=network-online.target
+Wants=network-online.target
+# Don't fight the agent's own unit if it's already present.
+Before=amazon-ssm-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The activation code/id/region handoff (gitignored, 0600). `-` = tolerate absent
+# on a box that isn't using SSM (the script then no-ops on the missing creds).
+EnvironmentFile=-/opt/packiot/edge-ssm.env
+ExecStart=/opt/packiot/ssm-register.sh
+# First boot may pull the agent .deb over a slow plant link.
+TimeoutStartSec=300
+# Self-healing: retry a transient network/registration failure a few times
+# rather than staying silently dead (ADR-0049 C4 — the unattended-box rot class).
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

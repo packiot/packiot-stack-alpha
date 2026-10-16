@@ -14,12 +14,16 @@
 // is strictly ADDITIVE — the MQTT subscriber path (rawmqtt) stays wired for
 // Mode-B / the full architecture; an agent can run one, the other, or both.
 //
-// Auth model (mirrors services/ingest-shim/internal/httpserver, ADR-0004
-// Layer-2): a shared `X-Ingest-Key` header, constant-time compared so a timing
-// side-channel can't guess the key byte-by-byte. The key is supplied by
-// reference (env from .env / Secrets Manager), NEVER inlined in compose. A
-// missing/wrong key → 401. A body whose declared tenant `group` doesn't match
-// the agent's configured scope → 403. A well-formed, in-scope envelope → 202.
+// Auth model (ADR-0004 Layer-2, per-tenant keys since 2026-10-14): the
+// `X-Ingest-Key` header is checked against a KeyRing of per-tenant keys (stored
+// as SHA-256 hashes, see keyring.go), each bound to the group(s) it may publish
+// for, and — while Config.LegacyKeyDisabled is false — against the old shared
+// key, which still admits any group but is counted and logged as deprecated.
+// Every comparison is constant-time. The keys are supplied by reference (env
+// from .env / Secrets Manager), NEVER inlined in compose. A missing/unknown key
+// → 401. A key used for a group it is not bound to → 403. A body whose declared
+// tenant `group` doesn't match the agent's scope/routes → 403. A well-formed,
+// in-scope, authorised envelope → 202.
 //
 // The handler NEVER logs the key or the tag values — only the derived counts
 // and byte size. Leaking either defeats the point of an internal broker.
@@ -33,6 +37,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -59,10 +65,21 @@ type Sink func(tags []rawtag.RawTag) (accepted, total int)
 
 // Config controls the front-door.
 type Config struct {
-	// APIKey is the expected X-Ingest-Key value. REQUIRED — an empty key
-	// would disable auth, so New treats "" as a programming error (main
-	// refuses to start the server without a key).
+	// APIKey is the LEGACY shared X-Ingest-Key (one key for every tenant).
+	// Accepted only while LegacyKeyDisabled is false. At least one of APIKey
+	// (with the legacy key allowed) or Keys must be usable — New/NewRouter
+	// panic otherwise, because auth must never be optional.
 	APIKey string
+
+	// Keys are the per-tenant ingest keys: SHA-256 hash → the group(s) the key
+	// may publish for. A request authenticated by one of these keys is 403 for
+	// any other group. Nil/empty ⇒ only the legacy key authenticates.
+	Keys *KeyRing
+
+	// LegacyKeyDisabled turns the legacy shared APIKey off (401). The zero
+	// value keeps it ON so existing deployments are unchanged; main sets it
+	// from AGENT_INGEST_LEGACY_KEY_ALLOWED=false once every box has its own key.
+	LegacyKeyDisabled bool
 
 	// ScopeGroup is the tenant this agent serves (e.g. "CPACK"). When set, a
 	// request whose envelope declares a different `group` is refused 403.
@@ -85,6 +102,13 @@ type Config struct {
 	// /v1/counters that resolved to no canonical metric — the onboarding DQ
 	// signal (ADR-0045 §2.4a "reject-don't-drop"). Optional.
 	NumericUnmapped prometheus.Counter
+
+	// Link, when non-nil, receives the envelope's optional PLC connection
+	// report (rawtag.Link) with the resolved tenant group — only for requests
+	// that passed auth and tenant routing. Must not block (linkhealth.Recorder
+	// enqueues). Nil ⇒ link reports are ignored, as before. Honoured by New and
+	// NewRouter alike.
+	Link func(group string, l rawtag.Link)
 }
 
 // Outcome label values for the ingest counter (mirrors ingest-shim/metrics so
@@ -95,7 +119,19 @@ const (
 	OutcomeRejectedAuth  = "rejected_auth"  // missing/wrong X-Ingest-Key → 401
 	OutcomeRejectedScope = "rejected_scope" // out-of-scope group → 403
 	OutcomeRejectedBad   = "rejected_bad"   // unreadable/too-large/undecodable → 400
+	// OutcomeRejectedKeyScope: a valid per-tenant key used for a group it is
+	// not bound to → 403. Non-zero means a misconfigured box or a key being
+	// used to claim another tenant; either way it needs a look.
+	OutcomeRejectedKeyScope = "rejected_key_scope"
+	// OutcomeLegacyKey counts requests admitted with the deprecated shared key
+	// (in addition to received/accepted). The rollout is finished when this
+	// stays at 0 and AGENT_INGEST_LEGACY_KEY_ALLOWED can be set to false.
+	OutcomeLegacyKey = "legacy_key"
 )
+
+// legacyWarnEvery rate-limits the deprecation WARN to one line per group per
+// interval (the tee posts every few seconds; the metric carries the count).
+const legacyWarnEvery = 10 * time.Minute
 
 // Server is the HTTP front-door. It is an http.Handler; main mounts it on the
 // ingest listener (a separate port from /healthz).
@@ -111,14 +147,19 @@ const (
 //     the router has no single scope to fall back to, so an unrouteable body is
 //     rejected rather than silently dropped by some default pipeline.
 type Server struct {
-	apiKey          []byte
-	scopeGroup      string          // single mode: optional scope guard ("" disables)
-	routes          map[string]Sink // multi mode: upper(group) → tenant Sink; nil in single mode
+	apiKey          []byte   // legacy shared key ("" ⇒ none configured)
+	legacyAllowed   bool     // accept apiKey (deprecated)
+	keys            *KeyRing // per-tenant keys
+	legacyWarnMu    sync.Mutex
+	legacyWarnAt    map[string]time.Time // group → last deprecation WARN
+	scopeGroup      string               // single mode: optional scope guard ("" disables)
+	routes          map[string]Sink      // multi mode: upper(group) → tenant Sink; nil in single mode
 	maxBody         int64
 	sink            Sink // single mode: the one pipeline sink; nil in multi mode
 	outcomes        *prometheus.CounterVec
 	numeric         *numeric.Translator
 	numericUnmapped prometheus.Counter
+	link            func(group string, l rawtag.Link)
 	logger          *slog.Logger
 }
 
@@ -127,9 +168,7 @@ type Server struct {
 // pass a throwaway vec in tests. A blank APIKey panics — auth must never be
 // optional.
 func New(cfg Config, sink Sink, outcomes *prometheus.CounterVec, logger *slog.Logger) *Server {
-	if cfg.APIKey == "" {
-		panic("httpingest: APIKey is required (refusing to serve with auth disabled)")
-	}
+	mustHaveAuth(cfg)
 	if sink == nil {
 		panic("httpingest: Sink is required")
 	}
@@ -150,9 +189,7 @@ func New(cfg Config, sink Sink, outcomes *prometheus.CounterVec, logger *slog.Lo
 // APIKey or empty routes panics — both are programming errors main guards
 // against before serving.
 func NewRouter(cfg Config, routes map[string]Sink, outcomes *prometheus.CounterVec, logger *slog.Logger) *Server {
-	if cfg.APIKey == "" {
-		panic("httpingest: APIKey is required (refusing to serve with auth disabled)")
-	}
+	mustHaveAuth(cfg)
 	if len(routes) == 0 {
 		panic("httpingest: NewRouter requires at least one tenant route")
 	}
@@ -168,29 +205,58 @@ func NewRouter(cfg Config, routes map[string]Sink, outcomes *prometheus.CounterV
 	return s
 }
 
+// mustHaveAuth panics unless at least one credential can authenticate: the
+// legacy key while it is allowed, or a non-empty per-tenant KeyRing. main
+// validates the same thing (with a readable error) before serving.
+func mustHaveAuth(cfg Config) {
+	legacyUsable := cfg.APIKey != "" && !cfg.LegacyKeyDisabled
+	if !legacyUsable && cfg.Keys.Len() == 0 {
+		panic("httpingest: no usable ingest key (APIKey with the legacy key allowed, or a non-empty Keys ring) — refusing to serve with auth disabled")
+	}
+}
+
 func newServer(cfg Config, outcomes *prometheus.CounterVec, logger *slog.Logger) *Server {
 	maxBody := cfg.MaxBodyBytes
 	if maxBody <= 0 {
 		maxBody = DefaultMaxBodyBytes
 	}
 	return &Server{
-		apiKey:   []byte(cfg.APIKey),
-		maxBody:  maxBody,
-		outcomes: outcomes,
-		logger:   logger,
+		apiKey:        []byte(cfg.APIKey),
+		legacyAllowed: !cfg.LegacyKeyDisabled,
+		keys:          cfg.Keys,
+		legacyWarnAt:  map[string]time.Time{},
+		maxBody:       maxBody,
+		outcomes:      outcomes,
+		link:          cfg.Link,
+		logger:        logger,
 	}
 }
 
 // Handler returns the routed mux (POST /v1/tags always; POST /v1/counters only
-// when a numeric translator is configured). /healthz stays on the agent's
-// health server.
+// when a numeric translator is configured; GET /openapi.json always).
+// /healthz stays on the agent's health server.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/tags", s.handleTags)
-	if s.numeric != nil {
-		mux.HandleFunc("POST /v1/counters", s.handleCounters)
-	}
+	s.registerRoutes(mux)
 	return mux
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs — an
+// interface so the OpenAPI drift test can enumerate every pattern.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the front-door's routes are defined. Every
+// non-ops route must be described in openapi.json (openapi_test.go enforces it).
+func (s *Server) registerRoutes(mux routeRegistrar) {
+	mux.Handle("POST /v1/tags", http.HandlerFunc(s.handleTags))
+	if s.numeric != nil {
+		mux.Handle("POST /v1/counters", http.HandlerFunc(s.handleCounters))
+	}
+	// API description — no auth: it holds no tenant data. The public ingest
+	// vhosts proxy only exact tag paths, so this stays in-network.
+	mux.Handle("GET /openapi.json", http.HandlerFunc(handleOpenAPI))
 }
 
 func (s *Server) inc(outcome string) {
@@ -202,11 +268,10 @@ func (s *Server) inc(outcome string) {
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	s.inc(OutcomeReceived)
 
-	// 1. Auth — constant-time compare. A missing header hashes to a
-	//    zero-length slice which never matches a non-empty key.
-	got := []byte(r.Header.Get("X-Ingest-Key"))
-	if subtle.ConstantTimeCompare(got, s.apiKey) != 1 {
-		s.reject(w, http.StatusUnauthorized, OutcomeRejectedAuth, "unauthorized", "", 0)
+	// 1. Auth — per-tenant key ring, then the legacy shared key while allowed.
+	//    All comparisons are constant-time; a missing header never matches.
+	p, ok := s.authenticate(w, r)
+	if !ok {
 		return
 	}
 
@@ -217,7 +282,7 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			s.reject(w, http.StatusRequestEntityTooLarge, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
 			return
 		}
 		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "cannot read body", "", int64(len(body)))
@@ -229,12 +294,13 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Route to the tenant pipeline (multi mode) or apply the single-scope
-	//    guard (single mode). resolveSink centralises the two modes and emits
-	//    the 403 itself on a scope/route miss — so a rejected body never reaches
-	//    a decoder or a foreign tenant's pipeline. The X-Ingest-Group header is a
-	//    multi-mode fallback routing key for legacy tees that post no body group
-	//    (a per-tenant nginx front-door injects it); the body group still wins.
-	sink, ok := s.resolveSink(w, r.Header.Get("X-Ingest-Group"), body)
+	//    guard (single mode), and check the key is bound to that group.
+	//    resolveSink centralises the two modes and emits the 403 itself on a
+	//    scope/route/key miss — so a rejected body never reaches a decoder or a
+	//    foreign tenant's pipeline. The X-Ingest-Group header is a multi-mode
+	//    fallback routing key for legacy tees that post no body group (a
+	//    per-tenant nginx front-door injects it); the body group still wins.
+	sink, ok := s.resolveSink(w, p, r.Header.Get("X-Ingest-Group"), body)
 	if !ok {
 		return
 	}
@@ -244,6 +310,15 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "undecodable envelope", "", int64(len(body)))
 		return
+	}
+
+	// 4b. PLC connection report (optional `link` field). Recorded only now —
+	//     after auth + routing + a valid envelope — so a rejected body never
+	//     writes health rows. A failed read arrives as tags: [] + link.ok=false.
+	if s.link != nil {
+		if l, ok := rawtag.DecodeLink(body); ok {
+			s.link(s.linkGroup(r.Header.Get("X-Ingest-Group"), body), l)
+		}
 	}
 
 	// 5. Feed the routed pipeline. accepted<total means some tags were
@@ -268,9 +343,8 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 	s.inc(OutcomeReceived)
 
-	got := []byte(r.Header.Get("X-Ingest-Key"))
-	if subtle.ConstantTimeCompare(got, s.apiKey) != 1 {
-		s.reject(w, http.StatusUnauthorized, OutcomeRejectedAuth, "unauthorized", "", 0)
+	p, ok := s.authenticate(w, r)
+	if !ok {
 		return
 	}
 
@@ -279,7 +353,7 @@ func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
+			s.reject(w, http.StatusRequestEntityTooLarge, OutcomeRejectedBad, "payload too large", "", int64(len(body)))
 			return
 		}
 		s.reject(w, http.StatusBadRequest, OutcomeRejectedBad, "cannot read body", "", int64(len(body)))
@@ -290,11 +364,10 @@ func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.scopeGroup != "" {
-		if g, ok := probeGroup(body); ok && !strings.EqualFold(g, s.scopeGroup) {
-			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "out-of-scope group", g, int64(len(body)))
-			return
-		}
+	// Single mode only (the numeric front-door is never mounted on a router):
+	// the scope guard + key binding, identical to /v1/tags.
+	if _, ok := s.resolveSink(w, p, "", body); !ok {
+		return
 	}
 
 	env, counters, err := numeric.DecodeEnvelope(body)
@@ -346,7 +419,13 @@ func (s *Server) handleCounters(w http.ResponseWriter, r *http.Request) {
 //     group is accepted (the agent is physically single-tenant and the tag_map
 //     drops foreign metrics). This is the frozen original behavior — the header
 //     is IGNORED in single mode.
-func (s *Server) resolveSink(w http.ResponseWriter, headerGroup string, body []byte) (Sink, bool) {
+//
+// Key binding: once the group is known, a per-tenant key must be bound to it
+// (403 OutcomeRejectedKeyScope otherwise). In multi mode this runs BEFORE the
+// route lookup, so a key holder cannot probe which other tenants exist (a
+// foreign group is "key not authorised" whether or not it is routed). The
+// legacy key passes for any group and is counted + WARN-logged as deprecated.
+func (s *Server) resolveSink(w http.ResponseWriter, p principal, headerGroup string, body []byte) (Sink, bool) {
 	if s.routes != nil {
 		g, present := probeGroup(body)
 		if !present {
@@ -361,6 +440,9 @@ func (s *Server) resolveSink(w http.ResponseWriter, headerGroup string, body []b
 			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "missing group (multi-tenant mode requires it in the body or the X-Ingest-Group header)", "", int64(len(body)))
 			return nil, false
 		}
+		if !s.authorize(w, p, g, int64(len(body))) {
+			return nil, false
+		}
 		sink, known := s.routes[strings.ToUpper(strings.TrimSpace(g))]
 		if !known {
 			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "unknown group", g, int64(len(body)))
@@ -368,24 +450,98 @@ func (s *Server) resolveSink(w http.ResponseWriter, headerGroup string, body []b
 		}
 		return sink, true
 	}
-	if s.scopeGroup != "" {
-		if g, present := probeGroup(body); present && !strings.EqualFold(g, s.scopeGroup) {
-			s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "out-of-scope group", g, int64(len(body)))
-			return nil, false
-		}
+	g, present := probeGroup(body)
+	if s.scopeGroup != "" && present && !strings.EqualFold(g, s.scopeGroup) {
+		s.reject(w, http.StatusForbidden, OutcomeRejectedScope, "out-of-scope group", g, int64(len(body)))
+		return nil, false
+	}
+	if !present {
+		g = s.scopeGroup // the group this single-tenant agent publishes as
+	}
+	if !s.authorize(w, p, g, int64(len(body))) {
+		return nil, false
 	}
 	return s.sink, true
 }
 
+// authenticate resolves the X-Ingest-Key to a principal, or writes the 401.
+// Both the ring lookup and the legacy compare always run (no short-circuit),
+// and each is constant-time, so timing does not reveal which kind of key was
+// presented. The key itself is never logged.
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (principal, bool) {
+	got := r.Header.Get("X-Ingest-Key")
+	entry, inRing := s.keys.lookup(got)
+	legacyMatch := len(s.apiKey) > 0 && subtle.ConstantTimeCompare([]byte(got), s.apiKey) == 1
+	switch {
+	case inRing:
+		return principal{entry: entry}, true
+	case legacyMatch && s.legacyAllowed:
+		return principal{legacy: true}, true
+	}
+	reason := "unknown or missing key"
+	if legacyMatch {
+		reason = "legacy shared key disabled (AGENT_INGEST_LEGACY_KEY_ALLOWED=false)"
+	}
+	s.reject(w, http.StatusUnauthorized, OutcomeRejectedAuth, "unauthorized", "", 0, slog.String("reason", reason))
+	return principal{}, false
+}
+
+// authorize checks the principal may publish for group, writing the 403 if
+// not. A legacy-key request is admitted, counted, and logged (rate-limited).
+func (s *Server) authorize(w http.ResponseWriter, p principal, group string, bytes int64) bool {
+	if !p.allows(group) {
+		s.reject(w, http.StatusForbidden, OutcomeRejectedKeyScope, "key not authorised for group", group, bytes,
+			slog.String("key_groups", p.keyLabel()))
+		return false
+	}
+	if p.legacy {
+		s.inc(OutcomeLegacyKey)
+		s.warnLegacy(group)
+	}
+	return true
+}
+
+// warnLegacy logs the deprecation WARN at most once per group per
+// legacyWarnEvery — enough to see which tenants still use the shared key.
+func (s *Server) warnLegacy(group string) {
+	key := strings.ToUpper(strings.TrimSpace(group))
+	now := time.Now()
+	s.legacyWarnMu.Lock()
+	last, seen := s.legacyWarnAt[key]
+	due := !seen || now.Sub(last) >= legacyWarnEvery
+	if due {
+		s.legacyWarnAt[key] = now
+	}
+	s.legacyWarnMu.Unlock()
+	if due {
+		s.logger.Warn("deprecated shared ingest key used — issue this tenant its own key, then set AGENT_INGEST_LEGACY_KEY_ALLOWED=false",
+			slog.String("group", group))
+	}
+}
+
+// linkGroup names the tenant a link report belongs to, with the same
+// precedence resolveSink routes by: body group, then (multi mode) the
+// X-Ingest-Group header, then (single mode) the configured scope.
+func (s *Server) linkGroup(headerGroup string, body []byte) string {
+	if g, ok := probeGroup(body); ok {
+		return g
+	}
+	if s.routes != nil {
+		return strings.TrimSpace(headerGroup)
+	}
+	return s.scopeGroup
+}
+
 // reject centralises the metric bump + structured log (never the key or tag
 // values) + JSON response.
-func (s *Server) reject(w http.ResponseWriter, status int, outcome, msg, group string, bytes int64) {
+func (s *Server) reject(w http.ResponseWriter, status int, outcome, msg, group string, bytes int64, extra ...slog.Attr) {
 	s.inc(outcome)
-	s.logger.Warn("request rejected",
+	attrs := append([]any{
 		slog.String("outcome", outcome),
 		slog.Int("status", status),
 		slog.String("group", group),
-		slog.Int64("bytes", bytes))
+		slog.Int64("bytes", bytes)}, attrsToAny(extra)...)
+	s.logger.Warn("request rejected", attrs...)
 	writeJSON(w, status, `{"error":`+quote(msg)+`}`)
 }
 
@@ -411,6 +567,14 @@ func probeGroup(body []byte) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func attrsToAny(a []slog.Attr) []any {
+	out := make([]any, len(a))
+	for i := range a {
+		out[i] = a[i]
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, body string) {

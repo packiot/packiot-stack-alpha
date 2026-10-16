@@ -1,0 +1,51 @@
+name: OpenAPI export is current
+
+# docs/api/openapi/<service>.openapi.json is the committed copy of every Go
+# service's OpenAPI contract (the wiki build renders it; the services serve the
+# same documents at GET /openapi.json). `make openapi` regenerates it: embedded
+# specs are copied, read-api's is generated from its route tables
+# (`refdata-api --dump-openapi`, no DB/network). This job fails when a spec or a
+# read-api route table changed without the export being refreshed.
+#
+# Fix locally: `make openapi && git add docs/api/openapi`.
+
+on:
+  pull_request:
+    branches: [staging, development]
+    paths:
+      - 'services/read-api/**'
+      - 'services/barcode-service/cmd/barcode-service/openapi.json'
+      - 'services/ingest-shim/internal/httpserver/openapi.json'
+      - 'services/operator-gateway/internal/adapter/openapi.json'
+      - 'services/sparkplug-decoder/internal/agent/httpingest/openapi.json'
+      - 'services/sparkplug-decoder/internal/agent/onboardapi/openapi.json'
+      - 'docs/api/openapi/**'
+      - 'Makefile'
+      - '.github/workflows/openapi-export.yml'
+  workflow_dispatch:
+
+jobs:
+  export-current:
+    name: OpenAPI export — make openapi produces no diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/read-api/go.mod
+          cache: true
+          cache-dependency-path: services/read-api/go.sum
+
+      - name: make openapi
+        run: make openapi
+
+      - name: Fail on drift
+        run: |
+          git add -N docs/api/openapi
+          if ! git diff --exit-code --stat -- docs/api/openapi; then
+            echo "::error::docs/api/openapi is stale — run 'make openapi' and commit the result"
+            git diff -- docs/api/openapi | head -200
+            exit 1
+          fi

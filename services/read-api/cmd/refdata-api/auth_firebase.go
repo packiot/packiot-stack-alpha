@@ -90,8 +90,11 @@ const defaultFirebaseProject = "fbpackiot"
 // a role-less user must still authenticate. The value is resolved to an
 // id_user_role server-side and only ever bound as $2 — the raw uid never
 // reaches SQL beyond this uid→identity lookup.
+// #159: Firebase retired — resolve the verified subject by id_user_cognito
+// ONLY. (Was `id_user_firebase = $1 OR id_user_cognito = $1` during the
+// dual-accept cutover.) id_user_cognito is UNIQUE ⇒ at most one row.
 const usersEnterpriseSQL = `SELECT id_enterprise, user_roles FROM users
-	WHERE (id_user_firebase = $1 OR id_user_cognito = $1)
+	WHERE id_user_cognito = $1
 	  AND active = true AND id_enterprise IS NOT NULL`
 
 var (

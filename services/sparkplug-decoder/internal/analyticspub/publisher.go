@@ -64,11 +64,16 @@ const SchemaVersion = "1.0"
 // The `source_type: "go"` field is the load-bearing distinction that
 // makes oeecloud-worker route writes into shadow_go_port.* instead of
 // public.* (ADR-0010 Phase 3 shadow-mode DB comparison).
+//
+// IDEnterprise (ADR-0061 P2) is the tenant of the birth bindings of this
+// envelope's metrics, stamped by the decoder only when every stamped metric
+// agrees. Absent ⇒ nothing was bound (omitempty keeps the legacy bytes).
 type Envelope struct {
-	Timestamp  int64    `json:"timestamp"`
-	Gateway    string   `json:"gateway"`
-	SourceType string   `json:"source_type"`
-	Metrics    []Metric `json:"metrics"`
+	Timestamp    int64    `json:"timestamp"`
+	Gateway      string   `json:"gateway"`
+	SourceType   string   `json:"source_type"`
+	IDEnterprise *int     `json:"id_enterprise,omitempty"`
+	Metrics      []Metric `json:"metrics"`
 }
 
 // Metric mirrors oeecloud-worker's sparkplug.Metric shape — same field
@@ -80,7 +85,12 @@ type Metric struct {
 	Value     any      `json:"value"`
 	Counter   *float64 `json:"counter,omitempty"`
 	CurSpeed  *float64 `json:"curspeed,omitempty"`
-	ID        *int     `json:"id,omitempty"`
+	ID        *int     `json:"id,omitempty"` // the PackML PARAMETER id (30700–30899), NOT the equipment
+	// ADR-0061 P2: the birth-bound identity of this metric (decoder =
+	// single binding authority). Absent ⇒ unbound. Consumers verify against
+	// their current resolver until the tenant switches (D7).
+	IDEquipment *int   `json:"id_equipment,omitempty"`
+	Role        string `json:"role,omitempty"` // D9 name, e.g. counter.gross
 }
 
 // DefaultConfirmTimeout is how long we wait for RabbitMQ to ack a publish

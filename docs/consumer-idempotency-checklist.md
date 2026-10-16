@@ -85,7 +85,7 @@ If the PR touches a consumer and doesn't complete this checklist, ask for it bef
 
 - **oeecloud-worker** (`services/oeecloud-worker/internal/handlers/`) — writes to `equipment_values` with `UNIQUE(ts_value, id_equipment)` — natural dedup at the DB level.
 
-- **edge-transformer shadow-mode** (`services/edge-transformer/internal/handlers/shadow.go`) — currently a no-op handler. Once Phase 3 lands real transforms, they'll follow the mirror-worker-go pattern.
+- **edge-transformer shadow-mode** (`services/sparkplug-decoder/internal/handlers/shadow.go`) — currently a no-op handler. Once Phase 3 lands real transforms, they'll follow the mirror-worker-go pattern.
 
 Read one of those before designing a new consumer. Pattern reuse per ADR-0009 Errata Correction 2 is enforced.
 

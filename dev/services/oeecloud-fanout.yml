@@ -1,0 +1,43 @@
+# ── oeecloud-fanout (Tier 2) — ADR-0060 P4 ───────────────────────────────────
+# contract (docs/dev/contracts.md §2, §3):
+#   inputs:   RabbitMQ `oee`, routing keys `sparkplug.data` + `sparkplug.data.cpack` → own queue
+#             oeecloud-fanout-cpack-to-sbxcpack (declared by the service)
+#   outputs:  RabbitMQ `oee`, routing key `sparkplug.data.sbxcpack`: the same envelope re-tenanted (first topic
+#             segment SOURCE → SBXCPACK, inherited ids cleared); /health :9102 (in-network only)
+#   external: none in dev — RabbitMQ creds from env (CREDS_SOURCE=env, staging: Secrets Manager)
+# Mirrors compose.staging.yml `oeecloud-fanout` (enabled there by .env; observed consuming on 2026-10-06): same queue,
+# bindings, target key, broker user (stream-engine). One dev value differs: the SOURCE group is the seed's anonymized
+# SparkPlug group (DEV_SEED_GROUP, the first segment of every seed packml_topic), because "CPACK" never appears in the
+# anonymized seed. With seed-replay running, real replay traffic is fanned out; in dev nothing consumes
+# stream-engine-q-sbxcpack (stream-engine runs LEGACY_INGEST_ENABLED=false), so the clones only accumulate there.
+#   make dev SVC=oeecloud-fanout
+services:
+  oeecloud-fanout:
+    build: ../../services/oeecloud-fanout
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: info
+      FANOUT_ENABLED: "true"
+      CREDS_SOURCE: env
+      RABBITMQ_USER: stream-engine
+      RABBITMQ_PASSWORD: ${RABBITMQ_STREAM_ENGINE_PASSWORD:?set in dev/.env.dev}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      SOURCE_EXCHANGE: oee
+      FANOUT_QUEUE: oeecloud-fanout-cpack-to-sbxcpack
+      FANOUT_SOURCE_GROUP: ${DEV_SEED_GROUP:?set in dev/.env.dev}
+      FANOUT_TARGET_GROUP: SBXCPACK
+      FANOUT_SOURCE_ROUTING_KEYS: "sparkplug.data,sparkplug.data.cpack"
+      FANOUT_TARGET_ROUTING_KEY: "sparkplug.data.sbxcpack"
+      PREFETCH: "50"
+      PUBLISH_CONFIRM_TIMEOUT_MS: "5000"
+      HEALTH_PORT: "9102"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/oeecloud-fanout", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped

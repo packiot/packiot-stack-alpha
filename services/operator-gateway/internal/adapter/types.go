@@ -79,12 +79,12 @@ type PORequest struct {
 	Topic       string `json:"topic"`        // app_user_topic; scope-checked
 	PackmlTopic string `json:"packml_topic"` // SparkPlug packml_topic; the adapter resolves it → staging ids
 
-	IDOrder                 *int   `json:"id_order"`                  // operator-selected order number; REQUIRED
-	IDSite                  *int   `json:"id_site"`                   // resolved by the adapter from packml_topic; NOT sent by the tee
-	IDArea                  *int   `json:"id_area"`                   // resolved by the adapter from packml_topic; NOT sent by the tee
-	IDEquipment             *int   `json:"id_equipment"`              // resolved by the adapter from packml_topic; NOT sent by the tee
-	ProductionOrderQuantity *int   `json:"production_order_quantity"` // po.production_programmed; REQUIRED
-	Timestamp               string `json:"timestamp"`                 // 'YYYY-MM-DD HH:mm:ss'; REQUIRED
+	IDOrder                 OrderNumber `json:"id_order"`                  // operator-selected client order number, string or number (ADR-0062); REQUIRED
+	IDSite                  *int        `json:"id_site"`                   // resolved by the adapter from packml_topic; NOT sent by the tee
+	IDArea                  *int        `json:"id_area"`                   // resolved by the adapter from packml_topic; NOT sent by the tee
+	IDEquipment             *int        `json:"id_equipment"`              // resolved by the adapter from packml_topic; NOT sent by the tee
+	ProductionOrderQuantity *int        `json:"production_order_quantity"` // po.production_programmed; REQUIRED
+	Timestamp               string      `json:"timestamp"`                 // 'YYYY-MM-DD HH:mm:ss'; REQUIRED
 
 	NmProductionOrder       string `json:"nm_production_order"` // po.nm_product; optional
 	TxtProductionOrderNotes string `json:"notes"`               // optional
@@ -132,11 +132,14 @@ type edgeEditDowntime struct {
 
 // edgeCreateAndStartPO → POST /api/production-orders/create-and-start
 type edgeCreateAndStartPO struct {
-	IDEnterprise            int    `json:"idEnterprise"`
-	IDSite                  int    `json:"idSite"`
-	IDArea                  int    `json:"idArea"`
-	IDEquipment             int    `json:"idEquipment"`
-	IDOrder                 int    `json:"idOrder"`
+	IDEnterprise int `json:"idEnterprise"`
+	IDSite       int `json:"idSite"`
+	IDArea       int `json:"idArea"`
+	IDEquipment  int `json:"idEquipment"`
+	// ADR-0062: the client's number as TEXT in the existing idOrder field (edge-api
+	// accepts string|number) and in the new orderNumber field (D3 contract).
+	IDOrder                 string `json:"idOrder"`
+	OrderNumber             string `json:"orderNumber"`
 	ProductionOrderQuantity int    `json:"productionOrderQuantity"`
 	Timestamp               string `json:"timestamp"`
 	IDLabel                 *int   `json:"idLabel,omitempty"`
@@ -150,6 +153,10 @@ type edgeCall struct {
 	path         string // e.g. /api/downtimes/create-manual-event
 	idEnterprise int    // becomes ?idEnterprise= so the audit log records the right tenant
 	body         any    // one of the edge* DTOs above
+	// idempotencyKey, when set, is sent as the Idempotency-Key header so edge-api
+	// answers a retry of an already-committed write from its key store instead of
+	// running it again. Set by Server.forward (see idempotency.go).
+	idempotencyKey string
 }
 
 // outcome label constants — keep in sync with metrics.go's documented set.

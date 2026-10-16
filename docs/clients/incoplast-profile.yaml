@@ -1,0 +1,136 @@
+# incoplast-profile.yaml — Incoplast tenant CONVERSION PROFILE (DRAFT).
+#
+# Same schema as cpack-profile.yaml (tenantprofile / ADR-0043). This is a FIRST
+# DRAFT from a SELECT-only read of prod ent-33 packml_register + a cross-check
+# against the Incoplast heavy-operator flows export (flows (1).json). Several
+# fields are marked TODO/UNVERIFIED and MUST be validated by CS-Admin and against
+# a live tee payload before this drives an agent. It is intentionally NOT wired
+# to any agent yet.
+#
+# ── TENANT SHAPE (prod ent-33 "Incoplast", 2026-07-23) ───────────────────────
+#   Site : SAO_LUDGERO      Area : IMPRESSAO   (flexographic printing)
+#   4 single-machine printing lines (the CELULA/SLEEVE pattern: a tp=3 line
+#   wrapping ONE same-named tp=1 member):
+#
+#     line topic (tp=3)                              member topic (tp=1)   id_unit
+#     INCOPLAST/SAO_LUDGERO/IMPRESSAO/MIRAFLEX_28    …/MIRAFLEX_28/MIRAFLEX_28   4
+#     INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_11    …/NOVOFLEX_11/NOVOFLEX_11   2
+#     INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15    …/NOVOFLEX_15/NOVOFLEX_15   1
+#     INCOPLAST/SAO_LUDGERO/IMPRESSAO/PRIMAFLEX_9    …/PRIMAFLEX_9/PRIMAFLEX_9   3
+#
+# ── THE THREE INCOPLAST QUIRKS (why this profile is not just CPACK-with-a-prefix)
+#
+# (1) ACCENTED / MIXED-CASE / ZERO-PADDED REAL NAMING.
+#     The canonical (active) register topics are ASCII, UPPERCASE, non-padded:
+#       INCOPLAST/SAO_LUDGERO/IMPRESSAO/NOVOFLEX_15
+#     but the real PLC/tee publishes the Portuguese-accented, mixed-case,
+#     zero-padded form (confirmed in the flows export + the INACTIVE legacy
+#     register rows):
+#       INCOPLAST/SÃO_LUDGERO/IMPRESSÃO/NovoFlex_015
+#     So the head AND the equipment-name segment must be folded. prefix_fixups is
+#     a whole-topic string replace (first match), so it can fold the accented
+#     site/area head; the per-machine name fold (NovoFlex_015 → NOVOFLEX_15) is
+#     ALSO expressed as prefix_fixups entries below, because those names sit in
+#     the MIDDLE of the topic (neither the head prefix nor a metric leaf) and the
+#     other rewrite fields do not reach them. ⚠ The exact casing + zero-padding
+#     the live tee currently emits must be confirmed per machine — see TODO.
+#     (This is the topic-shape mismatch already logged in the bug ledger:
+#      feedback_bug_incoplast_topic_shape_mismatch.)
+#
+# (2) COUNT INDEX == id_unit (a SMALL CHANNEL NUMBER), not id_equipment.
+#     The only registered Incoplast count topic is
+#       …/NovoFlex_015/Admin/ProdConsumedCount/1/Unit   (member id_equipment 18,
+#     id_unit 1) → the PLC count index is 1 = id_unit, NOT 18. The other three
+#     members' count topics are unregistered; their indices are INFERRED = their
+#     id_unit (2/3/4). All four MUST be confirmed from a live tee payload.
+#     Because count index tracks id_unit (which staging renumbering does not
+#     preserve), every member needs an explicit override — mode: equipment_id
+#     would emit the wrong number.
+#
+# (3) HEAVY OPERATOR CUSTOMIZATION (out of scope for THIS file, flagged).
+#     The Incoplast flows carry extensive operator-side logic (custom
+#     events_meta_data / setup events such as "Setup Acerto", per-machine event
+#     minting keyed on Status/UnitModeCurrent). That lives in the operator-adapter,
+#     NOT in the tag-map. It is noted here only so onboarding does not treat
+#     Incoplast as a pure tag-map tenant.
+#
+# ── STAGING NOTE ─────────────────────────────────────────────────────────────
+# Staging seeds Incoplast under enterprise 4 as a FLAT POC (4 tp=1 machines,
+# ids 990015-990018, NO line/member split, NO count topics). enterprise_id below
+# is set to that POC (4). If the register loader runs against that POC set, the
+# count-index overrides here (keyed by local segment) still apply, but the flat
+# seed has no tp=3 lines — so no line-level aggregation until the real topology
+# is seeded. Re-point enterprise_id + re-verify when Incoplast is onboarded for
+# real.
+
+tenant: INCOPLAST
+enterprise_id: 4                                # staging POC seed (prod is ent-33)
+tenant_prefix: INCOPLAST/SAO_LUDGERO/IMPRESSAO  # canonical (ASCII, upper, unpadded)
+
+# ── NORMALIZE side (inbound real → canonical) ────────────────────────────────
+prefix_fixups:
+  # Accent-fold the site/area head (real tee sends Portuguese accents).
+  - {from: "SÃO_LUDGERO/IMPRESSÃO", to: "SAO_LUDGERO/IMPRESSAO"}
+  # Per-machine name fold (mixed-case + zero-padding → canonical). TODO: confirm
+  # the EXACT form the live tee emits for each machine; these are best-effort.
+  - {from: "NovoFlex_015", to: "NOVOFLEX_15"}
+  - {from: "NovoFlex_011", to: "NOVOFLEX_11"}   # TODO UNVERIFIED
+  - {from: "PrimaFlex_009", to: "PRIMAFLEX_9"}  # TODO UNVERIFIED
+  - {from: "MiraFlex_028", to: "MIRAFLEX_28"}   # TODO UNVERIFIED
+
+metric_aliases:
+  # Incoplast is expected to share CPACK's live-speed leaf; confirm against the
+  # tee. Harmless if the tee already sends Status/MachSpeed (no match, no change).
+  - {from: "Status/CurMachSpeed", to: "Status/MachSpeed"}  # TODO confirm
+
+parameter_aliases:
+  # Single-machine lines have no line-machines CSV; a bare Parameter here is
+  # almost certainly a threshold/mode, NOT 30700. Left EMPTY pending a live
+  # capture of how Incoplast encodes Status/Parameter. TODO.
+  []
+
+# ── count-index overrides (== id_unit; keyed by LOCAL SEGMENT) ────────────────
+count_index:
+  mode: equipment_id
+  overrides:
+    "/NOVOFLEX_15/NOVOFLEX_15": 1   # confirmed (registered count topic /1/Unit)
+    "/NOVOFLEX_11/NOVOFLEX_11": 2   # inferred = id_unit, TODO confirm
+    "/PRIMAFLEX_9/PRIMAFLEX_9": 3   # inferred = id_unit, TODO confirm
+    "/MIRAFLEX_28/MIRAFLEX_28": 4   # inferred = id_unit, TODO confirm
+
+# ── line-vs-member metric templates ──────────────────────────────────────────
+# Same superset-allowlist strategy as cpack-full-profile.yaml: members carry
+# indexed counts; lines carry bare counts. Incoplast's single-machine lines may
+# not emit line-level counts at all (the machine IS the line) — the bare line
+# count entries are then simply unmatched (harmless). TODO: confirm the real
+# per-metric set from a live tee; drop entries the tee never sends if a tighter
+# allowlist is wanted.
+metric_templates:
+  line:
+    - {leaf: "/Admin/ProdConsumedCount", type: double}
+    - {leaf: "/Admin/ProdProcessedCount", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+  member:
+    - {leaf: "/Admin/ProdConsumedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdProcessedCount/{idx}/Unit", type: double}
+    - {leaf: "/Admin/ProdDefectiveCount/{idx}/Unit", type: double}
+    - {leaf: "/Status/MachSpeed", type: double}
+    - {leaf: "/Status/StateCurrent", type: long}
+
+# ── OPEN QUESTIONS FOR CS-ADMIN / LIVE-TEE VALIDATION ────────────────────────
+# Q1. Exact real topic shape per machine — accents, case, zero-padding. The
+#     canonical register rows are ASCII/upper/unpadded but the tee sends the
+#     accented legacy form; confirm every prefix_fixups entry above.
+# Q2. Count index per member. Only NOVOFLEX_15 (=1) is confirmed; 2/3/4 inferred
+#     from id_unit. A wrong index silently drops that machine's counts.
+# Q3. Does Incoplast emit Status/CurMachSpeed or Status/MachSpeed? And a nominal
+#     ideal speed (Parameter30701) at all?
+# Q4. What does a bare Status/Parameter mean here (threshold? mode?) — needed
+#     before any parameter_alias is added.
+# Q5. enterprise_id: staging seeds a flat ent-4 POC (no tp=3 lines, no count
+#     topics). Confirm the real onboarding enterprise + seed the true
+#     line+member topology before cutover.
+# Q6. Operator customizations (setup events, event minting) are operator-adapter
+#     scope — track separately; they are NOT covered by this tag-map profile.

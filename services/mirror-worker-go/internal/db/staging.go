@@ -20,8 +20,8 @@ type Staging struct {
 	logger *slog.Logger
 
 	// ADR-0012 3-flow parity fan-out (see InsertEquipmentValueDelta).
-	valueFanout bool
-	shadowPool  *pgxpool.Pool // packiot_shadow (Flow 3); nil = not attached
+	valueFanout   bool
+	analyticsPool *pgxpool.Pool // packiot_analytics (Flow 3); nil = not attached
 	// ADR-0032 F3-collapse: gate the F2 (shadow_go_port) fan-out leg so it can be
 	// retired without a code change (the SHADOW_EMIT_GO analog for the mirror).
 	// Zero value (false) ⇒ F2 fanned as before; set true (SHADOW_FANOUT_F2=false)
@@ -56,34 +56,34 @@ func NewStaging(ctx context.Context, creds *secrets.DBCreds, logger *slog.Logger
 
 func (s *Staging) Close() {
 	s.pool.Close()
-	if s.shadowPool != nil {
-		s.shadowPool.Close()
+	if s.analyticsPool != nil {
+		s.analyticsPool.Close()
 	}
 }
 
 // EnableValueFanout turns on ADR-0012 3-flow fan-out: every
 // InsertEquipmentValueDelta row is also written to packiot.shadow_go_port
-// (same pool) and, when AttachShadowPool succeeded, packiot_shadow.public.
+// (same pool) and, when AttachAnalyticsPool succeeded, packiot_analytics.public.
 func (s *Staging) EnableValueFanout() { s.valueFanout = true }
 
 // SetF2Fanout controls whether the mirror fans the F2 (shadow_go_port) leg.
 // enabled=true keeps the ADR-0012 behavior; enabled=false (SHADOW_FANOUT_F2=false)
-// makes the mirror fan ONLY F3 (packiot_shadow) — the ADR-0032 collapse step that
+// makes the mirror fan ONLY F3 (packiot_analytics) — the ADR-0032 collapse step that
 // stops shadow_go_port receiving mirror writes so it can be frozen + dropped.
 func (s *Staging) SetF2Fanout(enabled bool) { s.f2Disabled = !enabled }
 
-// AttachShadowPool connects the ADR-0012 shadow DB (packiot_shadow) so
+// AttachAnalyticsPool connects the ADR-0012 shadow DB (packiot_analytics) so
 // value fan-out reaches Flow 3. Separate pool because pgbouncer's static
-// database list doesn't include packiot_shadow — callers pass a
+// database list doesn't include packiot_analytics — callers pass a
 // direct-to-postgres host via SHADOW_DB_HOST (same bypass shadow-mirror
 // uses).
-func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
+func (s *Staging) AttachAnalyticsPool(ctx context.Context, creds *secrets.DBCreds, host, dbName string) error {
 	sc := *creds
 	sc.Database = dbName
 	if host != "" {
 		sc.Host = host
 	}
-	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-shadow"))
+	pc, err := pgxpool.ParseConfig(sc.URL("mirror-worker-go-analytics"))
 	if err != nil {
 		return fmt.Errorf("parse shadow url: %w", err)
 	}
@@ -100,7 +100,7 @@ func (s *Staging) AttachShadowPool(ctx context.Context, creds *secrets.DBCreds, 
 		p.Close()
 		return fmt.Errorf("shadow ping: %w", err)
 	}
-	s.shadowPool = p
+	s.analyticsPool = p
 	s.logger.Info("shadow pool ready", slog.String("db", dbName))
 	return nil
 }
@@ -157,7 +157,7 @@ func (s *Staging) FetchAPIToken(ctx context.Context, enterpriseID int) (string, 
 func (s *Staging) ReadCursor(ctx context.Context, source string) (int64, error) {
 	var cursor int64
 	found, err := s.SelectOne(ctx,
-		`SELECT last_log_id FROM mirror_replay_cursor WHERE source = $1`,
+		`SELECT last_log_id FROM ops.mirror_replay_cursor WHERE source = $1`,
 		[]any{source}, &cursor)
 	if err != nil {
 		return 0, err
@@ -173,7 +173,7 @@ func (s *Staging) ReadCursor(ctx context.Context, source string) (int64, error) 
 // the caller (tx, not pool — atomic with mapping inserts / DLQ writes).
 func AdvanceCursor(ctx context.Context, tx pgx.Tx, source string, toID int64) error {
 	_, err := tx.Exec(ctx,
-		`UPDATE mirror_replay_cursor
+		`UPDATE ops.mirror_replay_cursor
 		    SET last_log_id = $1, last_run_at = now()
 		  WHERE source = $2
 		    AND last_log_id < $1`,
@@ -245,7 +245,7 @@ func (s *Staging) CountIDMap(ctx context.Context, source string) (int64, error) 
 // treats that as the healthy steady state, 0 anomalies.
 func (s *Staging) DistinctDLQSourceLogIDs(ctx context.Context, source string) ([]int64, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT source_log_id FROM mirror_replay_dlq WHERE source = $1`,
+		`SELECT DISTINCT source_log_id FROM ops.mirror_replay_dlq WHERE source = $1`,
 		source,
 	)
 	if err != nil {
@@ -580,11 +580,11 @@ func (s *Staging) CloseProdTerminalOrphanPO(ctx context.Context, stagingPOID int
 //
 // FinishOrphanPO above closes ONLY Flow 1 (public schema, by the F1 surrogate
 // id_production_order). The shadow flows (F2 = shadow_go_port schema on the
-// main pool; F3 = packiot_shadow.public on the shadow pool) carry their OWN
+// main pool; F3 = packiot_analytics.public on the shadow pool) carry their OWN
 // surrogate id_production_order per row (bug 248), so the same close must be
 // re-expressed against each flow by the NATURAL KEY (id_enterprise, id_order)
 // — exactly what shadow-mirror's lifecycle handlers do. These helpers reuse
-// the ADR-0012 fan-out plumbing (s.pool + s.shadowPool) the value delta
+// the ADR-0012 fan-out plumbing (s.pool + s.analyticsPool) the value delta
 // already writes through, so the finisher reaches all three flows with no new
 // connection wiring.
 
@@ -592,7 +592,7 @@ func (s *Staging) CloseProdTerminalOrphanPO(ctx context.Context, stagingPOID int
 // ShadowFlows and passed back into the per-flow finisher helpers. Keeping
 // the pool/schema unexported keeps pgx out of the reconcile package.
 type ShadowFlow struct {
-	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_shadow" (F3)
+	Name   string // metric/log label: "shadow_go_port" (F2) | "packiot_analytics" (F3)
 	pool   *pgxpool.Pool
 	schema string
 }
@@ -602,7 +602,7 @@ type ShadowFlow struct {
 //   - nil when EnableValueFanout was never called (fan-out disabled) — the
 //     finisher then behaves exactly like #480 (F1 only);
 //   - {shadow_go_port} when only Flow 2 is attached;
-//   - {shadow_go_port, packiot_shadow} once AttachShadowPool succeeded.
+//   - {shadow_go_port, packiot_analytics} once AttachAnalyticsPool succeeded.
 //
 // One flag (RECONCILE_FINISHER_ENABLED) governs whether the finisher runs at
 // all; this method governs which flows it can reach given what's wired.
@@ -614,8 +614,8 @@ func (s *Staging) ShadowFlows() []ShadowFlow {
 	if !s.f2Disabled { // ADR-0032: skip the F2 leg when collapsing to F3-only
 		flows = append(flows, ShadowFlow{Name: "shadow_go_port", pool: s.pool, schema: "shadow_go_port"})
 	}
-	if s.shadowPool != nil {
-		flows = append(flows, ShadowFlow{Name: "packiot_shadow", pool: s.shadowPool, schema: "public"})
+	if s.analyticsPool != nil {
+		flows = append(flows, ShadowFlow{Name: "packiot_analytics", pool: s.analyticsPool, schema: "public"})
 	}
 	return flows
 }
@@ -711,8 +711,8 @@ func (s *Staging) F1MirrorClosedPOShapes(ctx context.Context, source string, ent
 		       max(upper(por.runtime_timerange)) AS sealed_upper,
 		       bool_or(por.id_production_order IS NOT NULL
 		               AND upper(por.runtime_timerange) IS NULL) AS has_open_segment
-		  FROM public.production_orders po
-		  LEFT JOIN public.production_orders_runtime por
+		  FROM core.production_orders po
+		  LEFT JOIN gold.production_orders_runtime por
 		    ON por.id_production_order = po.id_production_order
 		 WHERE po.id_enterprise = $2
 		   AND po.id_order = ANY($3::bigint[])
@@ -909,7 +909,7 @@ func (s *Staging) FetchMappedActiveCPACKPOs(ctx context.Context, source string, 
 //
 // ADR-0012 3-flow fan-out: when EnableValueFanout was called, the same
 // row also goes to packiot.shadow_go_port (Flow 2) and — if
-// AttachShadowPool succeeded — packiot_shadow.public (Flow 3). The
+// AttachAnalyticsPool succeeded — packiot_analytics.public (Flow 3). The
 // timestamp is computed ONCE in Go: (ts_value, id_equipment) is the
 // parity join key across flows, and a per-statement now() would give
 // each flow a different key. Shadow failures never fail the Flow 1
@@ -935,8 +935,8 @@ func (s *Staging) InsertEquipmentValueDelta(
 		s.fanoutValueDelta(ctx, s.pool, "shadow_go_port", "shadow_go_port",
 			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	}
-	if s.shadowPool != nil {
-		s.fanoutValueDelta(ctx, s.shadowPool, "public", "packiot_shadow",
+	if s.analyticsPool != nil {
+		s.fanoutValueDelta(ctx, s.analyticsPool, "public", "packiot_analytics",
 			ts, stagingEqID, stagingSiteID, stagingAreaID, enterpriseID, netDelta, grossDelta, stagingPOID)
 	}
 	return nil
@@ -953,7 +953,7 @@ const sqlInsertValueDelta = `INSERT INTO %s.equipment_values
 	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
 	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1),
 	        (SELECT s.id_shift_hour FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1), $8
-	   FROM public.equipments e WHERE e.id_equipment = $1`
+	   FROM core.equipments e WHERE e.id_equipment = $1`
 
 // execFanout is the single fail-open executor every fan-out write
 // shares: success/missing-table(42P01)/failure land in the fan-out
@@ -994,8 +994,8 @@ func (s *Staging) FanoutStateRow(ctx context.Context, stagingEqID, enterpriseID,
 		s.execFanout(ctx, s.pool, "shadow_go_port", "-state",
 			fmt.Sprintf(sqlInsertStateRow, "shadow_go_port"), stagingEqID, ts, enterpriseID, status)
 	}
-	if s.shadowPool != nil {
-		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-state",
+	if s.analyticsPool != nil {
+		s.execFanout(ctx, s.analyticsPool, "packiot_analytics", "-state",
 			fmt.Sprintf(sqlInsertStateRow, "public"), stagingEqID, ts, enterpriseID, status)
 	}
 }
@@ -1015,8 +1015,8 @@ func (s *Staging) FanoutEventRow(ctx context.Context, stagingEqID, enterpriseID 
 		s.execFanout(ctx, s.pool, "shadow_go_port", "-event",
 			fmt.Sprintf(sqlInsertShadowEvent, "shadow_go_port"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	}
-	if s.shadowPool != nil {
-		s.execFanout(ctx, s.shadowPool, "packiot_shadow", "-event",
+	if s.analyticsPool != nil {
+		s.execFanout(ctx, s.analyticsPool, "packiot_analytics", "-event",
 			fmt.Sprintf(sqlInsertShadowEvent, "public"), stagingEqID, ts, tsEnd, status, enterpriseID, duration)
 	}
 }
@@ -1085,7 +1085,7 @@ func dedupKey(c ShadowEventCandidate) shadowCandDedup {
 // FetchShadowEventCloseCandidates returns the DISTINCT set of shadow
 // equipment_events rows that are close-sweep candidates, UNIONed across
 // BOTH shadow planes (F2 = shadow_go_port on the staging pool, F3 = public
-// on the packiot_shadow pool). A row qualifies if it is either:
+// on the packiot_analytics pool). A row qualifies if it is either:
 //
 //	(a) still OPEN (ts_end IS NULL) at ANY age            — RISK-1 open-strand
 //	(b) has ts_event >= now()-recentHours                 — RISK-2 close-drift
@@ -1197,7 +1197,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 			return nil, err
 		}
 	}
-	if err := collect(s.shadowPool, "public"); err != nil {
+	if err := collect(s.analyticsPool, "public"); err != nil {
 		return nil, err
 	}
 
@@ -1206,7 +1206,7 @@ func (s *Staging) FetchShadowEventCloseCandidates(ctx context.Context, enterpris
 
 // CountShadowOpenStrands counts shadow equipment_events rows still OPEN
 // (ts_end IS NULL) whose ts_event is older than olderThanHours, per plane
-// ("f2" = shadow_go_port, "f3" = public/packiot_shadow). Pure COUNT on the
+// ("f2" = shadow_go_port, "f3" = public/packiot_analytics). Pure COUNT on the
 // (id_enterprise) WHERE ts_end IS NULL partial index — the comparator's
 // close-field parity signal. A plane whose pool is nil is omitted from the
 // map (F3 not attached). Both planes should read EQUAL (F2==F3); inequality
@@ -1240,7 +1240,7 @@ func (s *Staging) CountShadowOpenStrands(ctx context.Context, enterpriseID, olde
 			return nil, err
 		}
 	}
-	if err := count(s.shadowPool, "f3", "public"); err != nil {
+	if err := count(s.analyticsPool, "f3", "public"); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1255,7 +1255,7 @@ const sqlInsertStateRow = `INSERT INTO %s.equipment_values
 	        (SELECT d.ts_value_production FROM piot_get_day_begin_by_equipment($1, $2) d LIMIT 1),
 	        (SELECT s.id_shift FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1),
 	        (SELECT s.id_shift_hour FROM piot_get_shift_hour_begin_by_equipment($1, $2) s LIMIT 1)
-	   FROM public.equipments e WHERE e.id_equipment = $1
+	   FROM core.equipments e WHERE e.id_equipment = $1
 	 ON CONFLICT (ts_value, id_equipment) DO UPDATE SET state = EXCLUDED.state`
 
 // fanoutValueDelta writes one shadow copy of the delta row. Never
@@ -1282,7 +1282,7 @@ func (s *Staging) fanoutValueDelta(
 // two cursors — same table, same shape.
 func (s *Staging) EnsureEventCursor(ctx context.Context, source string) (int64, error) {
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO mirror_replay_cursor (source, last_log_id, last_run_at)
+		`INSERT INTO ops.mirror_replay_cursor (source, last_log_id, last_run_at)
 		 VALUES ($1, 0, now())
 		 ON CONFLICT (source) DO NOTHING`,
 		source); err != nil {
@@ -1297,7 +1297,7 @@ func (s *Staging) EnsureEventCursor(ctx context.Context, source string) (int64, 
 // row; the cursor advances at the end of the batch).
 func (s *Staging) AdvanceCursorPool(ctx context.Context, source string, toID int64) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE mirror_replay_cursor
+		`UPDATE ops.mirror_replay_cursor
 		    SET last_log_id = $1, last_run_at = now()
 		  WHERE source = $2
 		    AND last_log_id < $1`,
@@ -1392,7 +1392,7 @@ type DLQRetryRow struct {
 func (s *Staging) FetchRetriableDLQ(ctx context.Context, source string, maxAttempts, limit int) ([]DLQRetryRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, source_log_id, category, retry_attempts
-		   FROM mirror_replay_dlq
+		   FROM ops.mirror_replay_dlq
 		  WHERE source = $1
 		    AND retry_attempts < $2
 		    AND (last_retry_at IS NULL
@@ -1421,7 +1421,7 @@ func (s *Staging) FetchRetriableDLQ(ctx context.Context, source string, maxAttem
 // rows, not the historical state. Run in caller's tx so it's atomic
 // with whatever the successful replay wrote.
 func DeleteDLQRow(ctx context.Context, tx pgx.Tx, id int64) error {
-	_, err := tx.Exec(ctx, `DELETE FROM mirror_replay_dlq WHERE id = $1`, id)
+	_, err := tx.Exec(ctx, `DELETE FROM ops.mirror_replay_dlq WHERE id = $1`, id)
 	return err
 }
 
@@ -1430,7 +1430,7 @@ func DeleteDLQRow(ctx context.Context, tx pgx.Tx, id int64) error {
 // have rolled back — we want this UPDATE to land regardless.
 func (s *Staging) MarkDLQRetried(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE mirror_replay_dlq
+		`UPDATE ops.mirror_replay_dlq
 		    SET retry_attempts = retry_attempts + 1,
 		        last_retry_at  = now()
 		  WHERE id = $1`,
@@ -1444,7 +1444,7 @@ func (s *Staging) MarkDLQRetried(ctx context.Context, id int64) error {
 func (s *Staging) CountDLQ(ctx context.Context, source string) (int64, error) {
 	var n int64
 	_, err := s.SelectOne(ctx,
-		`SELECT COUNT(*) FROM mirror_replay_dlq WHERE source = $1`,
+		`SELECT COUNT(*) FROM ops.mirror_replay_dlq WHERE source = $1`,
 		[]any{source}, &n)
 	return n, err
 }
@@ -1475,11 +1475,11 @@ func (s *Staging) CountDLQ(ctx context.Context, source string) (int64, error) {
 // single tick.
 func (s *Staging) ReanimateMappableEquipmentEventDLQ(ctx context.Context, source string, maxAttempts, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx,
-		`UPDATE mirror_replay_dlq d
+		`UPDATE ops.mirror_replay_dlq d
 		    SET retry_attempts = 0,
 		        last_retry_at  = NULL
 		  WHERE d.id IN (
-		    SELECT id FROM mirror_replay_dlq
+		    SELECT id FROM ops.mirror_replay_dlq
 		     WHERE source = $1
 		       AND retry_attempts >= $2
 		       AND category IN ('event-justified', 'event-edited',
@@ -1526,7 +1526,7 @@ func WriteDLQ(ctx context.Context, tx pgx.Tx,
 	payload []byte, errMsg string, retryAttempts int,
 ) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO mirror_replay_dlq
+		`INSERT INTO ops.mirror_replay_dlq
 		       (source, source_log_id, category, subcategory, payload, error, retry_attempts)
 		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
 		source, sourceLogID, category, subcategory, string(payload), errMsg, retryAttempts)
@@ -1543,7 +1543,7 @@ func WriteDLQ(ctx context.Context, tx pgx.Tx,
 // tx (the failed replay's tx rolled back), same as MarkDLQRetried.
 func (s *Staging) RetireDLQRow(ctx context.Context, id int64, retiredAttempts int) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE mirror_replay_dlq
+		`UPDATE ops.mirror_replay_dlq
 		    SET retry_attempts = GREATEST(retry_attempts, $2),
 		        last_retry_at  = now()
 		  WHERE id = $1`,
@@ -1561,7 +1561,7 @@ func (s *Staging) RetireDLQRow(ctx context.Context, id int64, retiredAttempts in
 func (s *Staging) SumInjectedPOValues(ctx context.Context, stagingPOID int64) (net, gross float64, err error) {
 	err = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(sum(net_production_incr), 0), COALESCE(sum(gross_production_incr), 0)
-		  FROM public.equipment_values
+		  FROM silver.equipment_values
 		 WHERE id_production_order = $1`, stagingPOID).Scan(&net, &gross)
 	return net, gross, err
 }

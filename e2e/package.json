@@ -1,0 +1,27 @@
+{
+  "name": "packiot-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cross-frontend Playwright E2E suite \u2014 front4, operator, csadmin, customize against staging.",
+  "scripts": {
+    "test": "playwright test",
+    "test:front4": "playwright test --project=front4",
+    "test:operator": "playwright test --project=operator",
+    "test:csadmin": "playwright test --project=csadmin",
+    "test:customize": "playwright test --project=customize",
+    "test:sandbox": "E2E_SELFHEAL=1 playwright test --project=sandbox-front4 --project=sandbox-operator --project=sandbox-csadmin --project=sandbox-customize --project=sandbox-reset",
+    "test:sandbox:noheal": "E2E_SELFHEAL=1 E2E_SELFHEAL_SKIP=1 playwright test --project=sandbox-front4 --project=sandbox-operator --project=sandbox-csadmin --project=sandbox-customize",
+    "sandbox:heal": "bash ../scripts/provision-sandbox-tenant.sh --heal",
+    "sandbox:reset-data": "bash ../scripts/provision-sandbox-tenant.sh --reset-data",
+    "test:trace": "PW_TRACE=on playwright test",
+    "report": "playwright show-report",
+    "trace": "playwright show-trace",
+    "install:browsers": "playwright install chromium",
+    "creds": "bash scripts/fetch-creds.sh",
+    "demo:bispharma": "playwright test --project=bispharma-demo"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "dotenv": "^16.4.5"
+  }
+}

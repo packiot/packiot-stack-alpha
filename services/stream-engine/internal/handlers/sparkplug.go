@@ -2,15 +2,14 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/birthverify"
 	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -52,7 +51,6 @@ type SparkplugHandler struct {
 	buildErrors          atomic.Uint64
 	execErrors           atomic.Uint64
 	clampDQErrSample     atomic.Uint64 // samples the best-effort DQ side-write failure log
-	shadowAbsentSample   atomic.Uint64 // samples the swallowed shadow_go_port-absent log
 
 	pool            *pgxpool.Pool
 	analyticsPool   *pgxpool.Pool // may be nil — set only if POSTGRES_ANALYTICS_DB_NAME configured
@@ -61,6 +59,28 @@ type SparkplugHandler struct {
 	poParameter     *writers.POParameter
 	poControl       *pocontrol.Handler // nil = 10.3 disabled
 	logger          *slog.Logger
+	verifier        *birthverify.Verifier // ADR-0061 D7 (nil = off)
+	// ADR-0061 P2c per-tenant switch (nil/empty = every tenant on packml_register)
+	bbResolver *sparkplug.Resolver
+	bbSwitched map[int]bool
+	bbOutcomes *prometheus.CounterVec
+}
+
+// minPlausibleTsMs — metric timestamps before this (2015-01-01 UTC) are treated as
+// missing: no Packiot device predates it, so anything earlier is an unset device clock.
+const minPlausibleTsMs int64 = 1420070400000
+
+// normalizeMetricTimestamps applies the fallback chain per metric: own timestamp →
+// payload timestamp → now, where "missing" = below minPlausibleTsMs (0 included).
+func normalizeMetricTimestamps(p *sparkplug.Payload, nowMs int64) {
+	for i := range p.Metrics {
+		if p.Metrics[i].Timestamp < minPlausibleTsMs {
+			p.Metrics[i].Timestamp = p.Timestamp
+		}
+		if p.Metrics[i].Timestamp < minPlausibleTsMs {
+			p.Metrics[i].Timestamp = nowMs
+		}
+	}
 }
 
 func NewSparkplugHandler(
@@ -85,14 +105,26 @@ func NewSparkplugHandler(
 // on the shared routing key are dropped (counted), not retried.
 func (h *SparkplugHandler) SetLegacyIngest(enabled bool) { h.legacyIngest = enabled }
 
+// SetBirthBound wires the ADR-0061 P2c per-tenant switch: for the switched
+// enterprises, counters resolve by the decoder's stamped id_equipment and
+// unstamped counters are quarantined. outcomes counts {tenant,result=bound|quarantined}.
+func (h *SparkplugHandler) SetBirthBound(r *sparkplug.Resolver, switched []int, outcomes *prometheus.CounterVec) {
+	h.bbResolver, h.bbOutcomes = r, outcomes
+	h.bbSwitched = make(map[int]bool, len(switched))
+	for _, id := range switched {
+		h.bbSwitched[id] = true
+	}
+}
+
+// SetVerifier wires the ADR-0061 D7 verification run (nil = off). Count-only.
+func (h *SparkplugHandler) SetVerifier(v *birthverify.Verifier) { h.verifier = v }
+
 // SetWriteMetric wires the per-destination write counter (flow boards).
 func (h *SparkplugHandler) SetWriteMetric(vec *prometheus.CounterVec) { h.batchWrites = vec }
 
 // destForSource names the flow a source_type routes to, for metrics.
 func destForSource(sourceType string) string {
 	switch sourceType {
-	case "go":
-		return "f2_shadow_go_port"
 	case "refactored":
 		return "f3_packiot_analytics"
 	default:
@@ -178,26 +210,52 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// without their own timestamp (only payload-level required). Without
 	// this, writers' time.UnixMilli(0).Truncate(...) lands rows at
 	// 1970-01-01. Mirrors Node-RED's fallback chain.
-	nowMs := time.Now().UnixMilli()
-	for i := range p.Metrics {
-		if p.Metrics[i].Timestamp == 0 {
-			p.Metrics[i].Timestamp = p.Timestamp
-		}
-		if p.Metrics[i].Timestamp == 0 {
-			p.Metrics[i].Timestamp = nowMs
-		}
+	//
+	// "Missing" includes IMPLAUSIBLY OLD (< minPlausibleTsMs): a device that boots
+	// with its clock unset sends epoch-relative stamps (the historian archive held a
+	// year=1970 partition of exactly that — 6 quality-only heartbeats at
+	// 1970-01-01 00:09:16, P10 2026-09-24). Non-zero, so the ==0 check let them through.
+	normalizeMetricTimestamps(p, time.Now().UnixMilli())
+
+	// #252: the F2 shadow-comparison leg is RETIRED. Producers emit only
+	// source_type="refactored" on every env (SHADOW_EMIT_GO=false,
+	// SHADOW_EMIT_PRODUCTION=false). A stray "go" (shadow_go_port) envelope from a
+	// misconfigured/old edge box is legacy noise: DROP + count (ACK, never write) —
+	// shadow_go_port no longer exists and routing it anywhere would just 42P01-poison
+	// the queue. Same "deterministic-skip, don't nack" rule as the guards above.
+	if p.SourceType == "go" {
+		h.legacyDropped.Add(1)
+		return nil
 	}
 
-	// ADR-0010 Phase 3 + ADR-0012 shadow-mode routing.
-	// Route both pool + schema by envelope.source_type. Whitelist-driven.
-	//   ""           → (main pool, "public")             — production
-	//   "go"         → (main pool, "shadow_go_port")     — ADR-0010 Phase 3
-	//   "refactored" → (shadow pool, "public")           — ADR-0012 Phase 3
-	// Fail-safe: unknown source_type falls back to (main pool, public).
-	// Shadow pool nil-fallback: if source_type="refactored" but no shadow
-	// pool configured, silently downgrade to main pool. Logged.
-	pool, schema := h.routeForSource(p.SourceType)
+	// Route pool + schema by envelope.source_type:
+	//   "refactored" → (analytics pool, medallion schemas)  — the live flow
+	//   ""/unknown   → (main pool, "public")                 — single-flow prod fallback
+	// Shadow-pool nil-fallback: if "refactored" but no analytics pool configured
+	// (single-flow prod), silently downgrade to the main pool. Logged.
+	r := h.routeForSource(p.SourceType)
+	pool, schema := r.pool, r.ev
 	tenant := tenantOf(p)
+	// ADR-0061 D7: compare the decoder's birth-bound stamps with packml_register.
+	// Measures only — every write below still resolves through the PackML resolver.
+	h.verifier.Check(ctx, p, tenant)
+	// ADR-0061 P2c: switched tenants' counters resolve by birth-bound id (writers
+	// read the decision through Resolver.ResolveMetric). A DB error retries the
+	// delivery, exactly like a PackML lookup error.
+	if h.bbResolver != nil && len(h.bbSwitched) > 0 {
+		o, err := h.bbResolver.ApplyBirthBound(ctx, p, h.bbSwitched)
+		if err != nil {
+			return fmt.Errorf("birth-bound resolve: %w", err)
+		}
+		if h.bbOutcomes != nil {
+			if o.Bound > 0 {
+				h.bbOutcomes.WithLabelValues(tenant, "bound").Add(float64(o.Bound))
+			}
+			if o.Quarantined > 0 {
+				h.bbOutcomes.WithLabelValues(tenant, "quarantined").Add(float64(o.Quarantined))
+			}
+		}
+	}
 
 	// Build phase — collect one Query per metric into the batch.
 	batch := &pgx.Batch{}
@@ -230,7 +288,9 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 		// consolidation, when Node-RED and the mirror replays retire.
 		if h.poControl != nil && p.SourceType != "" && kind == sparkplug.KindParameter &&
 			m.ID != nil && pocontrol.Handles(int(*m.ID)) {
-			_ = h.poControl.Execute(ctx, pool, m, schema)
+			_ = h.poControl.Execute(ctx, pool, m, pocontrol.Schemas{
+				Core: r.ref, Gold: r.gold, Silver: r.silver, Ev: r.ev, Identity: r.auth,
+			})
 			continue
 		}
 
@@ -249,30 +309,32 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 			// production values (keep-existing-else-fill COALESCE + the
 			// session-tz ts_value::date cast). The Go resolver is the sole
 			// shift writer on ALL routes now (the F1 trigger is retired).
-			q, clampEv, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, schema)
+			q, clampEv, buildErr = h.equipmentValues.Build(ctx, m, p.Gateway, r.silver)
 			if clampEv != nil {
 				clampEvents = append(clampEvents, clampEv)
 			}
 			if buildErr == nil && q != nil {
 				// Returns nil under the fold flag (skip the separate UPDATE).
-				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, schema)
+				shiftQ, _ = h.equipmentValues.BuildShiftFill(ctx, m, r.silver)
 				// ADR-0036 B1 medallion Bronze append (flag-gated,
 				// BRONZE_RAW_APPEND). Returns nil when the flag is off, so
 				// nothing extra is queued and the batch is byte-identical.
-				// Same schema/pool as the merged UPSERT → symmetric to whatever
-				// F2/F3 destination this delivery routes to.
-				rawQ, _ = h.equipmentValues.BuildRawAppend(ctx, m, schema)
+				// t231: the raw append lands in the Bronze layer (r.bronze)
+				// while the merged fact UPSERT lands in Silver (r.silver).
+				rawQ, _ = h.equipmentValues.BuildRawAppend(ctx, m, r.bronze)
 				if p.SourceType != "" {
 					// Event mint stays shadow-only: F1's EVENT trigger
 					// remains its writer until the §6 flip.
-					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, schema)
-					eventRawQ, _ = h.equipmentValues.BuildEventMintRaw(ctx, m, schema)
+					eventQ, _ = h.equipmentValues.BuildEventMint(ctx, m, r.silver)
+					eventRawQ, _ = h.equipmentValues.BuildEventMintRaw(ctx, m, r.bronze)
 				}
 			}
 		case h.unsMetrics.CanWrite(kind):
-			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, schema)
+			// t231: equipment_live_metrics is a Silver current-state fact.
+			q, buildErr = h.unsMetrics.Build(ctx, m, p.Gateway, r.silver)
 		case h.poParameter.CanWrite(kind):
-			q, buildErr = h.poParameter.Build(ctx, m, p.Gateway, schema)
+			// t231: PO-parameter writes land in equipment_values (Silver).
+			q, buildErr = h.poParameter.Build(ctx, m, p.Gateway, r.silver)
 		default:
 			h.skippedUnk.Add(1)
 			continue
@@ -356,55 +418,7 @@ func (h *SparkplugHandler) Handle(ctx context.Context, d *amqp.Delivery) error {
 	// in the batch above; this is purely to make the rejection visible.
 	h.emitClampDQ(ctx, pool, schema, clampEvents)
 
-	// Missing-shadow-schema backstop (G1). A "go" leg routes to the
-	// shadow_go_port comparator schema, which only exists on the staging
-	// dual-flow stack. On a single-flow production stack it is absent, so
-	// every write in this batch fails 42P01 (undefined_table) / 3F000
-	// (invalid_schema_name). That is EXPECTED here — not a real ingest
-	// failure — so swallow it and ACK the delivery instead of returning the
-	// error and triggering nack → DLX → redeliver forever (a poison storm
-	// that, worse, starves the real production "" legs sharing the queue).
-	// firstErr is the FIRST failing Exec, i.e. the true 42P01/3F000 (the
-	// followers report 25P02 in_failed_sql_transaction and never overwrite
-	// it), so matching its SQLSTATE is sufficient. Belt-and-braces with the
-	// decoder's SHADOW_EMIT_GO=false gate: even a stray "go" envelope can no
-	// longer wedge the queue. Only shadow_go_port qualifies — public
-	// (production/refactored) errors stay fatal and still nack+retry.
-	if shouldSwallowShadowErr(schema, firstErr) {
-		if h.shadowAbsentSample.Add(1)%64 == 1 {
-			h.logger.Warn("sparkplug: shadow_go_port schema absent — 'go' comparator leg swallowed (delivery ACKed, not retried; sampled 1/64)",
-				slog.String("schema", schema),
-				slog.String("err", firstErr.Error()),
-			)
-		}
-		return nil
-	}
-
 	return firstErr
-}
-
-// shouldSwallowShadowErr reports whether a batch error must be treated as the
-// EXPECTED "shadow_go_port comparator schema absent" case rather than a real
-// ingest failure. Only the shadow_go_port schema (the ADR-0010 "go" leg)
-// qualifies, and only for a missing-relation SQLSTATE — public
-// (production/refactored) errors always propagate so they still nack+retry.
-func shouldSwallowShadowErr(schema string, err error) bool {
-	if err == nil || schema != "shadow_go_port" {
-		return false
-	}
-	return isMissingRelation(err)
-}
-
-// isMissingRelation matches Postgres SQLSTATE 42P01 (undefined_table) and
-// 3F000 (invalid_schema_name) via pgconn.PgError — the two codes a write to a
-// nonexistent shadow_go_port.<table> produces. Structured SQLSTATE match, not
-// string matching, so a table named "...does not exist..." can't false-positive.
-func isMissingRelation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "42P01" || pgErr.Code == "3F000"
-	}
-	return false
 }
 
 // clampDQInsertSQL upserts one INVARIANT_CLAMPED_INCREMENT event into the
@@ -466,31 +480,73 @@ func clampGrainSuffix(kind sparkplug.MetricKind) string {
 	}
 }
 
-// routeForSource picks the (pool, schema) tuple based on envelope
-// source_type. Whitelist-driven — see comment at handler.
+// route is the per-delivery destination: the pool plus the medallion-layer
+// schema each writer class targets. t231 (medallion schema separation) split
+// the former single `schema` string into three so one delivery can fan out to
+// the right layer per table:
+//   - silver → the merged/current-state facts: equipment_values,
+//     equipment_events, equipment_live_metrics (fact UPSERT, shift-fill,
+//     event mint, po_parameter, uns current-metrics).
+//   - bronze → the ADR-0036 immutable raw append (equipment_values_raw /
+//     equipment_events_raw), dormant unless BRONZE_RAW_APPEND.
+//   - ev     → the residual flow schema: data_quality_event (clamp DQ
+//     side-write) and pocontrol's manual-justify equipment_events_man writes.
+//     Both tables live in SILVER on packiot_analytics (their public shims were
+//     dropped ~2026-09-13), matching flows.Dest.EvSchema = "silver" for the same
+//     dest. With ev = "public" both writes failed silently (clamp DQ is
+//     best-effort/swallowed): no INVARIANT_CLAMPED_INCREMENT row after 09-13.
+type route struct {
+	pool   *pgxpool.Pool
+	silver string
+	bronze string
+	ev     string
+	// app / grain — the t237 reorg homes for the pocontrol write path.
+	// user_logs moved public→app (its public shim is being dropped, so pocontrol
+	// must write `app` directly); the equipment_live_job current-state grain moves
+	// public→silver at P-silver (grain stays "public" until then). Every other
+	// pocontrol table (production_orders, production_orders_runtime, equipment_events)
+	// still resolves through `ev`'s public/gold/silver shims (#233/#228/P-core own those).
+	auth  string
+	grain string
+	// #251 P2: the pocontrol write path is de-shimmed off `ev`. ref (core) homes
+	// production_orders + dims (products/families/clients/packml_register, replacing
+	// the old refSchema="public" const); gold homes production_orders_runtime.
+	// equipment_values/events use silver; user_logs uses auth (identity);
+	// equipment_events_man stays on ev (a genuine public table). On the prod/default
+	// route all layers collapse to "public", so behaviour there is unchanged.
+	ref  string
+	gold string
+}
+
+// routeForSource picks the destination route based on envelope source_type.
+// Whitelist-driven — see comment at handler.
 //
 // ADR-0010 Phase 3 introduced source_type="go" → shadow_go_port schema on
 // the main pool. ADR-0012 adds source_type="refactored" → shadow pool
-// (packiot_analytics DB) writing to public schema, so the entire refactored
-// schema can be exercised end-to-end from real live traffic without
-// touching the packiot production DB.
+// (packiot_analytics DB), so the entire refactored schema can be exercised
+// end-to-end from real live traffic without touching the packiot production DB.
+//
+// t231 medallion split (STAGING ONLY): the "refactored" analytics route now
+// fans facts→silver, raw→bronze, DQ/PO→public. This is reached ONLY when a
+// shadow analyticsPool is configured (staging). Prod is single-flow
+// (analyticsPool==nil, source_type="") → the default branch keeps every layer
+// on "public", so the medallion names are never referenced there until the
+// prod forward-port lands.
 //
 // If analyticsPool is nil (POSTGRES_ANALYTICS_DB_NAME unset) and source_type
 // is "refactored", we silently fall back to (main pool, public) — logged
 // as a warning. Fail-safe: never route to nil.
-func (h *SparkplugHandler) routeForSource(sourceType string) (*pgxpool.Pool, string) {
+func (h *SparkplugHandler) routeForSource(sourceType string) route {
 	switch sourceType {
-	case "go":
-		return h.pool, "shadow_go_port"
 	case "refactored":
 		if h.analyticsPool != nil {
-			return h.analyticsPool, "public"
+			return route{pool: h.analyticsPool, silver: "silver", bronze: "bronze", ev: "silver", auth: "identity", grain: "silver", ref: "core", gold: "gold"}
 		}
 		h.logger.Warn("source_type=refactored but shadow pool not configured — falling back to main pool",
 			slog.String("source_type", sourceType))
-		return h.pool, "public"
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public", ref: "public", gold: "public"}
 	default:
-		return h.pool, "public"
+		return route{pool: h.pool, silver: "public", bronze: "public", ev: "public", auth: "public", grain: "public", ref: "public", gold: "public"}
 	}
 }
 

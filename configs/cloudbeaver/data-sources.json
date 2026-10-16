@@ -1,0 +1,72 @@
+{
+  "folders": {},
+  "connections": {
+    "packiot-analytics-ro": {
+      "provider": "postgresql",
+      "driver": "postgres-jdbc",
+      "name": "packiot_analytics (read-only)",
+      "description": "Staging analytics DB — read-only staff browser (cloudbeaver_ro). SELECT-only; cannot write.",
+      "read-only": true,
+      "save-password": true,
+      "show-system-objects": false,
+      "show-utility-objects": false,
+      "navigator-hide-folders": true,
+      "navigator-hide-virtual": true,
+      "configuration": {
+        "host": "10.10.10.89",
+        "port": "5432",
+        "database": "packiot_analytics",
+        "url": "jdbc:postgresql://10.10.10.89:5432/packiot_analytics?user=cloudbeaver_ro&password=@RO_PASSWORD@",
+        "configurationType": "URL",
+        "type": "dev",
+        "closeIdleConnection": true,
+        "properties": {
+          "user": "cloudbeaver_ro",
+          "password": "@RO_PASSWORD@"
+        },
+        "bootstrap": {
+          "autocommit": true
+        }
+      },
+      "filters": [
+        {
+          "id": "packiot_analytics:packiot_analytics",
+          "type": "org.jkiss.dbeaver.ext.postgresql.model.PostgreSchema",
+          "enabled": true,
+          "exclude": [
+            "_timescaledb%",
+            "timescaledb%"
+          ]
+        }
+      ]
+    },
+    "histdb-gateway-ro": {
+      "provider": "postgresql",
+      "driver": "postgres-jdbc",
+      "name": "historian gateway (read-only)",
+      "description": "Staging historian hot+cold gateway (hist-gateway, pg_duckdb + postgres_fdw) — read-only staff browser (cloudbeaver_histro). Hot FDW tables (live.*) + schema/cutover tables browse freely; the COLD pg_duckdb path (hist/hist_ee/ev_all cold rows) requires superuser or duckdb.postgres_role membership and will error for this NOSUPERUSER role.",
+      "read-only": true,
+      "save-password": true,
+      "show-system-objects": false,
+      "show-utility-objects": false,
+      "navigator-hide-folders": true,
+      "navigator-hide-virtual": true,
+      "configuration": {
+        "host": "hist-gateway",
+        "port": "5432",
+        "database": "packiot_historian",
+        "url": "jdbc:postgresql://hist-gateway:5432/packiot_historian?user=cloudbeaver_histro&password=@HISTDB_RO_PASSWORD@",
+        "configurationType": "URL",
+        "type": "dev",
+        "closeIdleConnection": true,
+        "properties": {
+          "user": "cloudbeaver_histro",
+          "password": "@HISTDB_RO_PASSWORD@"
+        },
+        "bootstrap": {
+          "autocommit": true
+        }
+      }
+    }
+  }
+}

@@ -37,7 +37,7 @@ metrics:
   extra: null
 - metric_name: sum_net
   verbose_name: Net (last counter)
-  expression: SUM(net_production_val)
+  expression: SUM(net_production_total)
   d3format: .3~s
   extra: null
 columns:
@@ -107,17 +107,38 @@ columns:
   groupby: true
   filterable: true
 - column_name: net_production_val
+  description: DEPRECATED float4 copy (rounds above 16,777,216); use net_production_total.
   type: DOUBLE PRECISION
   is_dttm: false
   is_active: true
 - column_name: gross_production_val
+  description: DEPRECATED float4 copy (rounds above 16,777,216); use gross_production_total.
   type: DOUBLE PRECISION
   is_dttm: false
   is_active: true
 - column_name: scrap_val
+  description: DEPRECATED float4 copy (rounds above 16,777,216); use scrap_total.
   type: DOUBLE PRECISION
   is_dttm: false
   is_active: true
+- column_name: net_production_total
+  verbose_name: Net counter
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+  description: Exact net totalizer (float8). Use this, not net_production_val (float4, rounds above 16,777,216).
+- column_name: gross_production_total
+  verbose_name: Gross counter
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+  description: Exact gross totalizer (float8). Use this, not gross_production_val (float4, rounds above 16,777,216).
+- column_name: scrap_total
+  verbose_name: Scrap counter
+  type: DOUBLE PRECISION
+  is_dttm: false
+  is_active: true
+  description: Exact scrap totalizer (float8). Use this, not scrap_val (float4, rounds above 16,777,216).
 - column_name: equipment_label
   type: VARCHAR
   is_dttm: false

@@ -4,7 +4,7 @@
 
 | | `simulator/` (this dir) | `plc-sim` (Go) |
 |---|---|---|
-| Language | Python (`simulator.py`) | Go (`services/edge-transformer/cmd/plc-sim`) |
+| Language | Python (`simulator.py`) | Go (`services/sparkplug-decoder/cmd/plc-sim`) |
 | Path it drives | POSTs SparkPlug JSON to **edge-nodered** `/plc-data` (legacy HTTP ingest) | publishes SparkPlug B over **MQTT** to mosquitto (the 10.9 ingest) |
 | Used by | all three compose files | `compose.staging.yml` only |
 | Retirement | with the Node-RED leg (flip R6/R7 territory) | stays — it exercises THE ingest |

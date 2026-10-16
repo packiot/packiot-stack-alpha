@@ -254,9 +254,10 @@ func TestPhase9LineDefectiveDecreasesOnProcessed(t *testing.T) {
 	seedLineTopology(t, s, "LINHAS", "L5")
 	seedMachSpeed(t, s, unitTopic, 1000.0)
 	seedUnitCounter(t, s, unitTopic+"/Admin/ProdProcessedCount/63/Unit", 0)
-	// Seed prior line Defective = 200.
+	// Seed prior line Defective = 200 on a line that already has an infeed (its first machine reported Consumed).
 	lineDefKey := "CPACK/SC/LINHAS/L5/Admin/ProdDefectiveCount"
 	_ = s.SetInt(lineDefKey, 200)
+	_ = s.SetInt(lineDefKey+"___HAS_INFEED", 1)
 
 	msg := Message{
 		Topic:      unitTopic + "/Admin/ProdProcessedCount/63/Unit***TRIG",
@@ -437,4 +438,137 @@ func mutationKinds(ms []StateMutation) []string {
 		out[i] = m.Kind + "@" + m.Key
 	}
 	return out
+}
+
+// TestPhase9LineDefectiveOnePerSecondTelescopes is the L6 regression (2026-10-08): the first machine's Consumed
+// tick and the last machine's Processed tick often land in the SAME second. stream-engine stores line scrap per
+// (second, equipment) with scrap_incr = EXCLUDED (last write wins), so two emissions in one second lost one of them
+// and L6's stored scrap ran 2–25× gross − net. Simulate silver's per-second upsert over a realistic tick pattern:
+// what silver keeps must equal the accumulator's telescoped sum, and no second may carry two emissions.
+func TestPhase9LineDefectiveOnePerSecondTelescopes(t *testing.T) {
+	s := NewMemState()
+	first, last := "CPACK/SC/LINHAS/L5/BREYER", "CPACK/SC/LINHAS/L5/PTH"
+	seedLineTopology(t, s, "LINHAS", "L5")
+	seedMachSpeed(t, s, first, 1000.0)
+	seedMachSpeed(t, s, last, 1000.0)
+	consTopic, procTopic := first+"/Admin/ProdConsumedCount/61/Unit", last+"/Admin/ProdProcessedCount/63/Unit"
+	seedUnitCounter(t, s, consTopic, 0)
+	seedUnitCounter(t, s, procTopic, 0)
+	lineDef := "CPACK/SC/LINHAS/L5/Admin/ProdDefectiveCount"
+
+	run := func(topic string, counter, tsMs int64) Decision {
+		t.Helper()
+		dec, err := Calc(Message{Topic: topic + "***TRIG", Payload: counter, CmdTrigger: true, Timestamp: time.UnixMilli(tsMs)}, s)
+		if err != nil {
+			t.Fatalf("Calc %s @%d: %v", topic, tsMs, err)
+		}
+		for _, m := range dec.StateUpdates {
+			if err := m.Apply(s); err != nil {
+				t.Fatalf("apply %s: %v", m.Kind, err)
+			}
+		}
+		return dec
+	}
+
+	silver := map[int64]int64{} // second → scrap_incr (last write wins, like the upsert)
+	perSecond := map[int64]int{}
+	var cons, proc int64
+	base := int64(1700000000000)
+	// 40 cycles of 15 s: Consumed +37 at :00.200, Processed +(30..36) at :00.700 (same second) or :01.100.
+	for i := int64(0); i < 40; i++ {
+		t0 := base + i*15000
+		cons += 37
+		for _, d := range []Decision{run(consTopic, cons, t0+200)} {
+			for _, m := range d.Metrics {
+				if m.Name == lineDef {
+					silver[(t0+200)/1000] = m.Value
+					perSecond[(t0+200)/1000]++
+				}
+			}
+		}
+		proc += 30 + i%7
+		tp := t0 + 700 // same second as the Consumed tick
+		if i%3 == 0 {
+			tp = t0 + 1100 // sometimes the next second
+		}
+		for _, m := range run(procTopic, proc, tp).Metrics {
+			if m.Name == lineDef {
+				silver[tp/1000] = m.Value
+				perSecond[tp/1000]++
+			}
+		}
+	}
+	var stored int64
+	for sec, v := range silver {
+		stored += v
+		if perSecond[sec] > 1 {
+			t.Fatalf("second %d carries %d line-Defective emissions; silver keeps only the last", sec, perSecond[sec])
+		}
+	}
+	prev, _ := s.Int(lineDef + "___PREVIOUS")
+	if stored != prev {
+		t.Fatalf("silver keeps Σscrap=%d, accumulator emitted up to %d — deltas lost to same-second overwrite", stored, prev)
+	}
+	cur, _ := s.Int(lineDef)
+	if cur != cons-proc {
+		t.Fatalf("accumulator = %d, want consumed−processed = %d", cur, cons-proc)
+	}
+	// the last tick or two are not emitted yet (Consumed +37 or Processed −30..−36): carried into the next emission
+	if lag := cur - prev; lag < -37 || lag > 37 {
+		t.Fatalf("un-emitted remainder %d should be at most one tick", lag)
+	}
+}
+
+// TestPhase9LineWithoutInfeedDerivesNoScrap is the CER400 regression (2026-10-08): a line whose only member has a
+// Processed sensor but no Consumed sensor got line scrap = −Σprocessed (−10 every tick on staging). Without an infeed
+// the line Defective accumulator must not move and no line Defective may be emitted; once a Consumed contribution
+// arrives, the accumulator runs normally from there.
+func TestPhase9LineWithoutInfeedDerivesNoScrap(t *testing.T) {
+	s := NewMemState()
+	unit := "CPACK/SC/CELULA1/CER400/CER400"
+	if err := s.SetStrings("CPACK/SC/CELULA1/CER400/Status/Parameter30700", []string{"107"}); err != nil {
+		t.Fatal(err)
+	}
+	seedMachSpeed(t, s, unit, 1000.0)
+	proc, cons := unit+"/Admin/ProdProcessedCount/107/Unit", unit+"/Admin/ProdConsumedCount/107/Unit"
+	seedUnitCounter(t, s, proc, 304000)
+	lineDef := "CPACK/SC/CELULA1/CER400/Admin/ProdDefectiveCount"
+	apply := func(d Decision) {
+		for _, m := range d.StateUpdates {
+			if err := m.Apply(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	ts := int64(1700000000000)
+	for i := int64(1); i <= 5; i++ {
+		dec, err := Calc(Message{Topic: proc + "***TRIG", Payload: 304000 + 10*i, CmdTrigger: true, Timestamp: time.UnixMilli(ts + i*15000)}, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(dec)
+		for _, m := range dec.Metrics {
+			if m.Name == lineDef {
+				t.Fatalf("tick %d: line without infeed emitted Defective %d", i, m.Value)
+			}
+		}
+	}
+	if v, _ := s.Int(lineDef); v != 0 {
+		t.Fatalf("line Defective accumulator moved to %d without any infeed", v)
+	}
+	// An infeed appears: Consumed +60 (baseline seeded), then Processed +10 → accumulator 60 − 10 = 50.
+	seedUnitCounter(t, s, cons, 1000)
+	dec, err := Calc(Message{Topic: cons + "***TRIG", Payload: 1060, CmdTrigger: true, Timestamp: time.UnixMilli(ts + 100000)}, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(dec)
+	dec, err = Calc(Message{Topic: proc + "***TRIG", Payload: 304060, CmdTrigger: true, Timestamp: time.UnixMilli(ts + 115000)}, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(dec)
+	if v, _ := s.Int(lineDef); v != 50 {
+		t.Fatalf("after infeed: accumulator = %d, want 60 − 10 = 50", v)
+	}
 }

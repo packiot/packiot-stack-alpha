@@ -82,3 +82,15 @@ func TestCurrentMetricsSQLBuilds(t *testing.T) {
 		}
 	}
 }
+
+// A source with counts but no speed register (CPACK L3's lead) read 0/min. The count
+// rate stands in ONLY when no speed row exists (lp.speed IS NULL), so sources with a
+// speed register are unchanged.
+func TestCurrentMetricsSpeedlessFallback(t *testing.T) {
+	out := fmt.Sprintf(currentMetricsSQL, "silver", "core")
+	for _, must := range []string{"COALESCE(lp.speed, lr.rate) AS speed", "WHERE lp.speed IS NULL", "interval '5 minutes'"} {
+		if !strings.Contains(out, must) {
+			t.Errorf("speed-less fallback lost %q", must)
+		}
+	}
+}

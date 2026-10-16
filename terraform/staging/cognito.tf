@@ -124,7 +124,10 @@ resource "aws_cognito_user_pool_client" "front4" {
   generate_secret = false # public client — SPA cannot keep a secret
 
   explicit_auth_flows = [
-    "ALLOW_USER_SRP_AUTH",     # Amplify default password sign-in (SRP)
+    "ALLOW_USER_SRP_AUTH",      # Amplify default password sign-in (SRP)
+    "ALLOW_USER_PASSWORD_AUTH", # front4 uses this so the UserMigration Lambda can
+    # fire on a Firebase user's first login (SRP can't
+    # trigger it — the user isn't in the pool yet)
     "ALLOW_REFRESH_TOKEN_AUTH" # silent session refresh
   ]
 

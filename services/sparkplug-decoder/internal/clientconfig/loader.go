@@ -347,6 +347,8 @@ const (
 	// CounterDeriveOutfeedDerived — line edge-case; best-effort net := max(gross-scrap,0)
 	// (an approximation of the legacy stateful formula — see counterderive.Apply).
 	CounterDeriveOutfeedDerived = "outfeed_derived"
+	// processed_is_gross: ProdProcessedCount is the total (gross); net := processed - defective.
+	CounterDeriveProcessedIsGross = "processed_is_gross"
 	// CounterDeriveNone — not a counter; ignore.
 	CounterDeriveNone = "none"
 )
@@ -358,10 +360,11 @@ const (
 func validateCounterDerive(section string, i, j int, metric, v string) error {
 	switch v {
 	case "", CounterDeriveFull, CounterDeriveOutfeedOnly, CounterDeriveInfeedOnly,
-		CounterDeriveScrapDerived, CounterDeriveGrossDerived, CounterDeriveOutfeedDerived, CounterDeriveNone:
+		CounterDeriveScrapDerived, CounterDeriveGrossDerived, CounterDeriveOutfeedDerived, CounterDeriveProcessedIsGross,
+		CounterDeriveNone:
 		return nil
 	default:
-		return fmt.Errorf("%s[%d].tags[%d] (%s): counter_derive=%q must be full|outfeed_only|infeed_only|scrap_derived|gross_derived|outfeed_derived|none",
+		return fmt.Errorf("%s[%d].tags[%d] (%s): counter_derive=%q must be full|outfeed_only|infeed_only|scrap_derived|gross_derived|outfeed_derived|processed_is_gross|none",
 			section, i, j, metric, v)
 	}
 }
@@ -408,11 +411,11 @@ func (c *Config) validate() error {
 		return fmt.Errorf("customer is required")
 	}
 	switch strings.ToLower(c.Environment) {
-	case "staging", "production":
+	case "staging", "production", "dev": // dev = the local dev environment (ADR-0060); the value is only logged
 	case "":
-		return fmt.Errorf("environment is required (staging|production)")
+		return fmt.Errorf("environment is required (staging|production|dev)")
 	default:
-		return fmt.Errorf("environment=%q: must be staging or production", c.Environment)
+		return fmt.Errorf("environment=%q: must be staging, production or dev", c.Environment)
 	}
 	return c.validateV11()
 }

@@ -104,4 +104,4 @@ Grounded in `0012-phase5-prod-readiness §2`, ADR-0003, and roadmap Phase F, the
 
 ---
 
-*Source ADRs/audits: `docs/adr/0003`, `0014`, `0016` (+ flip-runbook), `0017`, `0022` (+ v3-verdict), `reference/0012-phase5-prod-readiness`; `docs/audits/prod-tsp12-oom-attribution-2026-07-13`; `docs/overview/06`, `07`; `services/edge-transformer/internal/transforms/calc_production_counters/state.go`.*
+*Source ADRs/audits: `docs/adr/0003`, `0014`, `0016` (+ flip-runbook), `0017`, `0022` (+ v3-verdict), `reference/0012-phase5-prod-readiness`; `docs/audits/prod-tsp12-oom-attribution-2026-07-13`; `docs/overview/06`, `07`; `services/sparkplug-decoder/internal/transforms/calc_production_counters/state.go`.*

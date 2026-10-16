@@ -1,5 +1,5 @@
 -- 10-packml-register-device-key-global-unique.sql — ADR-0046 resolve-by-device_key.
--- __SCH__ = target schema (public on packiot_shadow / F3). Idempotent.
+-- __SCH__ = target schema (public on packiot_analytics / F3). Idempotent.
 --
 -- CONTEXT. Migration 09 added a PER-(enterprise,device_key) partial unique index,
 -- which scopes uniqueness per tenant. But edge-transformer is a SINGLE multi-tenant

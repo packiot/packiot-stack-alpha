@@ -1,0 +1,59 @@
+name: Sandbox Self-Heal
+
+# The SANDBOX-CPACK twin (ent 2000003) is a live mirror of CPACK-Staging (ent 3):
+# fanout telemetry + legacy-replicator-sbx (operator actions) + ops.sandbox_reflect.
+# It is also a playground: make ANY change in it (operator-sbx PO actions, justify,
+# split, csadmin/front4 edits) and it is HELD for you — the replicator stops replaying
+# CPACK's own actions into it and no heal wipes it — until GRACE (default 4 h) after
+# your LAST change. Then the 5-min timer on the app box (sandbox-grace-heal.timer,
+# installed by this workflow) heals it back to CPACK staging and live mirroring resumes.
+# See docs/runbooks/sandbox-twin.md and db/migrations/t-sandbox-grace-hold.
+#
+# Nightly: tidy heal UNLESS a hands-on session is held (then it heals when due).
+# Manual (Run workflow): status | heal-now | extend <dur> | grace <dur> | install.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC nightly (~03:00 America/Sao_Paulo)
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'status | heal-now (I am done — reset now) | extend (keep my changes longer) | grace (change the grace period) | install'
+        type: choice
+        options: [status, heal-now, extend, grace, install]
+        default: status
+      duration:
+        description: 'for extend / grace: e.g. 8h, 90m, 2d'
+        required: false
+        default: '8h'
+
+concurrency:
+  group: sandbox-selfheal
+  cancel-in-progress: false
+
+jobs:
+  self-heal:
+    runs-on: [self-hosted, staging, linux, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install / refresh the grace-period timer on the app box
+        # Idempotent; keeps /opt/packiot/sandbox + the systemd timer in step with the repo.
+        run: sudo bash scripts/install-sandbox-grace-heal.sh
+
+      - name: Sandbox session action
+        # SANDBOX_LOCAL=1 → psql directly on the box (this runner IS the app box).
+        env:
+          SANDBOX_LOCAL: '1'
+          SKIP_FANOUT_EMIT: '1'
+          ACTION: ${{ github.event_name == 'schedule' && 'nightly' || inputs.action }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          case "$ACTION" in
+            install) bash scripts/sandbox-session.sh status ;;
+            extend|grace) bash scripts/sandbox-session.sh "$ACTION" "$DURATION" ;;
+            *) bash scripts/sandbox-session.sh "$ACTION" ;;
+          esac

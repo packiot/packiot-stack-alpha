@@ -70,7 +70,6 @@ CREATE TABLE IF NOT EXISTS packml_register (
     timestamp           TIMESTAMPTZ DEFAULT now(),
     id_infeedcounter    INTEGER,
     id_outfeedcounter   INTEGER,
-    id_rejectcounter    INTEGER,
     device_nm           VARCHAR,
     device_key          TEXT,        -- ADR-0046 §2 declared equipment identity (birth device_key)
     UNIQUE (packml_topic)

@@ -39,12 +39,12 @@ Companion docs:
 - [ ] Transcribe every intake §1–§7 fact into [`bispharma.descriptor.yaml`](bispharma.descriptor.yaml): `enterprise_id`, `canonical.prefix`, the real `equipment` tree (lines tp=3, machines tp=1 + `id_unit`), the metric_templates trimmed to the leaves each machine actually emits, and any `mapping` fixups/aliases.
 - [ ] Author each machine's `count_index` as **`confidence: inferred`** (a guess) — P2 confirms it.
 - [ ] Mark **counters-only** machines (no MachSpeed): drop `/Status/MachSpeed` from their template and record their **rated speed** for `production_speed` at apply.
-- [ ] Descriptor validates: `go run ./services/edge-transformer/cmd/onboard-gen --descriptor docs/clients/bispharma.descriptor.yaml` prints artifacts (stderr lists inferred indices — expected, all of them at this point).
+- [ ] Descriptor validates: `go run ./services/sparkplug-decoder/cmd/onboard-gen --descriptor docs/clients/bispharma.descriptor.yaml` prints artifacts (stderr lists inferred indices — expected, all of them at this point).
 
 ## 3. GENERATE — emit the four artifacts
 
 ```bash
-go run ./services/edge-transformer/cmd/onboard-gen \
+go run ./services/sparkplug-decoder/cmd/onboard-gen \
   --descriptor docs/clients/bispharma.descriptor.yaml \
   --out gen/bispharma/          # emits profile.yaml, register.sql, agent.yaml, tee-node.json
 ```
@@ -77,7 +77,7 @@ The descriptor's indices are guesses. Turn them into facts by observing the live
 # 2. Snapshot the accepted (mapped) suffixes from the SparkPlug NBIRTH:
 mosquitto_sub -h <broker> -t 'spBv1.0/BISPHARMA/NBIRTH/#' -C 1 | jq -r '.metrics[].name' > accepted.txt
 # 3. Reconcile observed vs expected, emit a corrected descriptor fragment:
-go run ./services/edge-transformer/cmd/onboard-capture \
+go run ./services/sparkplug-decoder/cmd/onboard-capture \
   --descriptor docs/clients/bispharma.descriptor.yaml \
   --agent-url https://bispharma-agent:9102 --insecure \
   --accepted accepted.txt --only <LINE>          # scope per line/cell

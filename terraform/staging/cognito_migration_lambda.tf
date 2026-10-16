@@ -93,14 +93,16 @@ resource "aws_lambda_function" "user_migration" {
       # Reference to the secret (the VALUE is fetched at runtime, never here).
       FIREBASE_WEB_API_KEY_SECRET_ID = aws_secretsmanager_secret.firebase_web_api_key.name
 
-      # Which Firebase project to verify against. Left EMPTY on staging — a
-      # deliberate USER config flip at cutover (set to the prod project) points
-      # it at real Firebase. The web API key already scopes the project, so this
-      # is informational/guard metadata for logs + future validation.
-      FIREBASE_PROJECT_ID = ""
+      # Which Firebase project to verify against. Set to `fbpackiot` (front4's
+      # Firebase project) for the STAGING copy exercise (2026-09-03): a front4
+      # user's first Cognito login is validated against fbpackiot Firebase and
+      # COPIED into the staging pool. The web API key already scopes the project;
+      # this is informational/guard metadata for logs + future validation.
+      FIREBASE_PROJECT_ID = "fbpackiot"
 
-      # Master gate. OFF until the USER enables migration at cutover.
-      MIGRATION_ENABLED = "false"
+      # Master gate. ON (2026-09-03) — front4 Cognito-only cutover: migrate-on-
+      # login copies Firebase users into the pool. Firebase is never mutated.
+      MIGRATION_ENABLED = "true"
     }
   }
 

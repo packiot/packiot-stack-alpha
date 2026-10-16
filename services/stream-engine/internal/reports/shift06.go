@@ -13,18 +13,27 @@ import (
 // Shift06 ports prod's update_report_shift_enterprsie_06() procedure
 // (Wave 2 port #2). The legacy orchestration is a rolling-window
 // delete-and-reload: wipe the last 6 days (America/Montreal calendar)
-// and re-insert from the get_report_shift_enterprsie_06() compute
-// function, atomically. The compute function stays SQL for now (its
-// deep port is ADR-0014 P4 follow-up); Go owns orchestration, cadence
-// and observability — exactly the speed33 pattern.
+// and re-insert from the compute function, atomically. The compute
+// function stays SQL; Go owns orchestration, cadence and observability
+// — exactly the speed33 pattern.
+//
+// t244 (enterprise-06/13 parameterization redesign, Phase 4): the read
+// side now sources from the GENERIC serving.report_shift(p_id_enterprise,
+// startdate, enddate) instead of the per-enterprise-cloned
+// get_report_shift_enterprsie_06c(startdate, enddate). The enterprise is
+// a REAL function argument ($1 = customerID) — no per-tenant function
+// clone. serving.report_shift derives timezone/site-scope/area-exclusion
+// from core.client_descriptors.descriptor->'reports' and returns the same
+// 23-col contract. $1 was previously write-only (the pool customer_id);
+// it is now also the read param.
 //
 // GENERATION NOTE (prod fidelity check, 2026-07-02): the plain-06
 // orchestrator+compute is a DEAD generation — its SETOF rowtype drifted
 // when the table gained 7 columns, and it now ERRORS on prod. The live
-// chain is update_..._06b → get_..._06c (verified: 358 rows read-only
-// on prod). This port implements the live semantics: 21-day Montreal
-// wipe + 23-column reload from 06c. The dead-logger ping
-// (piot_monitor_function) is deliberately dropped.
+// chain was update_..._06b → get_..._06c (verified: 358 rows read-only
+// on prod), now parameterized as serving.report_shift. This port
+// implements the live semantics: 21-day Montreal wipe + 23-column reload.
+// The dead-logger ping (piot_monitor_function) is deliberately dropped.
 const shift06Delete = `DELETE FROM customer_reports.shift
 	WHERE customer_id = $1
 	AND day >= (now() at time zone 'America/Montreal')::date - interval '21 day'
@@ -39,7 +48,7 @@ const shift06Insert = `INSERT INTO customer_reports.shift
 	 dt_duration_h, setup_duration_h, running, prss_qty, packed_qty,
 	 shift_number, job_sequence, dt_plan_h, dt_unplan_h, shift_start_time,
 	 index1, id_equipment, pro_h, res_h, mnt_h, discart_h, index2
-	FROM get_report_shift_enterprsie_06c(
+	FROM serving.report_shift($1,
 	  ((now() at time zone 'America/Montreal')::date - interval '21 day')::date,
 	  (now() at time zone 'America/Montreal')::date)`
 

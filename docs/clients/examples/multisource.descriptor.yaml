@@ -53,6 +53,7 @@ tee:
 equipment:
   # ONE equipment — the machine whose message is built from two source PLCs.
   - topic: ACME/SP/LINE1/FILLER
+    device_key: dk_75a5c231563b4047b453983c82472ac2
     id_equipment: 4201
     tp_equipment: 1
     id_unit: 4201

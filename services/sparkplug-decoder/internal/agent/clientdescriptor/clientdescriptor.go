@@ -50,6 +50,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/expreval"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/agent/tenantprofile"
 	"github.com/packiot/packiot-stack-alpha/services/sparkplug-decoder/internal/clientconfig"
 )
@@ -79,6 +80,9 @@ var s7Words = map[string]bool{"dint": true, "int": true, "real": true}
 // dot, underscore, hyphen. It deliberately excludes "/" — a device_key is the
 // FLAT identity string, not a topic path (the dash form of the topic, ADR-0046 §2).
 var deviceKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// opaqueDeviceKey is the only accepted device_key (ADR-0061; the core.device_bindings CHECK).
+var opaqueDeviceKey = regexp.MustCompile(`^dk_[0-9a-f]{32}$`)
 
 // sensorKeyPattern extracts a member's SENSOR key from its topic's last segment
 // for ADR-0050 type expansion: the leading S<n> token. S1INFEED→S1, S3→S3,
@@ -179,6 +183,13 @@ type Descriptor struct {
 	// customizations tab (their "z" is rewritten) so an exported node lands there
 	// regardless of the tab id it was exported from.
 	Customizations []map[string]any `yaml:"customizations,omitempty"`
+
+	// NodeRedHelper: the box reads PLCs with the Python reader, and a Node-RED
+	// "helper" beside it runs the customizations. The reader tees every batch to
+	// the helper (best-effort); the helper's generated tab exposes the same spot
+	// ids (tags in, publish out). When true, Generate emits the HELPER flow as the
+	// reader_flow artifact, so live apply and the inserter work unchanged.
+	NodeRedHelper bool `yaml:"nodered_helper,omitempty"`
 }
 
 // DescriptorPLC is the descriptor's PLC-connectivity + tag-map section. It maps
@@ -263,6 +274,10 @@ type PLCType struct {
 // — all pointers/omitempty so "absent" is distinguishable from a zero value.
 type DescriptorPLCEndpoint struct {
 	Name string `yaml:"name"`
+	// Enabled switches a PLC connection off WITHOUT deleting it (CS Admin's per-PLC
+	// on/off switch). nil or true ⇒ read; false ⇒ every generator skips it and its
+	// tag maps (see activePLC), while the configuration stays saved.
+	Enabled *bool `yaml:"enabled,omitempty"`
 	// Protocol ∈ {s7, modbus_tcp, opcua}. Selects the reader + gates which tag
 	// map may reference this endpoint. OPTIONAL when Type is set — an endpoint that
 	// references a plc type inherits the type's protocol (and rack/slot).
@@ -321,13 +336,9 @@ type Equipment struct {
 
 	// DeviceKey is the equipment's STABLE identity — the ADR-0046 §2 device key
 	// that rides on every birth counter metric (properties["device_key"]) and
-	// keys packml_register.device_key. It is DECLARED, not string-derived: when
-	// set it is AUTHORITATIVE; when empty the birth side falls back to the
-	// dash-joined-topic derivation (the transitional bridge, see birth pkg), so
-	// nothing breaks for a descriptor that predates this field. Charset
-	// [A-Za-z0-9._-]+ (no "/" — it is the flat identity, not a topic path);
-	// unique per tenant. Use ResolvedDeviceKey() to read the declared-else-derived
-	// value — that is the single place the fallback rule lives.
+	// identity the agent declares at SparkPlug birth (ADR-0061 D1). It is the opaque key of the equipment's
+	// active core.device_bindings row (dk_<32 hex>), stamped by edge-api on every descriptor write/generate.
+	// REQUIRED (Validate): there is no derivation from the topic any more (ADR-0061 P1).
 	DeviceKey string `yaml:"device_key,omitempty"`
 
 	// IDEquipment is the register surrogate id (drives packml_register SQL + id
@@ -371,10 +382,10 @@ type Equipment struct {
 }
 
 // DerivedMetric is one agent-side synthesis rule as CS Admin declares it in the
-// descriptor. Exactly one of {Integral, Sum} is set. Its leaves are RELATIVE
+// descriptor. Exactly one of {Integral, Sum, Expr} is set. Its leaves are RELATIVE
 // (equipment-local, optional {idx}); GenerateProfile resolves them to the FULL
 // segment-qualified suffixes the runtime deriver + allowlist use. The Integral /
-// Sum source types are reused verbatim from tenantprofile so the descriptor
+// Sum / Expr source types are reused verbatim from tenantprofile so the descriptor
 // expresses exactly what the profile (and thus the deriver) can hold.
 type DerivedMetric struct {
 	// Emit are the canonical count leaves this rule publishes, e.g.
@@ -395,19 +406,22 @@ type DerivedMetric struct {
 
 	// Sum latches + sums several arriving count registers (Addends, ≥2) into one.
 	Sum *tenantprofile.SumSource `yaml:"sum,omitempty"`
+
+	// Expr synthesizes a metric from a sandboxed arithmetic expression over
+	// declared sibling tags (ADR-0058 Tier 1): the general primitive for per-client
+	// math the closed integral/sum shapes cannot express — scrap = DW0 − DW4, merge
+	// two PLCs into one tag, unit conversion, deadband. Its Vars suffixes are
+	// RELATIVE here; GenerateProfile segment-qualifies + {idx}-substitutes them like
+	// Integral.Source / Sum.Addends.
+	Expr *tenantprofile.ExprSource `yaml:"expr,omitempty"`
 }
 
-// ResolvedDeviceKey returns the equipment's DECLARED device_key, or — when none is
-// declared — the dash-joined-topic derivation (the transitional bridge form the
-// birth side and the golden fixtures use, e.g. "CPACK/SC/LINHAS/L5/BREYER" →
-// "CPACK-SC-LINHAS-L5-BREYER"). This is the single source of the declared-else-
-// derived rule; the register SQL, the agent tag-map, and (via them) the runtime
-// birth all read identity through here so producer and consumer cannot disagree.
+// ResolvedDeviceKey returns the equipment's DECLARED device_key (trimmed), or "" when none is
+// declared. ADR-0061 P1 removed the dash-joined-topic fallback ("CPACK/SC/LINHAS/L5/BREYER" →
+// "CPACK-SC-LINHAS-L5-BREYER"): identity is declared, never derived from a name. The agent tag-map and
+// (via it) the runtime birth read identity through here so producer and consumer cannot disagree.
 func (e Equipment) ResolvedDeviceKey() string {
-	if k := strings.TrimSpace(e.DeviceKey); k != "" {
-		return k
-	}
-	return strings.ReplaceAll(e.Topic, "/", "-")
+	return strings.TrimSpace(e.DeviceKey)
 }
 
 // LineRole binds one canonical count-leaf ROLE on a line to a specific PLC count
@@ -517,7 +531,15 @@ func Load(path string) (*Descriptor, error) {
 // Validate checks the descriptor is internally consistent BEFORE generation — a
 // bad descriptor should fail loudly here, not fan a silent error out to all four
 // artifacts (ADR-0045 §5 negative: "a generator bug fans out to all four").
-func (d *Descriptor) Validate() error {
+func (d *Descriptor) Validate() error { return d.validate(true) }
+
+// ValidateDraft is Validate without the device_key requirement, for a SCAFFOLD: a skeleton for a tenant whose
+// equipment does not exist yet has no core.device_bindings rows, so it cannot carry keys (like its placeholder
+// id_equipment values). edge-api stamps the keys when the real descriptor is saved; Parse/generate/push still
+// require them (Validate).
+func (d *Descriptor) ValidateDraft() error { return d.validate(false) }
+
+func (d *Descriptor) validate(requireDeviceKeys bool) error {
 	if strings.TrimSpace(d.Tenant) == "" {
 		return fmt.Errorf("tenant is required")
 	}
@@ -535,9 +557,8 @@ func (d *Descriptor) Validate() error {
 	}
 	seenTopic := map[string]bool{}
 	seenID := map[int]bool{}
-	// seenDeviceKey tracks every RESOLVED device key (declared or topic-derived) so
-	// a collision is caught here rather than at the packml_register partial-unique
-	// index (id_enterprise, device_key). Maps key → the topic that first claimed it.
+	// seenDeviceKey tracks every declared device key so a collision is caught here
+	// rather than at core.device_bindings' unique key. Maps key → the topic that first claimed it.
 	seenDeviceKey := map[string]string{}
 	// seenCountIndex tracks every count index claimed by a member (CountIndex) or a
 	// line role (LineRoles), so a collision is caught at descriptor-validate time
@@ -564,19 +585,17 @@ func (d *Descriptor) Validate() error {
 			return fmt.Errorf("equipment[%d] (%s): duplicate id_equipment %d", i, e.Topic, e.IDEquipment)
 		}
 		seenID[e.IDEquipment] = true
-		// device_key: when DECLARED it must be a non-empty, /-free identity string
-		// (the flat key, not a topic path). Uniqueness is enforced on the RESOLVED
-		// key (declared-else-derived) so a declared key that collides with another
-		// equipment's derived key is caught too — both land in the same
-		// packml_register.device_key column under one partial-unique index.
-		if e.DeviceKey != "" && !deviceKeyPattern.MatchString(e.DeviceKey) {
-			return fmt.Errorf("equipment[%d] (%s): device_key=%q must match [A-Za-z0-9._-]+ (no '/'; it is the flat identity, not a topic)",
+		// device_key (ADR-0061 P1): REQUIRED and opaque — the active core.device_bindings key (dk_<32 hex>).
+		// A name-derived key ('CPACK-SC-LINHAS-L5') is rejected: identity is declared, never derived. This is
+		// the fail-closed point (onboarding/generate), not the agent at runtime on a shipped box.
+		if (requireDeviceKeys || e.DeviceKey != "") && !opaqueDeviceKey.MatchString(e.DeviceKey) {
+			return fmt.Errorf("equipment[%d] (%s): device_key=%q must be the opaque dk_<32 hex> key of its core.device_bindings row (ADR-0061; edge-api stamps it)",
 				i, e.Topic, e.DeviceKey)
 		}
 		dk := e.ResolvedDeviceKey()
-		if prev, dup := seenDeviceKey[dk]; dup {
+		if prev, dup := seenDeviceKey[dk]; dup && dk != "" {
 			return fmt.Errorf("equipment[%d] (%s): device_key %q already claimed by %s "+
-				"(unique per tenant — it keys packml_register.device_key)", i, e.Topic, dk, prev)
+				"(unique per descriptor — one identity per equipment)", i, e.Topic, dk, prev)
 		}
 		seenDeviceKey[dk] = e.Topic
 		switch e.TPEquipment {
@@ -633,6 +652,9 @@ func (d *Descriptor) Validate() error {
 		// descriptor time, not fanned out. The RESOLVED form is re-validated by the
 		// generated profile (GenerateProfile → Profile.Validate).
 		for j, dm := range e.Derived {
+			if err := d.validateAbsoluteVars(i, e.Topic, j, dm); err != nil {
+				return err
+			}
 			if err := validateDerivedMetric(i, e.Topic, j, dm); err != nil {
 				return err
 			}
@@ -689,6 +711,54 @@ func validateCustomizations(nodes []map[string]any) error {
 			return fmt.Errorf("customizations[%d]: duplicate node id %q (every Node-RED node id must be unique)", i, id)
 		}
 		seen[id] = true
+		// ADR-0009 governance bounds (ADR-0058 P2.3): a function node's body is the
+		// only place a customization can hide arbitrary code, so bound it here — at
+		// authoring time — rather than discover an unreviewable 800-line flow that
+		// makes network calls on the box. These are the SAME bounds ADR-0009 set for
+		// the Node-RED tee lint; enforcing them on the descriptor authoring path
+		// closes the "authored bad flow ships" gap for the customizations surface.
+		if typ == "function" {
+			code, _ := n["func"].(string)
+			if err := checkFunctionBounds(i, id, code); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// maxFunctionLines bounds a Node-RED function node's body (ADR-0009: config-not-
+// code — a customization should be a small, reviewable transform, not a program).
+const maxFunctionLines = 200
+
+// inlineNetworkRe matches an HTTP/network call made INLINE inside a function node
+// — the ADR-0009 anti-pattern. A legitimate customization that must call out uses
+// a proper `http request` NODE (config-not-code), never a hand-rolled call buried
+// in a function body where it escapes review + ret/timeout governance.
+var inlineNetworkRe = regexp.MustCompile(
+	`(?i)\b(?:require\s*\(\s*['"](?:https?|axios|node-fetch|request|net|dgram|dns)\b|fetch\s*\(|XMLHttpRequest|https?\.(?:request|get)\s*\(|WebSocket\s*\()`,
+)
+
+// unsafeEvalRe matches dynamic code execution in a function body — never allowed
+// (it defeats the whole point of bounding the body: eval'd code is unreviewable).
+var unsafeEvalRe = regexp.MustCompile(`(?i)\b(?:eval\s*\(|new\s+Function\s*\(|require\s*\(\s*['"]vm['"])`)
+
+// checkFunctionBounds enforces the ADR-0009 bounds on one function node's body.
+func checkFunctionBounds(i int, id, code string) error {
+	if n := strings.Count(code, "\n") + 1; n > maxFunctionLines {
+		return fmt.Errorf(
+			"customizations[%d] (id %q): function body is %d lines, over the %d-line limit (ADR-0009 config-not-code) — split it into smaller nodes or move the logic to a declarative derived[].expr rule",
+			i, id, n, maxFunctionLines)
+	}
+	if inlineNetworkRe.MatchString(code) {
+		return fmt.Errorf(
+			"customizations[%d] (id %q): function body makes an INLINE network/HTTP call — use a dedicated `http request` node instead (ADR-0009: no inline HTTP; keep network calls reviewable + governed)",
+			i, id)
+	}
+	if unsafeEvalRe.MatchString(code) {
+		return fmt.Errorf(
+			"customizations[%d] (id %q): function body uses eval/new Function/vm (dynamic code execution) — not allowed (ADR-0009: the body must be reviewable)",
+			i, id)
 	}
 	return nil
 }
@@ -701,14 +771,63 @@ var validTypes = map[string]bool{
 	"int": true, "bool": true, "string": true,
 }
 
+// validateAbsoluteVars checks the expr vars that read ANOTHER equipment. A var is
+// either RELATIVE ("/Admin/…", resolved under the rule's own equipment) or
+// ABSOLUTE: the full canonical topic, starting with the tenant prefix
+// ("BISPHARMA/SP/LINHAS/L01/S3/Admin/…"), resolved as-is — this is how a rule
+// combines two specific machines. An absolute var must name an equipment this
+// descriptor maps (a typo would otherwise be a rule that silently never fires)
+// and cannot use {idx} (whose count index would it be?).
+func (d *Descriptor) validateAbsoluteVars(i int, topic string, j int, dm DerivedMetric) error {
+	if dm.Expr == nil {
+		return nil
+	}
+	for name, v := range dm.Expr.Vars {
+		if strings.HasPrefix(v, "/") || strings.TrimSpace(v) == "" {
+			continue
+		}
+		if d.Canonical.Prefix == "" || !strings.HasPrefix(v, d.Canonical.Prefix+"/") {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q] = %q: use \"/Admin/…\" for this equipment, or the full topic starting with %q for another machine",
+				i, topic, j, name, v, d.Canonical.Prefix+"/")
+		}
+		if strings.Contains(v, tenantprofile.IdxPlaceholder) {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q]: {idx} is only allowed for this equipment's own tags — write the other machine's count index number", i, topic, j, name)
+		}
+		// Longest mapped topic that prefixes the var, and what follows must be a
+		// tag leaf — a LINE topic prefixes all its machines, so "…/L01/S9/Admin/…"
+		// would otherwise pass as "the line's tag" for a machine that doesn't exist.
+		best := ""
+		for _, e := range d.Equipment {
+			if e.Topic != "" && strings.HasPrefix(v, e.Topic+"/") && len(e.Topic) > len(best) {
+				best = e.Topic
+			}
+		}
+		rest := strings.TrimPrefix(v, best)
+		known := best != "" && (strings.HasPrefix(rest, "/Admin/") || strings.HasPrefix(rest, "/Status/") || strings.HasPrefix(rest, "/Derive/"))
+		if !known {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q] = %q: no mapped equipment has that topic", i, topic, j, name, v)
+		}
+	}
+	return nil
+}
+
 // validateDerivedMetric enforces the DerivedMetric shape at descriptor time:
-// exactly one of {integral, sum}; emit non-empty with a valid type; sum needs
-// ≥2 addends; integral needs a source. i/topic/j give a precise error location.
+// exactly one of {integral, sum, expr}; emit non-empty with a valid type; sum
+// needs ≥2 addends; integral needs a source; expr needs a compilable expression
+// over ≥1 declared var. i/topic/j give a precise error location.
 func validateDerivedMetric(i int, topic string, j int, dm DerivedMetric) error {
-	hasIntegral := dm.Integral != nil
-	hasSum := dm.Sum != nil
-	if hasIntegral == hasSum {
-		return fmt.Errorf("equipment[%d] (%s): derived[%d] must set exactly one of {integral, sum}", i, topic, j)
+	set := 0
+	if dm.Integral != nil {
+		set++
+	}
+	if dm.Sum != nil {
+		set++
+	}
+	if dm.Expr != nil {
+		set++
+	}
+	if set != 1 {
+		return fmt.Errorf("equipment[%d] (%s): derived[%d] must set exactly one of {integral, sum, expr}", i, topic, j)
 	}
 	if len(dm.Emit) == 0 {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].emit must list at least one canonical count leaf", i, topic, j)
@@ -721,11 +840,35 @@ func validateDerivedMetric(i int, topic string, j int, dm DerivedMetric) error {
 	if !validTypes[dm.Type] {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].type=%q must be double|float|long|int|bool|string", i, topic, j, dm.Type)
 	}
-	if hasIntegral && strings.TrimSpace(dm.Integral.Source) == "" {
+	if dm.Integral != nil && strings.TrimSpace(dm.Integral.Source) == "" {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].integral.source is required", i, topic, j)
 	}
-	if hasSum && len(dm.Sum.Addends) < 2 {
+	if dm.Sum != nil && len(dm.Sum.Addends) < 2 {
 		return fmt.Errorf("equipment[%d] (%s): derived[%d].sum.addends must list at least two suffixes (a one-addend sum is a rename)", i, topic, j)
+	}
+	if dm.Expr != nil {
+		if strings.TrimSpace(dm.Expr.Expr) == "" {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.expr is required", i, topic, j)
+		}
+		if len(dm.Expr.Vars) == 0 {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars must bind at least one variable", i, topic, j)
+		}
+		vars := make([]string, 0, len(dm.Expr.Vars))
+		for name, suffix := range dm.Expr.Vars {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars has an empty variable name", i, topic, j)
+			}
+			if strings.TrimSpace(suffix) == "" {
+				return fmt.Errorf("equipment[%d] (%s): derived[%d].expr.vars[%q] maps to an empty suffix", i, topic, j, name)
+			}
+			vars = append(vars, name)
+		}
+		// Compile-check at descriptor time (CS Admin validates BEFORE generate), so
+		// a malformed expression or a var not declared in Vars is caught with a
+		// precise location, off the hot path.
+		if _, err := expreval.Compile(dm.Expr.Expr, vars); err != nil {
+			return fmt.Errorf("equipment[%d] (%s): derived[%d].expr does not compile: %w", i, topic, j, err)
+		}
 	}
 	return nil
 }
@@ -835,6 +978,22 @@ func (d *Descriptor) validatePLCTypes() error {
 				if off < 0 {
 					return fmt.Errorf("plc.types[%q]: sensor_offsets[%q]=%d must be non-negative", name, key, off)
 				}
+			}
+		}
+		// derive block (ADR-0050 §4 / ADR-0058 P1.4): fail fast on an unknown role
+		// or a non-compiling expression. Sensor→member resolution needs endpoint
+		// context, so it is checked at generate (generateTypeDeriveRules) with a
+		// precise per-line error; here we guard the type declaration itself.
+		for role, exprStr := range t.Derive {
+			if _, ok := deriveRoleLeaf[strings.ToLower(strings.TrimSpace(role))]; !ok {
+				return fmt.Errorf("plc.types[%q]: derive role %q must be scrap|defective|gross|consumed|net|processed", name, role)
+			}
+			ids := exprIdentifiers(exprStr)
+			if len(ids) == 0 {
+				return fmt.Errorf("plc.types[%q]: derive[%q] expression %q references no sensors", name, role, exprStr)
+			}
+			if _, err := expreval.Compile(exprStr, ids); err != nil {
+				return fmt.Errorf("plc.types[%q]: derive[%q] expression does not compile: %w", name, role, err)
 			}
 		}
 	}

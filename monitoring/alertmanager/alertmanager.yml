@@ -38,6 +38,7 @@ receivers:
           {{ if .Annotations.description }}
           {{ .Annotations.description }}{{ end }}
           {{ if .Labels.surface }}surface: `{{ .Labels.surface }}` {{ end }}{{ if .Labels.tenant }}tenant: `{{ .Labels.tenant }}` {{ end }}{{ if .Labels.job }}job: `{{ .Labels.job }}`{{ end }}
+          {{ if .Annotations.runbook_url }}<{{ .Annotations.runbook_url }}|🔎 runbook / debug board>{{ end }}
           {{ end }}
 
   - name: slack-critical
@@ -48,6 +49,7 @@ receivers:
         text: >-
           {{ range .Alerts }}*CRITICAL* — {{ .Annotations.summary }}
           {{ if .Annotations.description }}{{ .Annotations.description }}{{ end }}
+          {{ if .Annotations.runbook_url }}<{{ .Annotations.runbook_url }}|🔎 runbook / debug board>{{ end }}
           {{ end }}
 
 inhibit_rules:
@@ -56,3 +58,8 @@ inhibit_rules:
   - source_matchers: ['severity="critical"']
     target_matchers: ['severity="warning"']
     equal: ['alertname']
+  # A total ingest/write outage (global IngestSilent/WritePathDry) is the same
+  # incident as the per-client ClientIngestStopped — send the global page, not
+  # also one message per silent tenant.
+  - source_matchers: ['alertname=~"IngestSilent|WritePathDry"']
+    target_matchers: ['alertname="ClientIngestStopped"']

@@ -278,6 +278,15 @@ func parseFuncCall(s string) (name string, argc int, ok bool, err error) {
 	if i == 0 {
 		return "", 0, false, nil
 	}
+	// Optional schema qualification: `schema.name(...)`. Consume a single dot
+	// and the following identifier segment so a schema-scoped function (e.g.
+	// serving.oee_score) is captured whole, not truncated at the schema.
+	if i < len(s) && s[i] == '.' && i+1 < len(s) && isIdentChar(s[i+1]) {
+		i++ // consume '.'
+		for i < len(s) && isIdentChar(s[i]) {
+			i++
+		}
+	}
 	ident := s[:i]
 	j := i
 	for j < len(s) && s[j] == ' ' {
@@ -338,7 +347,7 @@ func parseTableDecls(sql string, fromIdx int) (aliasMap map[string]string, prima
 				return nil, "", nil, fmt.Errorf("dangling %s", w)
 			}
 			rel := toks[i+1]
-			if !isIdent(rel) {
+			if !isQualifiedIdent(rel) {
 				return nil, "", nil, fmt.Errorf("unexpected relation token %q", rel)
 			}
 			rels = append(rels, rel)
@@ -427,7 +436,7 @@ func secondaryRelations(sql string, skip map[string]bool) []contractObject {
 				continue
 			}
 			toks := strings.Fields(rest)
-			if len(toks) == 0 || !isIdent(toks[0]) {
+			if len(toks) == 0 || !isQualifiedIdent(toks[0]) {
 				continue
 			}
 			rel := toks[0]
@@ -461,6 +470,22 @@ func isIdent(s string) bool {
 	// must start with a letter or underscore
 	c := s[0]
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isQualifiedIdent accepts a bare identifier (`name`) OR a single schema
+// qualification (`schema.name`), both segments being bare identifiers. It is
+// used to validate a relation token in the FROM/JOIN region so a schema-scoped
+// read (e.g. the `serving.*` analytics cutover) is recognised as a relation
+// rather than rejected as an unparseable token. It deliberately allows AT MOST
+// one dot — an alias.column reference is never a relation name here.
+func isQualifiedIdent(s string) bool {
+	if isIdent(s) {
+		return true
+	}
+	if dot := strings.IndexByte(s, '.'); dot > 0 {
+		return isIdent(s[:dot]) && isIdent(s[dot+1:])
+	}
+	return false
 }
 
 // indexWord finds the byte index of a whole-word token (case-insensitive),

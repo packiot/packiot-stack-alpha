@@ -227,7 +227,7 @@ func (c *Consumer) consumeOne(ctx context.Context, conn *amqp.Connection, queue,
 			if !ok {
 				return fmt.Errorf("delivery channel closed for %s", queue)
 			}
-			c.handleDelivery(ctx, ch, d, tenant)
+			c.handleDelivery(ctx, ch, queue, d, tenant)
 		}
 	}
 }
@@ -244,12 +244,15 @@ func (c *Consumer) perTenantQueueNames() []string {
 
 // handleDelivery is the per-message decision tree:
 //
-//  1. If x-death count >= MaxRetries, publish to failed exchange and ack
-//     the original so it doesn't loop forever.
+//  1. If MaxRetries retries have already failed (RetryCount on this queue's
+//     `rejected` x-death entry), publish to failed exchange and ack the
+//     original so it doesn't loop forever.
 //  2. Dispatch to a handler (today: shadow log-only).
 //  3. Handler returns nil → ack. Returns error → nack(requeue=false) →
 //     DLX → retry queue → TTL → back to source → re-delivered.
-func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.Delivery, tenant string) {
+//
+// queue is the queue the delivery was consumed from (see RetryCount).
+func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, queue string, d amqp.Delivery, tenant string) {
 	c.delivered.Add(1)
 	c.lastDelivery.Store(time.Now().UnixNano())
 	start := time.Now()
@@ -260,8 +263,10 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 		}
 	}()
 
-	retries := xDeathCount(d.Headers)
-	if retries >= c.cfg.MaxRetries {
+	// retries = failed handler runs so far; MAX_RETRIES=N allows the first run
+	// plus N retries.
+	retries := RetryCount(d.Headers, queue)
+	if RetriesExhausted(retries, c.cfg.MaxRetries) {
 		err := ch.PublishWithContext(ctx, c.cfg.FailedExchange, d.RoutingKey, false, false, amqp.Publishing{
 			ContentType: d.ContentType,
 			Body:        d.Body,
@@ -312,30 +317,6 @@ func (c *Consumer) handleDelivery(ctx context.Context, ch *amqp.Channel, d amqp.
 	if c.metricsDeliveries != nil {
 		c.metricsDeliveries(d.RoutingKey, tenant, "acked")
 	}
-}
-
-// xDeathCount sums the count fields of all x-death header entries.
-// Each "round trip" through the retry queue adds an entry.
-func xDeathCount(h amqp.Table) int {
-	xd, ok := h["x-death"]
-	if !ok {
-		return 0
-	}
-	deaths, ok := xd.([]any)
-	if !ok {
-		return 0
-	}
-	total := 0
-	for _, e := range deaths {
-		entry, ok := e.(amqp.Table)
-		if !ok {
-			continue
-		}
-		if v, ok := entry["count"].(int64); ok {
-			total += int(v)
-		}
-	}
-	return total
 }
 
 // Snapshot — fields read by /health.

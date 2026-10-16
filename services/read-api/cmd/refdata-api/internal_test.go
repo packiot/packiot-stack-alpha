@@ -23,6 +23,7 @@ func testResolveLogger() *slog.Logger { return slog.New(slog.NewTextHandler(os.S
 func TestResolveDeviceHandlerFailClosed(t *testing.T) {
 	const goodKey = "s3cr3t-internal"
 
+	const dk = "dk_0123456789abcdef0123456789abcdef" // the only accepted shape (ADR-0061)
 	cases := []struct {
 		name       string
 		configured string // INTERNAL_API_KEY the handler was built with
@@ -32,20 +33,24 @@ func TestResolveDeviceHandlerFailClosed(t *testing.T) {
 		wantStatus int
 	}{
 		// Key unset ⇒ endpoint inert: even an empty header must NOT match.
-		{"key_unset_denies", "", http.MethodGet, "", "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusUnauthorized},
-		{"key_unset_denies_with_header", "", http.MethodGet, "anything", "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusUnauthorized},
+		{"key_unset_denies", "", http.MethodGet, "", "?enterprise=1&device_key=" + dk, http.StatusUnauthorized},
+		{"key_unset_denies_with_header", "", http.MethodGet, "anything", "?enterprise=1&device_key=" + dk, http.StatusUnauthorized},
 		// Configured key, missing/mismatched header ⇒ 401.
-		{"missing_header", goodKey, http.MethodGet, "", "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusUnauthorized},
-		{"wrong_header", goodKey, http.MethodGet, "nope", "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusUnauthorized},
+		{"missing_header", goodKey, http.MethodGet, "", "?enterprise=1&device_key=" + dk, http.StatusUnauthorized},
+		{"wrong_header", goodKey, http.MethodGet, "nope", "?enterprise=1&device_key=" + dk, http.StatusUnauthorized},
 		// Authed but malformed input ⇒ 400 (still no DB touch). NB: a MISSING
 		// enterprise is NOT malformed — it is the ADR-0046 resolve-by-device_key
 		// path (enterprise optional; device_key globally unique), which reaches
-		// the DB, so it is exercised in the DB-backed resolution test, not here.
-		{"nonnumeric_enterprise", goodKey, http.MethodGet, goodKey, "?enterprise=abc&device_key=CPACK-SC-LINHAS-L5", http.StatusBadRequest},
-		{"nonpositive_enterprise", goodKey, http.MethodGet, goodKey, "?enterprise=0&device_key=CPACK-SC-LINHAS-L5", http.StatusBadRequest},
+		// the DB; its SQL semantics are proven by db/migrations/t-device-key-resolver/verify.sql.
+		{"nonnumeric_enterprise", goodKey, http.MethodGet, goodKey, "?enterprise=abc&device_key=" + dk, http.StatusBadRequest},
+		{"nonpositive_enterprise", goodKey, http.MethodGet, goodKey, "?enterprise=0&device_key=" + dk, http.StatusBadRequest},
 		{"missing_device_key", goodKey, http.MethodGet, goodKey, "?enterprise=1", http.StatusBadRequest},
+		// ADR-0061 step c: a name-derived key never reaches the DB, so identity can't come from a name.
+		{"name_derived_key_rejected", goodKey, http.MethodGet, goodKey, "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusBadRequest},
+		{"uppercase_hex_rejected", goodKey, http.MethodGet, goodKey, "?device_key=dk_0123456789ABCDEF0123456789ABCDEF", http.StatusBadRequest},
+		{"short_key_rejected", goodKey, http.MethodGet, goodKey, "?device_key=dk_0123", http.StatusBadRequest},
 		// Wrong method ⇒ 405, even with a valid key.
-		{"post_rejected", goodKey, http.MethodPost, goodKey, "?enterprise=1&device_key=CPACK-SC-LINHAS-L5", http.StatusMethodNotAllowed},
+		{"post_rejected", goodKey, http.MethodPost, goodKey, "?enterprise=1&device_key=" + dk, http.StatusMethodNotAllowed},
 	}
 
 	for _, tc := range cases {

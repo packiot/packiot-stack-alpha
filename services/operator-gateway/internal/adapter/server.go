@@ -64,20 +64,36 @@ func NewServer(cfg Config, edge edgePoster, resolver topicResolver, metrics *Met
 // registered on.
 func (s *Server) Handler() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/operator/downtime", s.handleDowntime)
-	mux.HandleFunc("/operator/po", s.handlePO)
+	s.registerRoutes(mux)
+	return mux
+}
+
+// routeRegistrar is the one *http.ServeMux method registerRoutes needs — an
+// interface so the OpenAPI drift test can enumerate every pattern.
+type routeRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// registerRoutes is the single place the adapter's routes are defined. Every
+// non-ops route must be described in openapi.json (openapi_test.go enforces it).
+// The operator routes carry no method in the pattern: pre() answers 405 for
+// anything but POST.
+func (s *Server) registerRoutes(mux routeRegistrar) {
+	mux.Handle("/operator/downtime", http.HandlerFunc(s.handleDowntime))
+	mux.Handle("/operator/po", http.HandlerFunc(s.handlePO))
 	// Full PO lifecycle surface (see po_lifecycle.go). Each maps 1:1 to an
 	// edge-api production-orders endpoint.
-	mux.HandleFunc("/operator/po/stop", s.handlePOStop)
-	mux.HandleFunc("/operator/po/setup", s.handlePOSetup)
-	mux.HandleFunc("/operator/po/replace", s.handlePOReplace)
-	mux.HandleFunc("/operator/po/change-status", s.handlePOStatus)
-	mux.HandleFunc("/operator/po/change-time", s.handlePOTime)
+	mux.Handle("/operator/po/stop", http.HandlerFunc(s.handlePOStop))
+	mux.Handle("/operator/po/setup", http.HandlerFunc(s.handlePOSetup))
+	mux.Handle("/operator/po/replace", http.HandlerFunc(s.handlePOReplace))
+	mux.Handle("/operator/po/change-status", http.HandlerFunc(s.handlePOStatus))
+	mux.Handle("/operator/po/change-time", http.HandlerFunc(s.handlePOTime))
 	// Split one downtime/manual/low-speed event into re-categorised sub-intervals
 	// (edge-api /api/downtimes/split). Distinct from the downtime edit/trim path.
-	mux.HandleFunc("/operator/split", s.handleSplit)
-	mux.HandleFunc("/healthz", s.handleHealth)
-	return mux
+	mux.Handle("/operator/split", http.HandlerFunc(s.handleSplit))
+	mux.Handle("/healthz", http.HandlerFunc(s.handleHealth))
+	// API description — no auth: it holds no tenant data; exposure is nginx's call.
+	mux.Handle("GET /openapi.json", http.HandlerFunc(handleOpenAPI))
 }
 
 // scoped is the seam the generic pre-flight reads: every operator request
@@ -185,7 +201,7 @@ func (s *Server) handleDowntime(w http.ResponseWriter, r *http.Request) {
 		s.handleMapErr(w, action, err)
 		return
 	}
-	s.forward(w, r.Context(), action, call)
+	s.forward(w, r, action, call)
 }
 
 func (s *Server) handlePO(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +224,7 @@ func (s *Server) handlePO(w http.ResponseWriter, r *http.Request) {
 		s.handleMapErr(w, action, err)
 		return
 	}
-	s.forward(w, r.Context(), action, call)
+	s.forward(w, r, action, call)
 }
 
 // resolve maps a packml_topic to staging ids, writing the correct error
@@ -262,8 +278,20 @@ func (s *Server) handleMapErr(w http.ResponseWriter, action string, err error) {
 //	edge 2xx              -> 202 Accepted (the write landed in user_logs)
 //	edge 4xx              -> passthrough (same status + body)
 //	edge 5xx              -> 502 Bad Gateway
-func (s *Server) forward(w http.ResponseWriter, ctx context.Context, action string, call *edgeCall) {
-	res, err := s.edge.post(ctx, call)
+//
+// Before posting it attaches the Idempotency-Key (idempotency.go), so a client
+// retry after a 503/502 whose write edge-api had already committed is answered
+// from edge-api's key store instead of writing twice. A malformed caller key is
+// a 400 and nothing is sent.
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, action string, call *edgeCall) {
+	key, err := idempotencyKeyFor(r, call)
+	if err != nil {
+		s.reject(w, action, outcomeBadRequest, http.StatusBadRequest, err.Error())
+		return
+	}
+	call.idempotencyKey = key
+
+	res, err := s.edge.post(r.Context(), call)
 	if err != nil {
 		s.failed.Add(1)
 		s.metrics.observe(action, outcomeEdgeUnreachable)

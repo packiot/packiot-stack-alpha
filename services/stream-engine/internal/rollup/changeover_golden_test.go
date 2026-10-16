@@ -29,7 +29,6 @@ package rollup
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"testing"
@@ -80,14 +79,10 @@ func runShiftPassChangeover(ctx context.Context, t *testing.T, pool *pgxpool.Poo
 		sql := st.SQL
 		if st.Name == "events-bank" {
 			// The one line under test: reclassify the ts_planned bucket.
-			sql = fmt.Sprintf(shiftEventsSQL, "golden", plannedDowntimeExpr(changeoverAvailability))
+			sql = fmtRP(shiftEventsSQL, "golden", plannedDowntimeExpr(changeoverAvailability))
 		}
-		if _, err := tx.Exec(ctx, sql, []int{}, []int{}, []int{35}); err != nil {
-			if _, e2 := tx.Exec(ctx, sql, []int{}, []int{35}); e2 != nil {
-				if _, e3 := tx.Exec(ctx, sql); e3 != nil {
-					t.Fatalf("shift %s: %v / %v / %v", st.Name, err, e2, e3)
-				}
-			}
+		if err := goldenExec(ctx, tx, sql, map[int][]any{3: {[]int{}, []int{}, []int{35}}, 2: {[]int{}, []int{35}}}); err != nil {
+			t.Fatalf("shift %s: %v", st.Name, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -71,7 +71,7 @@ func TestHistorian_WindowGuards(t *testing.T) {
 // contract so a refactor can't silently drop the isolation or the pruning.
 func TestHistorianSQLShape(t *testing.T) {
 	for _, m := range []string{
-		"FROM ev_all",                      // the VIEW (mixed hot+cold); NOT the ev_between function
+		"FROM silver.equipment_values",                 // the VIEW (mixed hot+cold), t287 `cold` schema; NOT the ev_between function
 		"id_enterprise = $1",               // tenant fence on the SERVER-resolved cid
 		"ts_value >= $2 AND ts_value < $3", // exact window bound
 		"\n     %s\n",                      // optional equipment filter is an INLINE list (not a param)
@@ -80,6 +80,57 @@ func TestHistorianSQLShape(t *testing.T) {
 	} {
 		if !strings.Contains(histProductionSeriesSQL, m) {
 			t.Errorf("historian SQL lost %q", m)
+		}
+	}
+}
+
+// doHistDowntime hits the EE downtime endpoint (task #227 §8-EE).
+func doHistDowntime(t *testing.T, mux *http.ServeMux, method, body string, withAuth bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/v1/historian/downtime-series", strings.NewReader(body))
+	if withAuth {
+		req = req.WithContext(withCustomerID(req.Context(), 3))
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestHistorianDowntime_Guards proves the EE downtime route is mounted and shares
+// the same guard ladder as production-series (method → tenant → window → nil-pool).
+func TestHistorianDowntime_Guards(t *testing.T) {
+	mux := mountHistorian()
+	if got := doHistDowntime(t, mux, http.MethodGet, "", true).Code; got != http.StatusMethodNotAllowed {
+		t.Errorf("GET → %d, want 405", got)
+	}
+	if got := doHistDowntime(t, mux, http.MethodPost,
+		`{"from":"2024-01-01T00:00:00Z","to":"2024-02-01T00:00:00Z"}`, false).Code; got != http.StatusUnauthorized {
+		t.Errorf("no tenant → %d, want 401", got)
+	}
+	if got := doHistDowntime(t, mux, http.MethodPost,
+		`{"from":"2024-02-01T00:00:00Z","to":"2024-01-01T00:00:00Z"}`, true).Code; got != http.StatusBadRequest {
+		t.Errorf("from>=to → %d, want 400", got)
+	}
+	// valid body + nil gateway pool → 503 (nil-safe disabled posture)
+	if got := doHistDowntime(t, mux, http.MethodPost,
+		`{"from":"2024-01-01T00:00:00Z","to":"2024-02-01T00:00:00Z"}`, true).Code; got != http.StatusServiceUnavailable {
+		t.Errorf("nil histPool → %d, want 503", got)
+	}
+}
+
+// TestHistorianDowntimeSQLShape locks the EE tenant fence + prune + hot+cold union.
+func TestHistorianDowntimeSQLShape(t *testing.T) {
+	for _, m := range []string{
+		"FROM silver.equipment_events",          // the EE hot+cold union VIEW, t287 `cold` schema
+		"id_enterprise = $1",               // tenant fence on the SERVER-resolved cid
+		"ts_event >= $2 AND ts_event < $3", // exact window bound
+		"\n     %s\n",                      // optional equipment filter is an INLINE list
+		"year >  $4 OR (year = $4 AND month >= $5)", // cold-partition prune (lower)
+		"sum(duration)",                    // downtime seconds (Availability building block)
+		"planned_downtime",                 // split planned vs unplanned
+	} {
+		if !strings.Contains(histDowntimeSeriesSQL, m) {
+			t.Errorf("downtime SQL lost %q", m)
 		}
 	}
 }

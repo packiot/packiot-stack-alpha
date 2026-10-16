@@ -1,0 +1,8 @@
+[Unit]
+Description=Every 5 min: heal the sandbox twin if its hands-on grace period is over
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+[Install]
+WantedBy=timers.target

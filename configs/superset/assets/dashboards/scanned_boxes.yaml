@@ -1,0 +1,91 @@
+# Scanned Boxes — barcode box-scan reporting (boxes/units, by line, per day, per PO).
+# Tenant-generic; isolation via the bi.* RLS fence (db/superset/05-bi-scanned-boxes.sql).
+# chartId integers are placeholders — charts bind by meta.uuid.
+dashboard_title: Scanned Boxes
+description: Barcode scanned-box KPIs — boxes + units, by line, per day, per production order.
+css: ''
+slug: scanned-boxes
+certified_by: null
+certification_details: null
+published: true
+uuid: d1000001-0a1b-4c2d-8e3f-000000000001
+version: 1.0.0
+metadata:
+  color_scheme: supersetColors
+  refresh_frequency: 0
+  expanded_slices: {}
+  label_colors: {}
+  shared_label_colors: {}
+  cross_filters_enabled: true
+  default_filters: '{}'
+  filter_scopes: {}
+  chart_configuration: {}
+  global_chart_configuration: {}
+  native_filter_configuration: []
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    children:
+    - ROW-kpi
+    - ROW-trend
+    - ROW-table
+  HEADER_ID:
+    type: HEADER
+    id: HEADER_ID
+    meta:
+      text: Scanned Boxes
+  ROW-kpi:
+    type: ROW
+    id: ROW-kpi
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-boxes-kpi
+    - CHART-boxes-by-line
+  CHART-boxes-kpi:
+    type: CHART
+    id: CHART-boxes-kpi
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: c1000001-0a1b-4c2d-8e3f-000000000001, width: 4, height: 50, chartId: 1, sliceName: Boxes scanned}
+    children: []
+  CHART-boxes-by-line:
+    type: CHART
+    id: CHART-boxes-by-line
+    parents: [ROOT_ID, GRID_ID, ROW-kpi]
+    meta: {uuid: c1000003-0a1b-4c2d-8e3f-000000000003, width: 8, height: 50, chartId: 2, sliceName: Boxes by line}
+    children: []
+  ROW-trend:
+    type: ROW
+    id: ROW-trend
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-boxes-day
+  CHART-boxes-day:
+    type: CHART
+    id: CHART-boxes-day
+    parents: [ROOT_ID, GRID_ID, ROW-trend]
+    meta: {uuid: c1000002-0a1b-4c2d-8e3f-000000000002, width: 12, height: 50, chartId: 3, sliceName: Boxes per day by line}
+    children: []
+  ROW-table:
+    type: ROW
+    id: ROW-table
+    parents: [ROOT_ID, GRID_ID]
+    meta: {background: BACKGROUND_TRANSPARENT}
+    children:
+    - CHART-boxes-po
+  CHART-boxes-po:
+    type: CHART
+    id: CHART-boxes-po
+    parents: [ROOT_ID, GRID_ID, ROW-table]
+    meta: {uuid: c1000004-0a1b-4c2d-8e3f-000000000004, width: 12, height: 60, chartId: 4, sliceName: Scanned boxes per PO}
+    children: []

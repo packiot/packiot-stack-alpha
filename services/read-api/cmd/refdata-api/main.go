@@ -19,7 +19,6 @@ package main
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"context"
 	"encoding/json"
@@ -79,6 +78,31 @@ func topicsArg(r *http.Request) ([]any, error) {
 	return []any{strings.Split(raw, ",")}, nil
 }
 
+// maxEquipmentIDs bounds ?equipment= (a line + its machines is tens; this is a DoS guard, not a quota).
+const maxEquipmentIDs = 500
+
+// equipmentIDsArg parses ?equipment=<id>,<id>,… (ADR-0061 P3 /v2 operator routes): identity is
+// id_equipment, never a topic. Positive integers only; the tenant fence stays the outer $1.
+func equipmentIDsArg(r *http.Request) ([]any, error) {
+	raw := r.URL.Query().Get("equipment")
+	if raw == "" {
+		return nil, fmt.Errorf("missing required query param: equipment")
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > maxEquipmentIDs {
+		return nil, fmt.Errorf("equipment: at most %d ids", maxEquipmentIDs)
+	}
+	ids := make([]int32, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 32)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("equipment: %q is not a positive integer id", p)
+		}
+		ids = append(ids, int32(n))
+	}
+	return []any{ids}, nil
+}
+
 func topicArg(r *http.Request) ([]any, error) {
 	t := r.URL.Query().Get("topic")
 	if t == "" {
@@ -101,10 +125,10 @@ var endpoints = []endpoint{
 	// from their internal equipments join; ?topics= binds $2 (a filter within
 	// the tenant), $1 is the caller's id.
 	{path: "/v1/events-timeline",
-		sql:   `SELECT * FROM h_piot_get_events_timeline3_with_event_id($2) WHERE id_enterprise = $1`,
+		sql:   `SELECT * FROM serving.events_timeline($2) WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 	{path: "/v1/pending-downtime",
-		sql:   `SELECT * FROM h_piot_get_equipment_pending_downtime_with_event_id($2) WHERE id_enterprise = $1`,
+		sql:   `SELECT * FROM serving.pending_downtime($2) WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 	{path: "/v1/shift-hours",
 		sql:   `SELECT * FROM piot_get_shift_hours_by_packml_topic_2($2) WHERE id_enterprise = $1`,
@@ -131,6 +155,12 @@ var endpoints = []endpoint{
 	{path: "/v1/operator-po-list",
 		sql:   `SELECT * FROM v_operator_po_list_setup_4 WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: nil},
+	// ADR-0061 P3: the PO list by id_equipment (the selected line/sector + its parent). Wraps
+	// v_operator_po_list_setup_4 (db/migrations/t-adr0061-p3c-po-list-by-id); display_path replaces the
+	// unstable LIMIT-1 topic. Details stay on /v1/operator-po-details (keyed by id_production_order, no topic).
+	{path: "/v2/operator-po-list",
+		sql:   `SELECT * FROM serving.operator_po_list_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
 	{path: "/v1/operator-po-details",
 		sql:   `SELECT * FROM v_operator_po_details_3 WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: nil},
@@ -148,9 +178,35 @@ var endpoints = []endpoint{
 		class: routeGlobalRef, args: nil},
 	// downtime-reasons: equipments already carries id_enterprise; add the
 	// tenant predicate and move the topic vector to $2. Same projected columns.
+	// LINE-ONLY reasons: a member of a downtime_from_lead_machine line gets the
+	// LINE's tree (same rule as the equipment-downtime-reasons dataset).
+	// LINE topics: a line's own register row has id_unit NULL (id_unit = id_equipment
+	// holds for machines only), so the machine-only join dropped every line. The
+	// operator asks for its LINE topic (+ children) and prefers the row whose topic is
+	// the line's, so on lines that keep the tree on the line and are not
+	// downtime_from_lead_machine (CPACK: 20 line trees, 41 of 42 members NULL) it fell
+	// through to a member's empty tree — "No downtime reasons configured".
+	// ── ADR-0061 P3 /v2 operator routes: identity = id_equipment (?equipment=), the topic column becomes
+	// the D6 display_path (display only). The functions WRAP the v1 ones (same rules by construction;
+	// db/migrations/t-adr0061-p3a-operator-by-id, proven row-identical on the dev seed). v1 is unchanged.
+	{path: "/v2/events-timeline",
+		sql:   `SELECT * FROM serving.events_timeline_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
+	{path: "/v2/pending-downtime",
+		sql:   `SELECT * FROM serving.pending_downtime_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
+	// v2 downtime-reasons: one row per requested machine/line, no register join (same LINE-ONLY rule as v1).
+	{path: "/v2/downtime-reasons",
+		sql:   `SELECT * FROM serving.downtime_reasons_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
 	{path: "/v1/downtime-reasons",
-		sql: `SELECT e.id_equipment, e.downtime_reasons, e.scrap_reasons, p.packml_topic
-	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment AND p.id_unit = e.id_equipment
+		sql: `SELECT e.id_equipment, r.downtime_reasons, e.scrap_reasons, p.packml_topic
+	   FROM equipments e JOIN packml_register p ON p.id_equipment = e.id_equipment
+	        AND (p.id_unit = e.id_equipment OR (p.id_unit IS NULL AND e.tp_equipment = 3))
+	   LEFT JOIN equipments l ON l.id_equipment = e.id_parentequipment
+	        AND l.id_enterprise = e.id_enterprise AND l.tp_equipment = 3
+	        AND l.downtime_from_lead_machine AND l.active
+	   JOIN equipments r ON r.id_equipment = COALESCE(l.id_equipment, e.id_equipment)
 	  WHERE p.packml_topic = ANY($2) AND p.active AND e.id_enterprise = $1`,
 		class: routeTenantScoped, args: topicsArg},
 }
@@ -172,6 +228,17 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--dump-contract" {
 		if err := dumpContract(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "dump-contract:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// --dump-openapi: print the OpenAPI 3.1 document (the bytes GET /openapi.json
+	// serves) and exit. Built from the route tables alone — no DB, no network —
+	// so `make openapi` can export it for the wiki without a running stack.
+	if len(os.Args) > 1 && os.Args[1] == "--dump-openapi" {
+		if err := dumpOpenAPI(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "dump-openapi:", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -243,13 +310,10 @@ func main() {
 		logger.Info("cache-aside disabled (REDIS_CACHE_ENABLED=false or unconfigured)")
 	}
 
-	mux := http.NewServeMux()
-	for _, ep := range endpoints {
-		mux.HandleFunc(ep.path, makeHandler(pool, ep, logger))
-	}
-	ensureSchema(pool)                     // startup migrations (P2 screen-config table)
-	registerQueryAPI(mux, pool, qcache)    // ADR-0015 P1-P3 + ADR-0035 cache-aside
-	registerInternalAPI(mux, pool, logger) // ADR-0046 #19a device_key → id_equipment resolver
+	checkScreenConfigTable(context.Background(), pool, logger) // no DDL: the table is a migration's job
+
+	// T2 honest windows: dataset coverage floors from ops.retention_policy (fail-open).
+	go covIdx.run(context.Background(), pool, logger)
 	// T6 (#176): optional reach into the hot+cold historian gateway for long
 	// time-range reads past the 90-day hot window. nil-safe — histPool is nil (and
 	// the endpoint 503s) unless HIST_GW_PASSWORD is set and the gateway answers.
@@ -257,53 +321,33 @@ func main() {
 	if histPool != nil {
 		defer histPool.Close()
 	}
-	registerHistorianAPI(mux, histPool, logger)
-
-	// Gap-closure 2026-07-07: the only service without /metrics.
-	// promhttp default registry — request counts come from reqCount
-	// (incremented in makeHandler's wrapper below); Go runtime metrics
-	// ride along free.
-	// EnableOpenMetrics lets the handler negotiate the OpenMetrics exposition
-	// (Prometheus sends Accept: application/openmetrics-text) — the only format
-	// that carries the trace_id exemplars httpmetrics attaches. Plain-text
-	// scrapers simply get the histogram without exemplars.
-	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{EnableOpenMetrics: true}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-		if err := pool.Ping(ctx); err != nil {
-			http.Error(w, `{"healthy":false}`, http.StatusServiceUnavailable)
-			return
-		}
-		fmt.Fprintf(w, `{"healthy":true,"served":%d,"failed":%d}`, served.Load(), failed.Load())
-	})
 
 	port := getenv("HEALTH_PORT", "9104")
 	logger.Info("read-api listening", slog.String("port", port), slog.Int("endpoints", len(endpoints)))
 	// ADR-0027 Surface-1: the single tenant-injection authority, applied as
 	// middleware in front of the WHOLE mux so no route can skip it. It
 	// resolves a credential → customer_id (fail-closed: no/invalid credential →
-	// 401, no DB touch) and injects the id via context. /healthz + /metrics are
-	// exempt (ops probes, no tenant data).
+	// 401, no DB touch) and injects the id via context. /healthz, /metrics and
+	// /openapi.json are exempt (ops probes + API description, no tenant data).
 	//
 	// Two credential types resolve to the SAME tenant:
 	//   - X-Api-Key → customer_id via the static QUERY_API_KEYS map (operator).
-	//   - Authorization: Bearer <cognito-jwt> → sub → id_enterprise via the
+	//   - Authorization: Bearer <firebase-jwt> → uid → id_enterprise via the
 	//     users table (task #68, the front4 static-SPA path). Public-key token
-	//     verification: no secret needed. The uid→tenant lookup is cached
-	//     (5-min TTL).
+	//     verification: no secret needed. The project id is config
+	//     (FIREBASE_PROJECT_ID, default fbpackiot); the JWKS/x509 URL is a
+	//     public constant. The uid→tenant lookup is cached (5-min TTL).
 	keys := parseAPIKeys(os.Getenv("QUERY_API_KEYS"))
-	// #159: Firebase IdP RETIRED on the new-stack plane — Cognito is now the SOLE
-	// per-user relying party (the new-stack prod tenant has 0 Firebase users; the
-	// staging backfill linked every active user's id_user_cognito). The verifier
-	// is still wrapped in a SINGLE-ENTRY multiVerifier so the idp tagging +
-	// claimsVerifier that drive the link-on-login self-heal are preserved
-	// unchanged; a token from any OTHER issuer (e.g. a stale Firebase ID token)
-	// matches no entry and is rejected (401). No FIREBASE_PROJECT_ID is read and
-	// no Firebase verifier is constructed. Mirrors the staging removal (#1130).
+	// #159: Firebase IdP RETIRED — Cognito is now the SOLE per-user relying
+	// party (staging backfill linked every active user's id_user_cognito). The
+	// verifier is still wrapped in a SINGLE-ENTRY multiVerifier so the idp
+	// tagging + claimsVerifier that drive the link-on-login self-heal are
+	// preserved unchanged; a token from any OTHER issuer (e.g. a stale Firebase
+	// ID token) matches no entry and is rejected (401). The unified users lookup
+	// now resolves by id_user_cognito only (usersEnterpriseSQL).
 	cIss := getenv("COGNITO_ISSUER", defaultCognitoIssuer)
 	cClient := getenv("COGNITO_CLIENT_ID", defaultCognitoClientID)
-	cJWKS := os.Getenv("COGNITO_JWKS_URL") // "" → derived <issuer>/.well-known/jwks.json
+	cJWKS := os.Getenv("COGNITO_JWKS_URL")                     // "" → derived <issuer>/.well-known/jwks.json
 	cognitoCV := newCognitoVerifier(cIss, cClient, cJWKS, nil) // reused by the operator super-admin read escalation
 	var bv verifier = newMultiVerifier(
 		namedVerifier{idp: "cognito", iss: cIss, v: cognitoCV},
@@ -312,11 +356,11 @@ func main() {
 	logger.Info("tenant auth configured",
 		slog.Int("keys", len(keys)), slog.String("cognito_issuer", cIss),
 		slog.Bool("cognito_only", true))
-	// ADR-0031 Workstream B: mount the external-contract anti-corruption shims.
-	// They resolve the tenant through the SAME key map (single injection
-	// authority) but self-authenticate, so they sit in the auth-exempt set below.
-	// Must register BEFORE the middleware wraps the mux.
-	registerExternalShims(mux, pool, keys, logger)
+	// Every route is mounted by registerRoutes — the ONE registration point, so
+	// the OpenAPI drift gate (openapi_test.go) enumerates exactly what serves.
+	// Must run BEFORE the middleware wraps the mux.
+	mux := http.NewServeMux()
+	registerRoutes(mux, routeDeps{pool: pool, qcache: qcache, histPool: histPool, keys: keys, logger: logger})
 	// Operator super-admin cross-tenant READ escalation (dark by default; nil
 	// unless OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED is on AND JWT_SECRET is
 	// set). The READ twin of edge-api's write-plane escalation — see
@@ -358,13 +402,16 @@ func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.Hand
 		// customer_id comes from the auth middleware via context, never the
 		// request. This defensive check is unreachable behind the middleware,
 		// but it guarantees a scoped query can never run without $1.
-		if ep.class == routeTenantScoped {
-			cid, ok := customerIDFromContext(r.Context())
+		scoped := ep.class == routeTenantScoped
+		var cid int
+		if scoped {
+			c, ok := customerIDFromContext(r.Context())
 			if !ok {
 				failed.Add(1)
 				http.Error(w, `{"error":"missing or unknown X-Api-Key"}`, http.StatusUnauthorized)
 				return
 			}
+			cid = c
 			args = append(args, cid)
 		}
 		if ep.args != nil {
@@ -378,6 +425,27 @@ func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.Hand
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
+		// Tenant-scoped routes run inside a tx that stamps app.tenant_id (the
+		// FORCE-RLS GUC), via the shared runQueryJSON. The SETOF functions join
+		// FORCE ROW LEVEL SECURITY tables (core.equipments etc.) keyed on that GUC;
+		// without it the join yields zero rows and the route returns [] for EVERY
+		// tenant (the outer WHERE id_enterprise=$1 can't rescue rows RLS already
+		// dropped). Mirrors the /query path — $1 stays the primary fence, the GUC
+		// is the RLS co-enforcer. Global (non-scoped) routes need no tenant + run
+		// the plain path below.
+		if scoped {
+			payload, err := runQueryJSON(ctx, pool, cid, sql, args)
+			if err != nil {
+				failed.Add(1)
+				logger.Warn("query failed", slog.String("path", ep.path), slog.String("err", err.Error()))
+				http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+				return
+			}
+			served.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(payload)
+			return
+		}
 		rows, err := pool.Query(ctx, sql, args...)
 		if err != nil {
 			failed.Add(1)

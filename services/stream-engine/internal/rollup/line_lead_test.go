@@ -6,6 +6,9 @@ package rollup
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -39,14 +42,20 @@ func TestEngagedLineLead(t *testing.T) {
 // %[n]s/%[n]d in the two consts must be supplied, so a formatted statement
 // never contains a `%!` error verb that would explode at Exec time.
 func TestLineLeadSQLFormatting(t *testing.T) {
-	shift := fmt.Sprintf(ShiftLineLeadSQLForParity(), "ev", "ref", pgIntArrayLiteral([]int{3, 4}), 300)
-	hour := fmt.Sprintf(HourLineLeadSQLForParity(), "ev", "ref", pgIntArrayLiteral([]int{3}), 300)
+	// #248 de-shim: canonical arg tuple ev/ref/silver/gold/grain + extras (array, timeout).
+	// Distinct schema literals verify each table lands in its RIGHT schema post-de-shim:
+	// OEE grains → gold, equipments → ref, categorical cagg → silver.
+	shift := fmt.Sprintf(ShiftLineLeadSQLForParity(), "ev", "ref", "sil", "gold", "grn", pgIntArrayLiteral([]int{3, 4}), 300)
+	hour := fmt.Sprintf(HourLineLeadSQLForParity(), "ev", "ref", "sil", "gold", "grn", pgIntArrayLiteral([]int{3}), 300)
 	for _, tc := range []struct{ name, sql string }{{"shift", shift}, {"hour", hour}} {
 		if strings.Contains(tc.sql, "%!") {
 			t.Errorf("%s SQL has an unsatisfied fmt verb (%%!): %s", tc.name, tc.sql)
 		}
-		if !strings.Contains(tc.sql, "ev.equipment_oee_") {
-			t.Errorf("%s SQL missing EvSchema-qualified target table", tc.name)
+		if !strings.Contains(tc.sql, "gold.equipment_oee_") {
+			t.Errorf("%s SQL missing GoldSchema-qualified OEE target table", tc.name)
+		}
+		if !strings.Contains(tc.sql, "sil.equipment_categorical") {
+			t.Errorf("%s SQL missing SilverSchema-qualified categorical cagg", tc.name)
 		}
 		if !strings.Contains(tc.sql, "ref.equipments") {
 			t.Errorf("%s SQL missing RefSchema-qualified equipments", tc.name)
@@ -54,5 +63,83 @@ func TestLineLeadSQLFormatting(t *testing.T) {
 		if !strings.Contains(tc.sql, "'{3") {
 			t.Errorf("%s SQL missing the enterprise array literal", tc.name)
 		}
+	}
+}
+
+// #207: the SHIFT line-lead lines-CTE window was widened 2d → 25d so RunShift's
+// oldest-first backlog drain (30-day eligible set) computes LINE grains for an
+// outage older than the live 2-day lookback. Guard the constant so a future edit
+// can't silently re-narrow it, and confirm it agrees with the pass's own UPDATE
+// guard so the whole selected set is writable.
+func TestShiftLineLeadWindow_widened(t *testing.T) {
+	sql := ShiftLineLeadSQLForParity()
+	if strings.Contains(sql, "interval '2 days'") {
+		t.Error("shift line-lead still capped at 2 days — outage-old line shifts won't backfill")
+	}
+	if !strings.Contains(sql, "el.ts_value >= now() - interval '25 day'") {
+		t.Error("shift line-lead lines-CTE window must be widened to 25 days (matches the UPDATE guard)")
+	}
+	if !strings.Contains(sql, "e.ts_value >= now() - interval '25 day'") {
+		t.Error("shift line-lead UPDATE guard drifted from 25 days")
+	}
+	// The HOUR line-lead pass is driven purely by hour_elig (no ts_value window in
+	// its lines CTE); it must carry neither the 2d nor the 25d shift filter.
+	hour := HourLineLeadSQLForParity()
+	if strings.Contains(hour, "interval '2 days'") || strings.Contains(hour, "interval '25 day'") {
+		t.Error("hour line-lead unexpectedly gained a lines-CTE ts_value window")
+	}
+}
+
+// TestLineLeadSQLAlwaysGetsPlannedPred guards the 2026-09-28 hotfix: the hour
+// backfill formatted hourLineLeadSQL without withPlannedPred, leaving a bare
+// "WHERE /*PLANNED_PRED*/" (a syntax error) in the live SQL. Every non-test use of
+// the raw line-lead constants must go through withPlannedPred.
+func TestLineLeadSQLAlwaysGetsPlannedPred(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`fmtR[DP]\(\s*(shift|hour)LineLeadSQL\b`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllString(string(src), -1) {
+			t.Errorf("%s: %q formats a raw line-lead SQL; wrap it in withPlannedPred(...)", f, m)
+		}
+	}
+	for name, sql := range map[string]string{"shift": ShiftLineLeadSQLForParity(), "hour": HourLineLeadSQLForParity()} {
+		if strings.Contains(sql, plannedPredToken) {
+			t.Errorf("%s line-lead parity SQL still contains the %s token", name, plannedPredToken)
+		}
+	}
+}
+
+// Lookback regression (2026-09-29): every pass that turns events into time-in-state
+// must include the event IN EFFECT at its scan bound, not only events that started
+// inside the lookback — else a stop begun before the bound silently disappears.
+func TestEventPassesIncludeEventInEffect(t *testing.T) {
+	for name, sql := range map[string]string{
+		"shiftLineLead": shiftLineLeadSQL, "hourLineLead": hourLineLeadSQL,
+		"hourEvents": hourEventsSQL, "shiftEvents": shiftEventsSQL,
+	} {
+		if strings.Count(sql, "ORDER BY p.ts_event DESC") != 1 || !strings.Contains(sql, "CROSS JOIN LATERAL") {
+			t.Errorf("%s: missing the per-equipment latest-event-before-bound seed", name)
+		}
+	}
+}
+
+// The week/month re-flag must mirror the rollup eligibility (tp > 1), else tp=1
+// rows get flags nothing ever clears; and the rollup must write scrap.
+func TestGrainReflagScopeAndScrap(t *testing.T) {
+	if !strings.Contains(grainReflagSQL, "tp_equipment > 1") {
+		t.Error("grainReflagSQL must be scoped to tp_equipment > 1 (the eligibility)")
+	}
+	if !strings.Contains(grainRollupSQL, "scrap           = COALESCE(s.scrap, 0)") {
+		t.Error("grainRollupSQL must write scrap = Σ daily scrap")
 	}
 }

@@ -69,14 +69,39 @@ rm -rf /tmp/packiot-stack
 # the container (docker rm -f timescaledb && re-run this docker run) — a
 # plain `docker restart` reuses the baked-in Config.Cmd and changes nothing.
 #
-# timescaledb MUST stay first in the list (TimescaleDB requirement).
+# ADR-0063 end state (2026-10-15): no timescaledb — packiot_analytics has no TimescaleDB objects
+# and the F1 `packiot` database was decommissioned; pg_cron's home is the `postgres` database.
 # pg_stat_statements is preloaded for the DB observability dashboard
 # (top/slow-query panels); it is a lightweight in-memory query-stats collector.
 mkdir -p /var/lib/postgresql/data
+# MEMORY OVERCOMMIT (2026-09-24): strict accounting (PostgreSQL docs "Linux Memory
+# Overcommit"). With the default heuristic mode a runaway backend (7 GB chunk-wise
+# aggregate, 11:23 incident) was SIGKILLed by the kernel OOM-killer → postmaster must
+# reset ALL sessions + crash-recover. Mode 2 makes that backend get "out of memory" and
+# only its query fails. Ratio 90 → CommitLimit = swap + 90% RAM (~16.5 GB on r7g.large);
+# the default 50 (~10.1 GB) sits BELOW normal Committed_AS (~9.6 GB) and would refuse
+# ordinary allocations.
+cat > /etc/sysctl.d/60-postgres-overcommit.conf <<'SYSCTL'
+vm.overcommit_memory = 2
+vm.overcommit_ratio = 90
+SYSCTL
+sysctl -q -p /etc/sysctl.d/60-postgres-overcommit.conf
 
+
+# LOG ROTATION (2026-09-24): the container ran with an unbounded json-file log —
+# log_min_duration_statement=3000 + auto_explain grew it to 28.8 GB (more than half the
+# disk's "used" 51 GB), and the DB-box Alloy agent re-reading it pegged a CPU on this
+# 2-vCPU box. 5 × 200 MB caps it at 1 GB; slow-query history lives in Loki (relay).
+# Like every flag here, it applies on container RECREATE (maintenance window).
+# SHM (2026-09-24): Docker's default /dev/shm is 64 MB; Postgres parallel workers
+# allocate dynamic shared memory there → "could not resize shared memory segment …
+# No space left on device" on large parallel hash joins. 1 GB (≈ the parallel-query
+# working set on this 15 GB box).
 docker run -d \
   --name timescaledb \
   --restart unless-stopped \
+  --log-driver json-file --log-opt max-size=200m --log-opt max-file=5 \
+  --shm-size=1g \
   --platform linux/arm64 \
   -p 0.0.0.0:5432:5432 \
   -e POSTGRES_PASSWORD="$DB_PASS" \
@@ -85,212 +110,44 @@ docker run -d \
   -e TIMESCALEDB_TELEMETRY=off \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data \
   packiot-postgres:local \
-  -c "shared_preload_libraries=timescaledb,pg_cron,pg_stat_statements" \
-  -c "cron.database_name=${db_name}"
+  -c "shared_preload_libraries=pg_cron,pg_stat_statements,auto_explain" \
+  -c "cron.database_name=postgres" \
+  -c "max_connections=200" \
+  -c "pg_stat_statements.max=10000" -c "pg_stat_statements.track=all" \
+  -c "auto_explain.log_min_duration=3000" -c "auto_explain.log_analyze=on" \
+  -c "auto_explain.log_nested_statements=on" \
+  -c "log_min_duration_statement=3000" -c "track_io_timing=on" -c "log_checkpoints=on" \
+  -c "log_lock_waits=on" -c "log_autovacuum_min_duration=0" \
+  -c "log_line_prefix=%m [%p] %u@%d %a "
+# The observability flags above (auto_explain, pg_stat_statements.track=all, lock-wait /
+# checkpoint / autovacuum logging) were LIVE-only until the 2026-09-24 recreate — codified
+# here so a rebuilt box keeps the slow-query + nested-statement visibility the DB dashboards
+# and incident work rely on (track=all is what exposes statements inside procedures).
+# max_connections raised 50→200 (2026-09-22): staging has no server-side headroom —
+# a near-idle stack already sat at 49/50 (analytics pool 24 + Superset 14 [bypasses
+# pgbouncer] + misc 11), so any load test / new tenant hit "too many connections".
+# r7g.large has 15GiB RAM; +150 backends ≈ +1.4GiB worst-case, well within headroom.
+# Set here as a -c flag (postmaster command line) so it survives a container RECREATE,
+# not just a restart — this line overrides postgresql.conf AND postgresql.auto.conf.
 
 echo "TimescaleDB container started, waiting for PostgreSQL to accept connections..."
 until docker exec timescaledb pg_isready -U ${db_user} 2>/dev/null; do sleep 5; done
 echo "PostgreSQL ready"
 
 # ── Create extensions ──────────────────────────────────────────────────────────
-# docker-entrypoint-initdb.d/00-init-extensions.sh already runs inside the
-# container on first boot, but we guard here too for idempotency.
-docker exec timescaledb psql -U ${db_user} -d ${db_name} <<SQL
-CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+# pg_cron lives in `postgres` (cron.database_name above) and schedules into packiot_analytics with
+# cron.schedule_in_database — scripts/ops/adr0063-c2-pgcron-jobs.sql registers those jobs once the
+# analytics database is restored. pg_stat_statements: per-query stats for the DB dashboards (the
+# preload is cluster-wide; packiot_analytics creates its own copy of the extension via its schema).
+# The F1 objects this script used to create in `packiot` (uns_* tables, oee_compute_uns_metrics,
+# cleanup_old_staging_data with drop_chunks, the VACUUM job, piot_proc_refresh_runtime) were retired
+# with that database (2026-10-15).
+docker exec timescaledb psql -U ${db_user} -d postgres <<SQL
 CREATE EXTENSION IF NOT EXISTS pg_cron;
-GRANT USAGE ON SCHEMA cron TO "${db_user}";
--- pg_stat_statements: per-query execution stats for the DB observability
--- dashboard. Requires pg_stat_statements in shared_preload_libraries (above).
--- The shadow DB (packiot_shadow) needs the same CREATE EXTENSION run in it
--- wherever it is provisioned; the preload is cluster-wide so one flag covers
--- both databases.
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+SELECT cron.schedule('cleanup-cron-job-run-details', '15 3 * * *',
+       \$\$DELETE FROM cron.job_run_details WHERE end_time < now() - interval '7 days'\$\$);
 SQL
-echo "Database '${db_name}' ready with TimescaleDB + pg_cron + pg_stat_statements"
-
-# ── OEECloud tables ────────────────────────────────────────────────────────────
-# uns_equipment_current_metrics: one row per equipment, tracks latest UNS state.
-# The oeecloud UPSERT batch includes this table; if it's missing the entire
-# multi-statement transaction rolls back silently (PostgreSQL implicit txn).
-docker exec timescaledb psql -U ${db_user} -d ${db_name} <<SQL
-CREATE TABLE IF NOT EXISTS public.uns_equipment_current_metrics (
-  id_enterprise  INTEGER,
-  id_site        INTEGER,
-  id_area        INTEGER,
-  id_equipment   INTEGER UNIQUE,
-  state          INTEGER,
-  speed          NUMERIC(12,4),
-  updated_at     TIMESTAMPTZ DEFAULT NOW()
-);
-SQL
-echo "OEECloud tables created"
-
-# ── OEE aggregation function + pg_cron job ────────────────────────────────────
-# oee_compute_uns_metrics() is the staging equivalent of production's
-# piot_proc_refresh_runtime.  It reads the last 5 min of equipment_values,
-# computes Quality/Performance/Availability/OEE, and upserts into uns_metrics.
-# plpgsql resolves table names at call time, so this is safe to create before
-# the app schema is loaded on a fresh deploy — the cron job silently no-ops
-# until equipment_values / uns_metrics / equipments exist.
-# cron.schedule() is idempotent: same job name replaces the existing entry.
-docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
-CREATE OR REPLACE FUNCTION public.oee_compute_uns_metrics()
-RETURNS void
-LANGUAGE plpgsql
-AS $BODY$
-DECLARE
-    _now TIMESTAMPTZ := NOW();
-BEGIN
-    INSERT INTO uns_metrics (
-        ts_value, id_enterprise, id_site, id_area, id_equipment,
-        metric_name, metric_value, metric_type
-    )
-    SELECT
-        _now,
-        agg.id_enterprise, agg.id_site, agg.id_area, agg.id_equipment,
-        m.metric_name, m.metric_value, m.metric_type
-    FROM (
-        SELECT
-            ev.id_equipment, ev.id_enterprise, ev.id_site, ev.id_area,
-            COALESCE(SUM(ev.net_production_incr), 0)           AS net_prod,
-            COALESCE(SUM(ev.scrap_incr),           0)           AS scrap,
-            COALESCE(AVG(ev.speed),                0)           AS avg_speed,
-            COUNT(*)                                            AS ticks,
-            SUM(CASE WHEN ev.state = 6 THEN 1 ELSE 0 END)      AS exec_ticks,
-            COALESCE(MAX(e.production_speed),     120)          AS ideal_speed
-        FROM equipment_values ev
-        JOIN equipments e ON e.id_equipment = ev.id_equipment
-        WHERE ev.ts_value > NOW() - INTERVAL '5 minutes'
-        GROUP BY ev.id_equipment, ev.id_enterprise, ev.id_site, ev.id_area
-    ) agg
-    CROSS JOIN LATERAL (
-        VALUES
-            ('quality_percent',
-             CASE WHEN (agg.net_prod + agg.scrap) > 0
-                  THEN ROUND(((agg.net_prod / (agg.net_prod + agg.scrap)) * 100)::numeric, 2)
-                  ELSE 100.0 END,
-             'percent'),
-            ('performance_percent',
-             CASE WHEN agg.ideal_speed > 0
-                  THEN ROUND((LEAST(agg.avg_speed / agg.ideal_speed, 1.0) * 100)::numeric, 2)
-                  ELSE 0.0 END,
-             'percent'),
-            ('availability_percent',
-             CASE WHEN agg.ticks > 0
-                  THEN ROUND(((agg.exec_ticks::numeric / agg.ticks) * 100)::numeric, 2)
-                  ELSE 0.0 END,
-             'percent'),
-            ('oee_percent',
-             CASE WHEN agg.ticks > 0 AND agg.ideal_speed > 0
-                  THEN ROUND((
-                          (CASE WHEN (agg.net_prod + agg.scrap) > 0
-                                THEN agg.net_prod / (agg.net_prod + agg.scrap)
-                                ELSE 1.0 END)
-                        * LEAST(agg.avg_speed / agg.ideal_speed, 1.0)
-                        * (agg.exec_ticks::numeric / agg.ticks)
-                        * 100
-                  )::numeric, 2)
-                  ELSE 0.0 END,
-             'percent'),
-            ('total_production', ROUND(agg.net_prod::numeric, 0), 'count'),
-            ('total_scrap',      ROUND(agg.scrap::numeric,    0), 'count'),
-            ('avg_speed',        ROUND(agg.avg_speed::numeric, 2), 'units_per_min')
-    ) AS m(metric_name, metric_value, metric_type)
-    ON CONFLICT (ts_value, id_equipment, metric_name)
-        DO UPDATE SET metric_value = EXCLUDED.metric_value;
-END;
-$BODY$;
-
-SELECT cron.schedule(
-    'oee-compute',
-    '* * * * *',
-    'SELECT public.oee_compute_uns_metrics()'
-);
-SQL
-echo "OEE function created + pg_cron job scheduled (every minute)"
-
-# ── Periodic data cleanup via pg_cron ────────────────────────────────────
-# Deletes staging rows older than 90 days from high-volume time-series tables.
-# Uses a function so pg_cron only needs one command string; plpgsql silently
-# no-ops if a table doesn't exist yet (fresh deploy before app schema loads).
-# cron.schedule() is idempotent: same job name replaces an existing entry.
-docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
-CREATE OR REPLACE FUNCTION public.cleanup_old_staging_data()
-RETURNS void LANGUAGE plpgsql AS $BODY$
-DECLARE
-    deleted_count int;
-    cutoff_ev   TIMESTAMPTZ := NOW() - INTERVAL '90 days';
-    cutoff_uns  TIMESTAMPTZ := NOW() - INTERVAL '90 days';
-BEGIN
-    -- Batch-delete 5000 rows at a time to avoid long table locks on
-    -- equipment_values (which can have millions of rows).  A full-table DELETE
-    -- in a single transaction held a lock for ~56 minutes, breaking the
-    -- oeecloud DB pool.  Each 5000-row batch commits immediately and releases
-    -- the lock, keeping write latency under ~100 ms per chunk.
-    LOOP
-        BEGIN
-            DELETE FROM equipment_values WHERE ts_value IN (
-                SELECT ts_value FROM equipment_values WHERE ts_value < cutoff_ev LIMIT 5000
-            );
-            GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        EXCEPTION WHEN undefined_table THEN
-            EXIT;
-        END;
-        EXIT WHEN deleted_count = 0;
-        PERFORM pg_sleep(0.05);
-    END LOOP;
-
-    LOOP
-        BEGIN
-            DELETE FROM equipment_events WHERE ts_event IN (
-                SELECT ts_event FROM equipment_events WHERE ts_event < cutoff_ev LIMIT 5000
-            );
-            GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        EXCEPTION WHEN undefined_table THEN
-            EXIT;
-        END;
-        EXIT WHEN deleted_count = 0;
-        PERFORM pg_sleep(0.05);
-    END LOOP;
-
-    LOOP
-        BEGIN
-            DELETE FROM uns_metrics WHERE ts_value IN (
-                SELECT ts_value FROM uns_metrics WHERE ts_value < cutoff_uns LIMIT 5000
-            );
-            GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        EXCEPTION WHEN undefined_table THEN
-            EXIT;
-        END;
-        EXIT WHEN deleted_count = 0;
-        PERFORM pg_sleep(0.05);
-    END LOOP;
-END;
-$BODY$;
-
-SELECT cron.schedule(
-    'cleanup-old-data',
-    '0 3 * * *',
-    'SELECT public.cleanup_old_staging_data()'
-);
-SQL
-echo "pg_cron daily cleanup registered (03:00 UTC, keeps last 90 days of equipment_values / equipment_events / uns_metrics)"
-
-# ── OEE engine orchestrator via pg_cron ───────────────────────────────────
-# piot_proc_refresh_runtime (db/20-oee-engine-parity.sql) is prod's master OEE
-# orchestrator: drains production_orders_runtime.recalc_needed and fills the
-# equipment/area/site runtime tables. It is a PROCEDURE with internal COMMITs,
-# so it MUST be scheduled as a top-level CALL — wrapping it in a guard function
-# would fail with "invalid transaction termination". On a fresh deploy the runs
-# fail (recorded in cron.job_run_details) until the app schema loads; harmless.
-# cron.schedule() is idempotent: same job name replaces an existing entry.
-docker exec timescaledb psql -U ${db_user} -d ${db_name} <<'SQL'
-SELECT cron.schedule(
-    'oee-refresh-runtime',
-    '* * * * *',
-    'CALL piot_proc_refresh_runtime();'
-);
-SQL
-echo "pg_cron OEE orchestrator registered (every minute: CALL piot_proc_refresh_runtime)"
+echo "postgres database ready with pg_cron + pg_stat_statements"
 
 echo "=== DB init complete $(date -u) ==="

@@ -3,9 +3,9 @@
 // regression cannot silently corrupt the served plane.
 //
 // RELATIONSHIP TO dq.go (the DETECTOR):
-//   - dq.go / RunDQScan is a PURE SIDE-WRITE: it DETECTS violations (oee>1,
-//     net>gross, negatives) and RECORDS a data_quality_event, but NEVER alters a
-//     served value (instrument-before-remediate).
+//   - dq.go / RunDQScan is a PURE SIDE-WRITE: it DETECTS violations (impossible
+//     factors, net>gross, negatives) and RECORDS a data_quality_event, but NEVER
+//     alters a served value (instrument-before-remediate).
 //   - THIS file / RunSilverClamp is the REMEDIATE half: it CLAMPS out-of-range
 //     Gold values to their invariant bound so they never reach a dashboard —
 //     and, critically, it is NEVER SILENT: every clamp that actually CHANGES a
@@ -15,21 +15,22 @@
 //     on ~0 rows; if it starts firing a lot, that is exactly the signal of a NEW
 //     regression, surfaced instead of buried.
 //
-// THE INVARIANTS (ADR-0036 §4):
-//   - 0 ≤ oee, oee_a, oee_p, oee_q ≤ 1  → LEAST(GREATEST(x,0),1).
-//   - net ≤ gross                       → net is LOWERED to gross where it exceeds
-//     it (good output can never exceed consumed input; e.g. a counter reset spike
-//     net=523082 vs gross=11), paired with an INVARIANT_CLAMPED_NET_GT_GROSS event
-//     carrying the pre-clamp net. scrap stays GREATEST(scrap,0) (= gross-net = 0 at
-//     the shift/hour grains where scrap IS gross-net; the summed-scrap day/week/
-//     month case is left intact, see clampNegCols note). GROSS is NOT lowered — the
-//     comparator identity fingerprints count/sum(gross)/sum(running_time), none of
-//     which this touches, so lowering net stays parity-safe across F2↔F3. oee_q
-//     (net/gross) is additionally bounded by the [0,1] clamp above.
-//   - non-negative counts/durations     → GREATEST(x,0).
-//   - Performance capped at a sane bound → oee_p (today the residual
-//     oee/(oee_a·oee_q), which is UNBOUNDED when oee_a·oee_q is tiny) is bounded
-//     to ≤1 by the [0,1] clamp, with the pre-clamp residual exposed in the event.
+// THE INVARIANTS ENFORCED TODAY (ADR-0036 §4 as relaxed on 2026-09-29, "store
+// what was measured" — see migrations/t-oee-uncapped-data):
+//   - 0 ≤ oee_a ≤ 1                     → LEAST(GREATEST(oee_a,0),1). Availability
+//     is the ONLY capped factor (running time cannot exceed available time; the
+//     *_oee_bounds CHECKs still enforce oee_a ≤ 1).
+//   - oee, oee_p, oee_q ≥ 0             → GREATEST(x,0). NOT capped at 1: P > 1
+//     means the configured ideal speed is too low, hourly Q > 1 means units in
+//     transit between sensors. The data keeps them; the UI decides how to show them.
+//   - non-negative counts/durations     → GREATEST(x,0) over clampNegCols. SCRAP is
+//     NOT in that set: it is signed (see clampNegCols).
+//   - net ≤ gross is NOT enforced: net is never lowered (netGtGross is a constant
+//     false in silverPredicates). The condition stays visible through RunDQScan's
+//     NET_GT_GROSS detector. INVARIANT_CLAMPED_NET_GT_GROSS is kept as a rule name
+//     but no longer fires.
+//   - gross and net are never lowered by this pass; only a negative value is
+//     raised to 0.
 //
 // WHY A SEPARATE PASS (not inline in each rollup UPDATE):
 //   - ONE home for the invariant contract (ADR-0036 §4: "Silver is a named layer
@@ -71,41 +72,47 @@ const (
 	DQRuleInvariantClampedOEEP     DQRule = "INVARIANT_CLAMPED_OEE_P"
 	DQRuleInvariantClampedOEEQ     DQRule = "INVARIANT_CLAMPED_OEE_Q"
 	DQRuleInvariantClampedNegative DQRule = "INVARIANT_CLAMPED_NEGATIVE"
-	// DQRuleInvariantClampedNetGtGross — net (good output) exceeded gross (consumed
-	// input): physically impossible, so net is lowered to gross. observed_value is
-	// the PRE-clamp net (e.g. the 523082-vs-11 reset spike). Distinct from dq.go's
-	// pure-detection NET_GT_GROSS: this rule records an ACTUAL clamp of a Gold row.
+	// DQRuleInvariantClampedNetGtGross — RETIRED 2026-09-29. It recorded net being
+	// lowered to gross (observed_value = the pre-clamp net, e.g. a 523082-vs-11
+	// reset spike). net > gross is no longer clamped (silverPredicates' netGtGross is
+	// a constant false), so this rule never fires now; the name is kept for the SQL
+	// shape and for historical events. dq.go's NET_GT_GROSS still detects it.
 	DQRuleInvariantClampedNetGtGross DQRule = "INVARIANT_CLAMPED_NET_GT_GROSS"
 )
 
 // clampNegCols is the non-negative count/duration set clamped on every equipment
-// grain (GREATEST(x,0)). All are present on all five equipment_runtime_* tables
-// (dq.go reads them from each; the entity/grain sum-lists write them).
+// grain (GREATEST(x,0)). SCRAP IS NOT IN IT since 2026-09-29: scrap = gross - net
+// is SIGNED — a negative hour is units in transit between the infeed and outfeed
+// sensors (a fact), and flooring it inflated scrap over every period. All the
+// columns below are present on all five equipment_runtime_* tables (dq.go reads
+// them from each; the entity/grain sum-lists write them).
 //
-// `scrap` is IN this set (a non-negative count), NOT enforced as scrap==gross-net.
-// WHY: at the shift/hour grains scrap IS gross-net, so GREATEST(scrap,0) already
-// yields GREATEST(gross-net,0) when net>gross — the ADR-0036 §4 "net≤gross via
-// scrap" enforcement. But at the DAY/WEEK/MONTH grains scrap is SUMMED from
-// children (Σ max(child.gross-child.net,0)), which legitimately EXCEEDS
-// GREATEST(Σgross-Σnet,0) — so forcing scrap=gross-net there would corrupt correct
-// aggregate scrap (a live F3 check found 20 week + 34 day + 8 month such rows with
-// NON-negative scrap that are NOT violations). Treating scrap as a plain
-// non-negative column is the correct, grain-uniform generalization; net≤gross is
-// still enforced by the oee_q [0,1] clamp (oee_q=net/gross capped at 1) and the
-// raw net>gross condition stays visible via RunDQScan's NET_GT_GROSS detector.
+// History: until 2026-09-29 scrap WAS in this set, and GREATEST(scrap,0) plus the
+// oee_q ≤ 1 clamp acted as the ADR-0036 §4 "net ≤ gross" enforcement. Both are
+// gone: net > gross is now stored as measured and only DETECTED (RunDQScan's
+// NET_GT_GROSS), never repaired here.
 var clampNegCols = []string{
-	"gross", "net", "scrap", "available_time", "running_time", "stopped_time",
+	"gross", "net", "available_time", "running_time", "stopped_time",
 	"planned_downtime", "downtime", "changeover_time", "idle_time",
 	"idle_starved", "idle_blocked", "ideal_production",
 }
 
-// silverFactorCols — the four OEE factors, each bounded to [0,1] and
-// NULL-PRESERVING: RunUnmetered writes NULL to oee/oee_a/oee_p/oee_q to mark a
+// silverFactorCols — the four OEE factors, each clamped per factorClamp (oee_a to
+// [0,1], the others to ≥ 0 only) and NULL-PRESERVING: RunUnmetered writes NULL to oee/oee_a/oee_p/oee_q to mark a
 // row "not metered", and the clamp must keep that NULL (a NULL is not a violation).
 var silverFactorCols = []string{"oee", "oee_a", "oee_p", "oee_q"}
 
-// factorClamp is the in-bounds form of a factor column: LEAST(GREATEST(x,0),1).
-func factorClamp(a, c string) string { return fmt.Sprintf("LEAST(GREATEST(%s.%s, 0), 1)", a, c) }
+// factorClamp is the in-bounds form of a factor column. Since 2026-09-29 only the
+// LOWER bound is enforced (a negative ratio is not a measurement): P > 1 means the
+// configured ideal speed is too low and hourly Q > 1 means units in transit — the
+// data keeps them and the UI decides how to show them. AVAILABILITY keeps [0,1]
+// (running time cannot exceed the available time; *_oee_bounds still enforces it).
+func factorClamp(a, c string) string {
+	if c == "oee_a" {
+		return fmt.Sprintf("LEAST(GREATEST(%s.%s, 0), 1)", a, c)
+	}
+	return fmt.Sprintf("GREATEST(%s.%s, 0)", a, c)
+}
 
 // silverNegLeast is LEAST over the non-negative set — the most-negative observed
 // value recorded on the NEGATIVE event (mirrors dq.go's minNeg semantics).
@@ -122,14 +129,16 @@ func silverNegLeast(a string) string {
 // the SINGLE SOURCE OF TRUTH shared by the detector and the clamp UPDATE — so an
 // event fires exactly when, and only when, a clamp changes a value:
 //   - factors[i]: the i-th OEE factor is non-null AND differs from its clamped form
-//     (NULL excluded → the "not metered" NULL is preserved, never a violation);
-//   - negs[i]: the i-th count/duration (scrap included) is negative.
+//     per factorClamp (NULL excluded → the "not metered" NULL is preserved, never a
+//     violation);
+//   - negs[i]: the i-th count/duration in clampNegCols (scrap NOT included) is
+//     negative;
+//   - netGtGross: the constant "false" (net > gross is no longer clamped).
 //
 // Keying on "differs from the clamped form" makes the pass TRULY IDEMPOTENT: once
-// clamped, every term is false — the row is never re-selected. net≤gross is
-// enforced through the oee_q [0,1] clamp (oee_q=net/gross capped at 1); the raw
-// net>gross condition stays visible via RunDQScan's NET_GT_GROSS rule (this pass
-// records ACTUAL clamps only).
+// clamped, every term is false — the row is never re-selected. net ≤ gross is NOT
+// enforced (oee_q is no longer capped at 1); the raw net>gross condition stays
+// visible via RunDQScan's NET_GT_GROSS rule (this pass records ACTUAL clamps only).
 func silverPredicates(a string) (factors []string, negs []string, netGtGross string) {
 	factors = make([]string, len(silverFactorCols))
 	for i, c := range silverFactorCols {
@@ -139,10 +148,12 @@ func silverPredicates(a string) (factors []string, negs []string, netGtGross str
 	for i, c := range clampNegCols {
 		negs[i] = fmt.Sprintf("%s.%s < 0", a, c)
 	}
-	// net>gross: the clamp lowers net to gross, so this is both the detect
-	// predicate and the "clamp would change net" idempotency test (after net=gross
-	// it is false → the row is never re-selected).
-	netGtGross = fmt.Sprintf("%[1]s.net > %[1]s.gross", a)
+	// net>gross is NO LONGER clamped (2026-09-29): lowering net to gross threw away
+	// real good output (transit within an hour; an undercounting infeed meter over a
+	// shift). The predicate stays in the SQL shape as a constant false so the
+	// detect/clamp statements keep their structure; RunDQScan's NET_GT_GROSS still
+	// DETECTS the condition without changing anything.
+	netGtGross = "false"
 	return factors, negs, netGtGross
 }
 
@@ -155,9 +166,12 @@ func silverWhere(factors, negs []string, netGtGross string) string {
 // silverDetectSQL upserts one INVARIANT_CLAMPED_* event per (row, changed metric)
 // BEFORE the clamp overwrites the value, so observed_value is the pre-clamp value.
 // Its `violated` flags are the SAME per-metric change tests the clamp WHERE uses.
-// %[1]s=EvSchema, %[2]s=grain table, %[3]s=RefSchema (equipments→id_enterprise),
-// %[4]s=grain label literal (trusted, static). $1 = recency window interval.
-func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
+// %[1]s=EvSchema (data_quality_event lives in public — genuine, route-dependent),
+// %[2]s=grain table, %[3]s=RefSchema (equipments→id_enterprise),
+// %[4]s=grain label literal (trusted, static), %[19]s=GoldSchema (the *_oee_* grain
+// the detect READS lives in gold post-medallion; #251 — split from EvSchema so the
+// public shim can drop). $1 = recency window interval.
+func silverDetectSQL(evSchema, table, refSchema, grainLabel, goldSchema string) string {
 	fs, negs, netGtGross := silverPredicates("r")
 	negAny := strings.Join(negs, " OR ")
 	where := silverWhere(fs, negs, netGtGross)
@@ -166,7 +180,7 @@ func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
 	    (id_enterprise, id_equipment, grain, bucket_ts, rule, observed_value, severity)
 	SELECT eq.id_enterprise, r.id_equipment, '%[4]s', r.ts_value::timestamptz,
 	       v.rule, v.observed, 'error'
-	  FROM %[1]s.%[2]s r
+	  FROM %[19]s.%[2]s r
 	  JOIN %[3]s.equipments eq ON eq.id_equipment = r.id_equipment
 	  CROSS JOIN LATERAL (VALUES
 	      ('%[5]s'::text, r.oee,   %[11]s),
@@ -188,31 +202,22 @@ func silverDetectSQL(evSchema, table, refSchema, grainLabel string) string {
 		DQRuleInvariantClampedOEEQ, DQRuleInvariantClampedNegative,
 		silverNegLeast("r"),
 		fs[0], fs[1], fs[2], fs[3], negAny, where,
-		DQRuleInvariantClampedNetGtGross, netGtGross)
+		DQRuleInvariantClampedNetGtGross, netGtGross, goldSchema)
 }
 
 // silverClampSQL clamps every value the invariants would move to its bound. The
 // WHERE selects ONLY rows where a clamp changes a value, so on clean data it writes
 // zero rows (no-op, byte-identical → parity/identity hold) and RowsAffected == the
 // number of rows clamped. NULL factors are preserved by the CASE guard AND by the
-// NULL-safe WHERE. %[1]s=EvSchema, %[2]s=grain table. $1 = recency window interval.
-func silverClampSQL(evSchema, table string) string {
+// NULL-safe WHERE. %[1]s=GoldSchema (the *_oee_* grain lives in gold post-medallion;
+// #251), %[2]s=grain table. $1 = recency window interval.
+func silverClampSQL(goldSchema, table string) string {
 	fs, negs, netGtGross := silverPredicates("r")
 	var sets []string
 	for _, c := range silverFactorCols {
 		sets = append(sets, fmt.Sprintf("%[1]s = CASE WHEN r.%[1]s IS NULL THEN NULL ELSE %[2]s END", c, factorClamp("r", c)))
 	}
 	for _, c := range clampNegCols {
-		if c == "net" {
-			// net carries BOTH invariants: non-negative AND net ≤ gross. One SET
-			// clause per column, so fold them: GREATEST(LEAST(net,gross),0). All
-			// terms read the OLD row (a single UPDATE), so gross here is pre-clamp;
-			// if gross itself is negative its own GREATEST(gross,0) drives net to 0
-			// too, keeping net ≤ gross. Idempotent: once net ≤ gross and ≥ 0 this is
-			// a fixed point.
-			sets = append(sets, "net = GREATEST(LEAST(r.net, r.gross), 0)")
-			continue
-		}
 		sets = append(sets, fmt.Sprintf("%[1]s = GREATEST(r.%[1]s, 0)", c))
 	}
 	set := "\n\t       " + strings.Join(sets, ",\n\t       ")
@@ -220,13 +225,14 @@ func silverClampSQL(evSchema, table string) string {
 	return fmt.Sprintf(`
 	UPDATE %[1]s.%[2]s r SET%[3]s
 	 WHERE r.ts_value >= now() - $1::interval
-	   AND (%[4]s)`, evSchema, table, set, where)
+	   AND (%[4]s)`, goldSchema, table, set, where)
 }
 
 // RunSilverClamp enforces the Silver invariants on one destination's recently
 // computed Gold rows, pairing every clamp with an INVARIANT_CLAMPED_* event.
 // Returns the total number of rows clamped (0 on clean data — the expected
-// steady state post-source-fix). Off unless enabled (SILVER_CLAMP_ENABLED).
+// steady state post-source-fix). Runs only when enabled (SILVER_CLAMP_ENABLED,
+// default true).
 //
 // Per grain the detect+clamp run in ONE transaction so the pairing is atomic
 // (never a clamp without its event, never an event without the clamp committing),
@@ -260,10 +266,10 @@ func runSilverClampGrain(ctx context.Context, d flows.Dest, g dqGrainScan) (int6
 	}
 	// DETECT first (reads pre-clamp values → observed_value), THEN clamp. Same tx.
 	if _, err := tx.Exec(ctx,
-		silverDetectSQL(d.EvSchema, g.Table, d.RefSchema, g.Grain), g.Window); err != nil {
+		silverDetectSQL(d.EvSchema, g.Table, d.RefSchema, g.Grain, d.GoldSchema), g.Window); err != nil {
 		return 0, fmt.Errorf("detect: %w", err)
 	}
-	tag, err := tx.Exec(ctx, silverClampSQL(d.EvSchema, g.Table), g.Window)
+	tag, err := tx.Exec(ctx, silverClampSQL(d.GoldSchema, g.Table), g.Window)
 	if err != nil {
 		return 0, fmt.Errorf("clamp: %w", err)
 	}

@@ -50,7 +50,7 @@ environment: staging
 EOF
 
 # 3. Run:
-cd services/edge-transformer
+cd services/sparkplug-decoder
 CREDS_SOURCE=env \
 RABBITMQ_USER=guest RABBITMQ_PASSWORD=guest \
 RABBITMQ_HOST=localhost RABBITMQ_PORT=5672 \
