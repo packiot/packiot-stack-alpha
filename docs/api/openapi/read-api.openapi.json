@@ -1845,7 +1845,7 @@
     },
     "/v1/day-week-begin": {
       "get": {
-        "description": "The site's day-begin and week-begin offsets (seconds; week_begin is relative to Monday 00:00 and may be negative) for the equipment named by `topic`. Each row also carries the equipment's legacy topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "The site's day-begin and week-begin offsets (seconds; week_begin is relative to Monday 00:00 and may be negative) for the equipment named by `topic`. Each row also carries the equipment's legacy topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route).",
         "operationId": "get_v1_day_week_begin",
         "parameters": [
           {
@@ -1940,7 +1940,7 @@
     "/v1/downtime-reasons": {
       "get": {
         "deprecated": true,
-        "description": "**Superseded by `GET /v2/downtime-reasons`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nReason trees for the equipment named by `topics` (same line-only reasons rule as /v2). Rows carry id_equipment, downtime_reasons, scrap_reasons and the matched legacy topic string; there is no id_enterprise column on this route.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "**Superseded by `GET /v2/downtime-reasons`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nReason trees for the equipment named by `topics` (same line-only reasons rule as /v2). Rows carry id_equipment, downtime_reasons, scrap_reasons and the matched legacy topic string; there is no id_enterprise column on this route.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route).",
         "operationId": "get_v1_downtime_reasons",
         "parameters": [
           {
@@ -2118,7 +2118,7 @@
     "/v1/events-timeline": {
       "get": {
         "deprecated": true,
-        "description": "**Superseded by `GET /v2/events-timeline`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nRecent machine events (downtimes, setups, production-order changes) for the equipment named by `topics`, from `serving.events_timeline`. Each row also carries the equipment's legacy SparkPlug topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "**Superseded by `GET /v2/events-timeline`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nRecent machine events (downtimes, setups, production-order changes) for the equipment named by `topics`, from `serving.events_timeline`. Each row also carries the equipment's legacy SparkPlug topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route).",
         "operationId": "get_v1_events_timeline",
         "parameters": [
           {
@@ -2757,7 +2757,7 @@
     "/v1/pending-downtime": {
       "get": {
         "deprecated": true,
-        "description": "**Superseded by `GET /v2/pending-downtime`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nDowntime events that the operator has not classified yet, from `serving.pending_downtime`. Each row also carries the equipment's legacy SparkPlug topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "**Superseded by `GET /v2/pending-downtime`** (ADR-0061: identity is id_equipment, not a topic). Kept byte-stable for existing callers.\n\nDowntime events that the operator has not classified yet, from `serving.pending_downtime`. Each row also carries the equipment's legacy SparkPlug topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route).",
         "operationId": "get_v1_pending_downtime",
         "parameters": [
           {
@@ -3309,7 +3309,7 @@
     },
     "/v1/shift-hours": {
       "get": {
-        "description": "The shift calendar (one `shift_hours` array per equipment) that applies to the equipment named by `topic`. `begin_time`/`end_time` inside each element are seconds from the week begin, not clock times. Each row also carries the equipment's legacy topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "The shift calendar (one `shift_hours` array per equipment) that applies to the equipment named by `topic`. `begin_time`/`end_time` inside each element are seconds from the week begin, not clock times. Each row also carries the equipment's legacy topic string.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route).",
         "operationId": "get_v1_shift_hours",
         "parameters": [
           {
@@ -3409,7 +3409,7 @@
     },
     "/v1/shift-hours-by-enterprise": {
       "get": {
-        "description": "Same rows as GET /v1/shift-hours. The historical `?enterprise=` parameter is gone (ADR-0027): the enterprise is always the caller's tenant; the path is kept because the operator app caches it by URL.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "Same rows as GET /v1/shift-hours. The historical `?enterprise=` parameter is gone (ADR-0027): the enterprise is always the caller's tenant; the path is kept because the operator app caches it by URL.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route).",
         "operationId": "get_v1_shift_hours_by_enterprise",
         "parameters": [
           {
@@ -3509,7 +3509,7 @@
     },
     "/v2/downtime-reasons": {
       "get": {
-        "description": "One row per requested active machine or line (`serving.downtime_reasons_by_equipment`). Line-only reasons rule: a machine inside a line whose downtimes come from its lead machine gets the LINE's downtime tree; scrap reasons stay the machine's own.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "One row per requested active machine or line (`serving.downtime_reasons_by_equipment`). Line-only reasons rule: a machine inside a line whose downtimes come from its lead machine gets the LINE's downtime tree; scrap reasons stay the machine's own.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line outside the user's grant is refused with 403 before any data is read.",
         "operationId": "get_v2_downtime_reasons",
         "parameters": [
           {
@@ -3590,26 +3590,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
-          "403": {
-            "content": {
-              "text/plain": {
-                "examples": {
-                  "case1": {
-                    "summary": "{\"error\":\"forbidden\"}",
-                    "value": "{\"error\":\"forbidden\"}"
-                  },
-                  "case2": {
-                    "summary": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}",
-                    "value": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}"
-                  }
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorText"
-                }
-              }
-            },
-            "description": "Operator-tablet request only: the operator token belongs to another tenant, or a requested line is not granted to the user."
-          },
           "500": {
             "content": {
               "text/plain": {
@@ -3638,7 +3618,7 @@
     },
     "/v2/events-timeline": {
       "get": {
-        "description": "Recent machine events for the given id_equipment values (ADR-0061 P3, `serving.events_timeline_by_equipment`; same rows and order as the v1 route).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "Recent machine events for the given id_equipment values (ADR-0061 P3, `serving.events_timeline_by_equipment`; same rows and order as the v1 route).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line outside the user's grant is refused with 403 before any data is read.",
         "operationId": "get_v2_events_timeline",
         "parameters": [
           {
@@ -3712,26 +3692,6 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "content": {
-              "text/plain": {
-                "examples": {
-                  "case1": {
-                    "summary": "{\"error\":\"forbidden\"}",
-                    "value": "{\"error\":\"forbidden\"}"
-                  },
-                  "case2": {
-                    "summary": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}",
-                    "value": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}"
-                  }
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorText"
-                }
-              }
-            },
-            "description": "Operator-tablet request only: the operator token belongs to another tenant, or a requested line is not granted to the user."
           },
           "500": {
             "content": {
@@ -3853,7 +3813,7 @@
     },
     "/v2/operator-po-list": {
       "get": {
-        "description": "Production orders for the selected lines/sectors and their parent, keyed by id_equipment (ADR-0061 P3, `serving.operator_po_list_by_equipment`). `display_path` is a human label for display only, never an identifier.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "Production orders for the selected lines/sectors and their parent, keyed by id_equipment (ADR-0061 P3, `serving.operator_po_list_by_equipment`). `display_path` is a human label for display only, never an identifier.\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line outside the user's grant is refused with 403 before any data is read.",
         "operationId": "get_v2_operator_po_list",
         "parameters": [
           {
@@ -3928,26 +3888,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
-          "403": {
-            "content": {
-              "text/plain": {
-                "examples": {
-                  "case1": {
-                    "summary": "{\"error\":\"forbidden\"}",
-                    "value": "{\"error\":\"forbidden\"}"
-                  },
-                  "case2": {
-                    "summary": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}",
-                    "value": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}"
-                  }
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorText"
-                }
-              }
-            },
-            "description": "Operator-tablet request only: the operator token belongs to another tenant, or a requested line is not granted to the user."
-          },
           "500": {
             "content": {
               "text/plain": {
@@ -3976,7 +3916,7 @@
     },
     "/v2/pending-downtime": {
       "get": {
-        "description": "Unclassified downtime events for the given id_equipment values, newest first (`serving.pending_downtime_by_equipment`).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read.",
+        "description": "Unclassified downtime events for the given id_equipment values, newest first (`serving.pending_downtime_by_equipment`).\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET.\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line). A requested line outside the user's grant is refused with 403 before any data is read.",
         "operationId": "get_v2_pending_downtime",
         "parameters": [
           {
@@ -4038,26 +3978,6 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "content": {
-              "text/plain": {
-                "examples": {
-                  "case1": {
-                    "summary": "{\"error\":\"forbidden\"}",
-                    "value": "{\"error\":\"forbidden\"}"
-                  },
-                  "case2": {
-                    "summary": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}",
-                    "value": "{\"error\":\"line not permitted\",\"reason\":\"LINE_NOT_PERMITTED\"}"
-                  }
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorText"
-                }
-              }
-            },
-            "description": "Operator-tablet request only: the operator token belongs to another tenant, or a requested line is not granted to the user."
           },
           "500": {
             "content": {

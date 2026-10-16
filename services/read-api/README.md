@@ -65,8 +65,9 @@ carrying `x-operator-superadmin-token` may read another active tenant with `?idE
 **Operator line grants** (`operator_grants.go`, PRODT-172): when the operator nginx sends `X-Operator-Channel`
 with its fixed key, the user's token in `X-Operator-Authorization: Bearer …` must verify (else 401) and belong to
 the key's tenant (else 403). The operator reads are then limited to the role's `permissions.operator.lines` plus
-their descendants (super_user or no such array = every line; no role = nothing): `?equipment=` / `?topic(s)=`
-routes 403 `LINE_NOT_PERMITTED` before querying, `/v1/operator-po-list|details` drop other lines' rows.
+their descendants (super_user or no such array = every line; no role = nothing): `?equipment=` routes 403
+`LINE_NOT_PERMITTED` for a line outside the grant, the topic-keyed `?topic(s)=` routes 403 for any restricted
+user (identity is the id — use /v2), both before querying; `/v1/operator-po-list|details` drop other lines' rows.
 Without the header nothing changes; a super-admin escalation is unrestricted.
 
 ### Messaging

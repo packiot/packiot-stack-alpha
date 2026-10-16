@@ -657,8 +657,10 @@ func buildOpenAPISpec() (map[string]any, error) {
 		// PRODT-172 operator line grants (operator_grants.go): only on operator-tablet
 		// requests (X-Operator-Channel set by the operator nginx).
 		switch lineGrantPolicies[ep.path] {
-		case grantEquipmentParam, grantTopicParam:
-			desc += operatorGrantNote + " A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read."
+		case grantEquipmentParam:
+			desc += operatorGrantNote + " A requested line outside the user's grant is refused with 403 before any data is read."
+		case grantTopicParam:
+			desc += operatorGrantNote + " This topic-keyed route is refused with 403 for a user restricted to some lines (identity is the equipment id; use the /v2 route)."
 			resp["403"] = errResp("Operator-tablet request only: the operator token belongs to another tenant, or a requested line is not granted to the user.",
 				errBodyForbidden, errBodyLineNotPermitted)
 		case grantFilterRows:

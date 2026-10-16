@@ -20,7 +20,6 @@ import (
 // grantFakes installs fake lookups + a recording data query for one test.
 type grantFakes struct {
 	grants      lineGrants
-	topicEqs    map[string][]int
 	grantCalls  int
 	queryCalls  int
 	lastSQL     string
@@ -30,8 +29,8 @@ type grantFakes struct {
 
 func installGrantFakes(t *testing.T, f *grantFakes) {
 	t.Helper()
-	oldG, oldT, oldQ := loadLineGrants, loadTopicEquipments, scopedQueryJSON
-	t.Cleanup(func() { loadLineGrants, loadTopicEquipments, scopedQueryJSON = oldG, oldT, oldQ })
+	oldG, oldQ := loadLineGrants, scopedQueryJSON
+	t.Cleanup(func() { loadLineGrants, scopedQueryJSON = oldG, oldQ })
 	loadLineGrants = func(_ context.Context, _ *pgxpool.Pool, _ int, p operatorPrincipal) (lineGrants, error) {
 		f.grantCalls++
 		f.gotPrincipl = p
@@ -39,13 +38,6 @@ func installGrantFakes(t *testing.T, f *grantFakes) {
 			return lineGrants{}, nil
 		}
 		return f.grants, nil
-	}
-	loadTopicEquipments = func(_ context.Context, _ *pgxpool.Pool, _ int, topics []string) ([]int, error) {
-		var out []int
-		for _, tp := range topics {
-			out = append(out, f.topicEqs[tp]...)
-		}
-		return out, nil
 	}
 	scopedQueryJSON = func(_ context.Context, _ *pgxpool.Pool, _ int, sql string, args []any) ([]byte, error) {
 		f.queryCalls++
@@ -118,8 +110,10 @@ func TestOperatorGrants_V2ForeignLine403NoQuery(t *testing.T) {
 	}
 }
 
-func TestOperatorGrants_V1TopicsResolvedAndChecked(t *testing.T) {
-	f := &grantFakes{grants: restrictedTo(100, 101), topicEqs: map[string][]int{"L1": {100}, "L5": {500}}}
+// Topic-keyed /v1 routes cannot be line-checked by id: a restricted user is
+// refused on every one of them (any topic) and the data query never runs.
+func TestOperatorGrants_V1TopicRoutesRefusedForRestricted(t *testing.T) {
+	f := &grantFakes{grants: restrictedTo(100, 101)}
 	installGrantFakes(t, f)
 	h, _ := operatorStack(nil)
 	cases := []struct {
@@ -132,9 +126,8 @@ func TestOperatorGrants_V1TopicsResolvedAndChecked(t *testing.T) {
 		{"/v1/shift-hours?topic=L5", http.StatusForbidden},
 		{"/v1/shift-hours-by-enterprise?topic=L5", http.StatusForbidden},
 		{"/v1/day-week-begin?topic=L5", http.StatusForbidden},
-		{"/v1/events-timeline?topics=L1", http.StatusOK},
-		{"/v1/day-week-begin?topic=L1", http.StatusOK},
-		{"/v1/events-timeline?topics=unknown", http.StatusOK}, // routes nowhere → no data anyway
+		{"/v1/events-timeline?topics=L1", http.StatusForbidden},
+		{"/v1/day-week-begin?topic=L1", http.StatusForbidden},
 	}
 	for _, c := range cases {
 		f.queryCalls = 0

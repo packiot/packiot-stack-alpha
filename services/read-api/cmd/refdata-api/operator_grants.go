@@ -253,21 +253,11 @@ const lineGrantTreeSQL = `WITH RECURSIVE tree AS (
 	 WHERE c.id_enterprise = $1)
 SELECT id_equipment FROM tree`
 
-// topicEquipmentsSQL resolves operator topics to the equipments they route to,
-// within the tenant. NOT filtered on active: the /v1 SETOF functions join
-// packml_register without an active filter, so an inactive row could still
-// serve data — every row a topic matches must be permitted.
-const topicEquipmentsSQL = `SELECT DISTINCT p.id_equipment FROM packml_register p
-	JOIN equipments e ON e.id_equipment = p.id_equipment AND e.id_enterprise = $1
-	WHERE p.packml_topic = ANY($2::text[])`
-
-// loadLineGrants, loadTopicEquipments and scopedQueryJSON (makeHandler's data
-// query) are package seams: tests swap them to prove enforcement — including
+// loadLineGrants and scopedQueryJSON (makeHandler's data query) are package seams: tests swap them to prove enforcement — including
 // that a refused request never runs its data query — without a database.
 var (
-	loadLineGrants      = dbLoadLineGrants
-	loadTopicEquipments = dbLoadTopicEquipments
-	scopedQueryJSON     = runQueryJSON
+	loadLineGrants  = dbLoadLineGrants
+	scopedQueryJSON = runQueryJSON
 )
 
 // withTenantTx runs fn in a transaction stamped with app.tenant_id (the same
@@ -333,26 +323,6 @@ func dbLoadLineGrants(ctx context.Context, pool *pgxpool.Pool, cid int, p operat
 	return g, nil
 }
 
-func dbLoadTopicEquipments(ctx context.Context, pool *pgxpool.Pool, cid int, topics []string) ([]int, error) {
-	var out []int
-	err := withTenantTx(ctx, pool, cid, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, topicEquipmentsSQL, cid, topics)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			if err := rows.Scan(&id); err != nil {
-				return err
-			}
-			out = append(out, id)
-		}
-		return rows.Err()
-	})
-	return out, err
-}
-
 // ── Per-route policy ────────────────────────────────────────────────────────
 
 type lineGrantMode int
@@ -367,8 +337,12 @@ const (
 	grantNone lineGrantMode = iota
 	// grantEquipmentParam: ?equipment=<ids> — every id must be permitted.
 	grantEquipmentParam
-	// grantTopicParam: ?topics= / ?topic= — every equipment a topic routes to
-	// must be permitted. Unknown topics resolve to nothing (and return no data).
+	// grantTopicParam: the topic-keyed /v1 routes (?topics= / ?topic=). Identity
+	// is the equipment id (ADR-0061): a topic cannot be line-checked without
+	// re-deriving identity from it, so a RESTRICTED user is refused outright and
+	// must use the /v2 id routes (the Operator only falls back to these for an
+	// old session without ids — a fresh login fixes that). Unrestricted users
+	// and non-tablet callers are unchanged.
 	grantTopicParam
 	// grantFilterRows: tenant-wide list — keep only rows whose id_equipment is
 	// permitted (the backing view carries id_equipment).
@@ -428,22 +402,7 @@ func enforceLineGrants(ctx context.Context, pool *pgxpool.Pool, path string, cid
 			}
 		}
 	case grantTopicParam:
-		var topics []string
-		switch t := args[1].(type) { // topicsArg → []string, topicArg → string
-		case []string:
-			topics = t
-		case string:
-			topics = []string{t}
-		}
-		eqs, err := loadTopicEquipments(ctx, pool, cid, topics)
-		if err != nil {
-			return "", nil, http.StatusInternalServerError, errBodyGrantLookupFailure
-		}
-		for _, id := range eqs {
-			if !g.allows(id) {
-				return "", nil, http.StatusForbidden, errBodyLineNotPermitted
-			}
-		}
+		return "", nil, http.StatusForbidden, errBodyLineNotPermitted
 	case grantFilterRows:
 		// Same columns, same order (SELECT *); only rows of permitted equipment.
 		sql = fmt.Sprintf("SELECT * FROM (%s) AS line_grant WHERE line_grant.id_equipment = ANY($%d::int[])", sql, len(args)+1)
