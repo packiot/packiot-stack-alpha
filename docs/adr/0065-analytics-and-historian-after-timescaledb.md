@@ -1,8 +1,10 @@
 # ADR-0065 — Analytics database and historian after TimescaleDB
 
-**Status:** Proposed · **Date:** 2026-10-15 · **Scope:** `packiot_analytics` (hot) and the historian (cold Parquet +
-`hist-gateway`) on the new stack. Staging first; production follows its own ADR-0063 Phase B/C after the Bispharma
-go-live. **Supersedes:** nothing. **Builds on:** ADR-0063 (TimescaleDB removed on staging 2026-10-15), the
+**Status:** Accepted, in progress (P0, P1, P3a, P5 live on staging; P2 merged, not yet applied to the running gateway) ·
+**Date:** 2026-10-15, progress 2026-10-16 · **Scope:** `packiot_analytics` (hot) and the historian (cold Parquet +
+`hist-gateway`) on the new stack. Staging first. **Production (changed 2026-10-16):** the Bispharma go-live builds the
+new prod database from TimescaleDB-free staging, so it is born in this ADR's shape — no separate prod ADR-0063 Phase B/C
+for the new database (see §6.1). **Supersedes:** nothing. **Builds on:** ADR-0063 (TimescaleDB removed on staging 2026-10-15), the
 grain-tiered retention plan (`docs/plans/unified-hot-cold-serving-grain-tiered-retention.md`), ADR-0057 (historian
 storage, Iceberg end state).
 
@@ -144,6 +146,18 @@ a storage-format change, not a redesign.
 | **P4 — shorten the hot window** | D5 windows via the retention catalog; drops now pass the gate | disk curve flat; no read-api 422 surprises (T2 honest windows) |
 | **P5 — observability** (can run alongside P1) | D8 metrics, panels, alerts | panels live; alert fired once in a drill |
 | **P6 — production** | after the Bispharma go-live and prod's own ADR-0063 B/C | per prod promotion plan |
+
+### 6.1 Progress (2026-10-16)
+
+| Phase | State | Where |
+|---|---|---|
+| P0 | **Live on staging** — gate in `ops.partition_maintain()`, manifest, exempt list, blocked report | #1827, `db/migrations/t-adr0065-p0-cold-export-gate` (test 16/16) |
+| P1 | **Live on staging** — `scripts/historian-cold-export.sh`, systemd timer 01:30 UTC (installed by every staging deploy). First run: 144 values + 1,667 events tenant-days verified, 0 mismatched | #1831 (test 10/10) |
+| P2 | **Merged, not applied to the running `hist-gateway`** — `20-f3-cold.sql` (three-branch union: hot ≥ F3 boundary, legacy cold, F3 cold) + `refresh-f3-cutover.sql` (the exporter's post-run hook; a no-op until applied). Applying it is an operator step: `docker exec -i hist-gateway sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < services/historian-gateway/docker-entrypoint-initdb.d/20-f3-cold.sql` | #1833 (test 13/13) |
+| P3 | **P3a live:** `silver.equipment_metrics_1min` is a view over `equipment_categorical_1min` (+ `max_speed`); parity 6,659,020 rows / 0 differing; read-api 65/65. The old table stays as `equipment_metrics_1min__old` until ~2026-10-23. Open question 1 answered by measurement (pg_stat_statements since 09-24): categorical_1min 107,669 calls (28 % of DB time) vs metrics_1min 274, agg_1min 876, agg_1hour 6,074 — so the remaining two duplicates (agg_1min/1hour) are small readers; folding them needs box/line columns on the fact | #1834 |
+| P4 | Waits for P2 applied + 14 verified nights | — |
+| P5 | **Live on staging** — 6 exporter queries, 6 alerts, DBM "Data lifecycle" row; hardproof 52/52 | #1832 |
+| P6 | **Folded into the go-live** (release #1836): the transplant produces a TimescaleDB-free DB (native partitions + `ops.pc_state`, staging's retention catalog), prod housekeeping runs from systemd timers (no pg_cron on the prod image), and raw retention is **off** on prod (`PROD_RAW_RETENTION=off`: prod has no cold tier until P1 runs there) | `docs/runbooks/go-live-bispharma.md` D8–D10 |
 
 ## 7. Consequences
 

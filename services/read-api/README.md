@@ -47,7 +47,7 @@ the committed file drifts.
 | Group | Paths | Auth | What |
 |---|---|---|---|
 | Operator reads v1 | `/v1/events-timeline`, `/v1/pending-downtime`, `/v1/shift-hours`, `/v1/shift-hours-by-enterprise`, `/v1/day-week-begin`, `/v1/operator-po-list`, `/v1/operator-po-details`, `/v1/operator-entities`, `/v1/entities-per-user-role`, `/v1/downtime-reasons`, `/v1/language-packs` | tenant | fixed reads (some keyed by `topics=`) |
-| Operator reads v2 | `/v2/events-timeline`, `/v2/pending-downtime`, `/v2/operator-po-list`, `/v2/downtime-reasons` | tenant | same reads keyed by `?equipment=<id>,…` (ADR-0061 P3) |
+| Operator reads v2 | `/v2/events-timeline`, `/v2/pending-downtime`, `/v2/events-window`, `/v2/operator-po-list`, `/v2/downtime-reasons` | tenant | same reads keyed by `?equipment=<id>,…` (ADR-0061 P3) |
 | Query API | `GET /v1/catalog`, `POST /v1/query` | tenant | catalog of metrics/dimensions/grains/datasets; compiled query or named dataset (`datasets.go`) |
 | UI state | `GET/PUT /v1/screen-config`, `GET /v1/dashboard-config` | tenant | per-user screen layout (`identity.user_screen_config`, owned by migration `t-readapi-screen-config`; read-api only checks it at boot, no DDL); dashboard config |
 | Historian | `POST /v1/historian/production-series`, `/v1/historian/downtime-series` | tenant | daily series past the hot window via the historian gateway; 503 when `HIST_GW_PASSWORD` is unset |
@@ -62,6 +62,13 @@ token>` is verified against the pool's JWKS and mapped to `id_enterprise` throug
 accepted (#159). Fail-closed: no or invalid credential → 401, no DB access.
 **Super-admin escalation** (`OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED`): an allowlisted, live super user
 carrying `x-operator-superadmin-token` may read another active tenant with `?idEnterprise=`.
+**Operator line grants** (`operator_grants.go`, PRODT-172): when the operator nginx sends `X-Operator-Channel`
+with its fixed key, the user's token in `X-Operator-Authorization: Bearer …` must verify (else 401) and belong to
+the key's tenant (else 403). The operator reads are then limited to the role's `permissions.operator.lines` plus
+their descendants (super_user or no such array = every line; no role = nothing): `?equipment=` routes 403
+`LINE_NOT_PERMITTED` for a line outside the grant, the topic-keyed `?topic(s)=` routes 403 for any restricted
+user (identity is the id — use /v2), both before querying; `/v1/operator-po-list|details` drop other lines' rows.
+Without the header nothing changes; a super-admin escalation is unrestricted.
 
 ### Messaging
 
@@ -144,7 +151,7 @@ golden (`cmd/refdata-api/testdata/contract.golden.json`; refresh with
 |---|---|
 | `cmd/refdata-api/main.go` | boot, pool, fixed endpoint table, flags `--healthcheck`, `--dump-openapi`, `--dump-contract` |
 | `cmd/refdata-api/routes.go` | the one place routes are mounted |
-| `cmd/refdata-api/auth.go`, `auth_cognito.go`, `auth_firebase.go`, `auth_operator_superadmin.go` | tenant middleware, route classes, Bearer verification, super-admin escalation |
+| `cmd/refdata-api/auth.go`, `auth_cognito.go`, `auth_firebase.go`, `auth_operator_superadmin.go`, `operator_grants.go` | tenant middleware, route classes, Bearer verification, super-admin escalation, operator line grants |
 | `cmd/refdata-api/query.go`, `datasets.go`, `coverage.go` | composable query API, named datasets, coverage floors |
 | `cmd/refdata-api/historian.go`, `historian_split.go` | historian gateway reads |
 | `cmd/refdata-api/internal.go` | `/internal/resolve-device` |

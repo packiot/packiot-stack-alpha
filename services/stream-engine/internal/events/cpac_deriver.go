@@ -117,7 +117,35 @@ type CPACConfig struct {
 	// but silent IS a stop). Gaps shorter than the stop threshold are ignored.
 	// false ⇒ byte-identical SQL (the CPACK shadow instance).
 	LinkHealth bool
+	// LineLead derives a LINE's (tp=3 with lead_machine) productive minutes from
+	// its lead machine's counters instead of the line's own counter row — the same
+	// source the line-lead OEE model reads (COUNTERS_ONLY_LINE_LEAD_ENTERPRISES,
+	// rollup/line_lead.go: a tp=3 line has no own counter stream). The lead's
+	// minute counts when gross OR net OR scrap moved, so a lead whose only meter
+	// arrives as net still drives the line. The stops are still minted on the
+	// line. Lines without a lead_machine and every machine keep their own stream.
+	//
+	// WHY (2026-10-16, CPACK L3 = 48): L3's line row is computed at ingestion
+	// from the line's infeed/outfeed meters (ProdConsumedCount/76,
+	// ProdProcessedCount/80), but L3's reader reports those meters with the roles
+	// swapped (BREYER ProdProcessedCount/76, TEXA ProdConsumedCount/80; see
+	// docs/clients/cpack-legacy-oracle-line-meters.md §L3). So line 48 has had NO
+	// counter rows since 2026-09-01 and the gross-only rule minted no L3 stop,
+	// while its lead L3-BREYER (58) produces net every day.
+	// false ⇒ byte-identical SQL (the live instance).
+	LineLead bool
 }
+
+// cpacLineLeadSrc (%[11]s, appended to scope's select list) — the equipment
+// whose counters drive each scoped row: a line's lead_machine, else itself.
+const cpacLineLeadSrc = `,
+           CASE WHEN e.tp_equipment = 3 AND COALESCE(e.lead_machine, 0) > 0
+                THEN e.lead_machine ELSE e.id_equipment END AS src`
+
+// cpacLineLeadActivity — the extra productive-minute arm for a line read
+// through its lead: the line-lead model's prod_raw rule (gross OR net OR scrap).
+const cpacLineLeadActivity = `(s.src <> s.id_equipment
+                AND (m.net_production_incr > 0 OR m.scrap_incr > 0))`
 
 // NoDataStatus is the equipment_events status for a span with no PLC data
 // (silver.machine_state 20). Neither running (6) nor stopped (5/10/11).
@@ -280,7 +308,7 @@ const humanTouchedPred = `(%[4]s.forced_creation_system IS TRUE
 const cpacTransitionsCTE = `
 WITH scope AS (
     SELECT e.id_equipment, e.id_enterprise,
-           COALESCE(NULLIF(e.stop_threshold_time, 0), $2) AS thr
+           COALESCE(NULLIF(e.stop_threshold_time, 0), $2) AS thr%[11]s
       FROM %[2]s.equipments e
      WHERE e.status_type = 0
        AND e.tp_equipment IN (1, 3)
@@ -291,7 +319,7 @@ WITH scope AS (
                OVER (PARTITION BY s.id_equipment ORDER BY m.ts_value))) AS gap
       FROM scope s
       JOIN %[5]s.equipment_categorical_1min m
-        ON m.id_equipment = s.id_equipment
+        ON m.id_equipment = %[12]s
        -- LOOK-BACK (fix 2026-09-29): read thr + 60s BEFORE the 25h window so the
        -- first in-window minute gets its real gap. Without it that minute always
        -- had gap NULL => a session start => a phantom RUNNING row at the window's
@@ -495,16 +523,31 @@ func fmtCPACMode(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string
 // guard, %[10]s = the extra transition arms. linkHealth=false renders all three
 // empty ⇒ the exact pre-LinkHealth statement.
 func fmtCPACFull(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string, leadActivity, linkHealth bool) string {
+	return fmtCPACLine(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leadActivity, linkHealth, false)
+}
+
+// fmtCPACLine adds the line-lead mode: %[11]s = scope's src column, %[12]s = the
+// column counts joins the cagg on, and the predicate gains the line-through-lead
+// arm. lineLead=false renders "" and s.id_equipment ⇒ the exact pre-LineLead
+// statement.
+func fmtCPACLine(tmpl, evSchema, refSchema, table, rowAlias, silverSchema string, leadActivity, linkHealth, lineLead bool) string {
 	leads, act := "", cpacGrossActivity
 	if leadActivity {
 		leads, act = fmt.Sprintf(cpacLeadsCTE, refSchema), cpacLeadActivity
+	}
+	src, join := "", "s.id_equipment"
+	if lineLead {
+		// act is the bare gross predicate or a parenthesized OR-list; the new arm
+		// is OR-ed around it either way.
+		src, join = cpacLineLeadSrc, "s.src"
+		act = "(" + act + "\n            OR " + cpacLineLeadActivity + ")"
 	}
 	link, guard, arms := "", "", ""
 	if linkHealth {
 		link = strings.NewReplacer("%[2]s", refSchema, "%[5]s", silverSchema, "%[7]s", act).Replace(cpacLinkCTE)
 		guard, arms = cpacLinkStopGuard, cpacLinkArms
 	}
-	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leads, act, link, guard, arms)
+	return fmt.Sprintf(tmpl, evSchema, refSchema, table, rowAlias, silverSchema, leads, act, link, guard, arms, src, join)
 }
 
 // cpacReadSQL is the derivation as a plain SELECT: the transition stream
@@ -588,7 +631,7 @@ func RunOnceCPAC(ctx context.Context, d Dest, cfg CPACConfig) (deleted, upserted
 // the same now()).
 func runCPACTx(ctx context.Context, tx pgx.Tx, d Dest, cfg CPACConfig, table string, thr int) (deleted, upserted, closed int64, err error) {
 	var snapshot string
-	if err := tx.QueryRow(ctx, fmtCPACFull(cpacReadSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth),
+	if err := tx.QueryRow(ctx, fmtCPACLine(cpacReadSQL, d.EvSchema, d.RefSchema, table, "ev", d.SilverSchema, cfg.LeadActivity, cfg.LinkHealth, cfg.LineLead),
 		cfg.Enterprises, thr).Scan(&snapshot); err != nil {
 		return 0, 0, 0, fmt.Errorf("cpac derive: %w", err)
 	}
@@ -613,7 +656,8 @@ func LoopCPAC(ctx context.Context, dests []Dest, cfg CPACConfig, every time.Dura
 	logger.Info("CPAC stop deriver started (ADR-0010 §10.4, DARK)",
 		slog.Int("destinations", len(dests)), slog.Int("enterprises", len(cfg.Enterprises)),
 		slog.Int("threshold_default_sec", cfg.ThresholdDefSec), slog.String("target_table", cfg.TargetTable),
-		slog.Bool("lead_activity", cfg.LeadActivity), slog.Bool("link_health", cfg.LinkHealth))
+		slog.Bool("lead_activity", cfg.LeadActivity), slog.Bool("link_health", cfg.LinkHealth),
+		slog.Bool("line_lead", cfg.LineLead))
 	jobs.Loop(ctx, jobs.Job{Name: "cpac-events-deriver", Every: every, Run: func(ctx context.Context) error {
 		var firstErr error
 		for _, d := range dests {

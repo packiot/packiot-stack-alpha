@@ -305,3 +305,43 @@ func TestCPACCloseApplyShape(t *testing.T) {
 		t.Error("close pass must not read the cagg (the snapshot carries the derivation)")
 	}
 }
+
+// TestCPACLineLeadSQL — CPACK L3 (2026-10-16): a line whose own counter row is
+// empty must take its productive minutes from its lead_machine (the line-lead
+// OEE source), gross OR net OR scrap, and still mint on the line. Off, the SQL
+// is byte-identical (TestCPACGrossOnlySQLPinned pins the hash; here: equality).
+func TestCPACLineLeadSQL(t *testing.T) {
+	for name, tmpl := range map[string]string{"correct": cpacCorrectSQL, "upsert": cpacUpsertSQL, "read": cpacReadSQL} {
+		for _, lead := range []bool{false, true} {
+			for _, link := range []bool{false, true} {
+				off := fmtCPACLine(tmpl, "silver", "core", "t", "ev", "silver", lead, link, false)
+				if off != fmtCPACFull(tmpl, "silver", "core", "t", "ev", "silver", lead, link) {
+					t.Errorf("%s lead=%v link=%v: LineLead=false must render the pre-LineLead SQL", name, lead, link)
+				}
+				if strings.Contains(off, "s.src") || strings.Contains(off, "AS src") {
+					t.Errorf("%s lead=%v link=%v: LineLead=false must not reference src", name, lead, link)
+				}
+				on := fmtCPACLine(tmpl, "silver", "core", "t", "ev", "silver", lead, link, true)
+				if strings.Contains(on, "%!") || strings.Contains(on, "%[") {
+					t.Fatalf("%s lead=%v link=%v: unformatted verb in line-lead SQL", name, lead, link)
+				}
+				for _, m := range []string{
+					"CASE WHEN e.tp_equipment = 3 AND COALESCE(e.lead_machine, 0) > 0",
+					"THEN e.lead_machine ELSE e.id_equipment END AS src",
+					"ON m.id_equipment = s.src",    // a line reads its lead's minutes
+					"PARTITION BY s.id_equipment",  // …but sessions (and stops) stay on the line
+					"(m.gross_production_incr > 0", // gross stays the rule for everyone
+					"(s.src <> s.id_equipment",     // net/scrap only through a lead
+					"m.net_production_incr > 0 OR m.scrap_incr > 0",
+				} {
+					if !strings.Contains(on, m) {
+						t.Errorf("%s lead=%v link=%v: line-lead SQL missing %q", name, lead, link, m)
+					}
+				}
+				if lead && !strings.Contains(on, "s.id_equipment IN (SELECT id_equipment FROM leads)") {
+					t.Errorf("%s: line-lead must keep the LeadActivity arm when both are on", name)
+				}
+			}
+		}
+	}
+}

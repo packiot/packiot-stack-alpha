@@ -109,7 +109,13 @@ var (
 // the header is absent or not a Bearer credential, so the middleware can tell
 // "no bearer offered" (fall through) from "bad bearer" (401).
 func bearerToken(r *http.Request) (string, error) {
-	h := r.Header.Get("Authorization")
+	return parseBearer(r.Header.Get("Authorization"))
+}
+
+// parseBearer is bearerToken's header-value core, shared with the operator
+// line-grant principal (operator_grants.go), which reads the SAME "Bearer <jwt>"
+// shape from X-Operator-Authorization.
+func parseBearer(h string) (string, error) {
 	if h == "" {
 		return "", errNoBearer
 	}

@@ -259,7 +259,7 @@ The endpoints are listed above. Known contract issues to fix under this Epic:
 ## Risks and rollback
 
 - **Hiding pending stops by window** leaves them permanently unclassified in reports. Mitigation proposed: a grace period after shift change and a supervisor view of unjustified stops.
-- **Line-only Events (RN-16) empties L3** until AC-37 is met.
+- ~~**Line-only Events (RN-16) empties L3** until AC-37 is met.~~ Resolved 2026-10-16: L3 has line stops (see OQ-02).
 - **CPACK-Staging data from 8 Oct 2026** carries test writes made before the mirror block; do not use it as a clean baseline for L3 to L6.
 - Rollback: every change ships behind the sprint release; the PO staleness gate is already feature-flagged per tenant.
 
@@ -267,6 +267,19 @@ The endpoints are listed above. Known contract issues to fix under this Epic:
 
 - **OQ-01**: One line per PO: not enforced today; left open until ADR-0023 decides whether a PO may run on several lines. Owner: Vinícius.
 - **OQ-02**: What produces C-PACK L3 line-level stops now that the legacy mirror no longer does (AC-37)? Deprioritised; blocks RN-16 on L3. Owner: Vinícius.
+  - **Answered 2026-10-16 (PRODT-176 spike, staging data, read-only):** the premise no longer holds. L3 (equipment 48)
+    has line-level stops every day since 3 Oct — 14 to 30 a day (17 on 16 Oct, last at 16:29 UTC), from the legacy
+    mirror path. The empty days seen on 7 Oct match the legacy oeecloud VM migration (cutover 5 Oct) and the switch of
+    C-PACK events to PubSub (6–7 Oct); those days were back-filled. **AC-37 is met today** and RN-16 does not empty L3.
+  - **Residual risk — root cause found and fixed 2026-10-16 (#1871).** The earlier note said the shadow deriver
+    (`silver.equipment_events_cpac_shadow`) stopped emitting L3 stops on 3 Oct; that date was wrong. The last L3 row
+    is **26 Aug 13:08 UTC** (164 rows, 4–26 Aug). Cause: the deriver reads a line's OWN gross counter
+    (`silver.equipment_categorical_1min`), and L3 has had none since 1 Sep — its reader sends the two line meters with
+    swapped roles (the deliberate 26 Aug revert of #909, `docs/clients/cpack-legacy-oracle-line-meters.md` §L3), so
+    the line row is never built. Fix: an opt-in `LineLead` mode (CPACK shadow instance only) reads the lead machine's
+    minutes (L3-BREYER, 58), the same source the line-lead OEE model uses; with it off the SQL is byte-identical, so
+    the live Bispharma deriver is untouched. Dry-run (25 h): L3 0 → 14 stops (legacy mirror 28). Still open: the
+    factory reader does not read L3's own gross register (ingestion-side), and Aug 26 → now is not back-filled.
 
 This spec stays `in-review` until both are answered.
 
@@ -311,8 +324,8 @@ Cards cite the criteria; this table only links them. Spikes are Tasks labelled `
 | PRODT-174 | Bug | Change PO confirmation: scrap decreases, wrong label and payload types | Card-local |
 | PRODT-175 | Bug | Events tab: ongoing stops render a dangling end time | Card-local |
 | PRODT-176 | Spike | Source of C-PACK L3 line-level stops | AC-37, OQ-02 |
-| PRODT-177 | Spike | PO 891330 on L6 shows about 250 times its order size | None |
-| PRODT-178 | Spike | Cause of the CPACK-Staging 502 outage on 8 Oct 2026 | None |
+| PRODT-177 | Spike | PO 891330 on L6 shows about 250 times its order size | NoneAnswered 2026-10-16: not reproducible — 63,229 ordered vs 69,210 net (1.09×), one runtime matching the PO. The inflated value matches the 1 Oct "unbacked increments" incident (stale counter baseline after a restart; silver, gold and PO totals repaired 1 Oct, L6 again 9 Oct). Guard: edge stream-engine #1544 + invariant V3 |
+| PRODT-178 | Spike | Cause of the CPACK-Staging 502 outage on 8 Oct 2026 | NoneAnswered 2026-10-16: five staging deploys between 15:08 and 15:31 UTC (one cancelled) recreated edge-api and read-api; the 16 502s of the window fall in those recreate gaps. Low severity for PRODT-158 (transient; the Operator's write queue retries 502). Follow-ups: docs-only merges should not deploy (path filter), and a health-gated recreate |
 | PRODT-179 | Spike | CPACK-Staging stops differ from production | None |
 | PRODT-38 | Story | Create Change Production Orders feature (existing; see PRODT-158) | UC3 to UC5 |
 
