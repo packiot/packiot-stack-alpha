@@ -143,7 +143,6 @@ var Local = map[string]string{
 	"silver.equipment_categorical_1min":  "rollup of staging's own silver.equipment_values (ADR-0063)",
 	"silver.equipment_categorical_1hour": "rollup of staging's own silver.equipment_values (ADR-0063)",
 	"silver.rollup_invalidation":         "work queue of the local rollups above",
-	"silver.equipment_metrics_1min__old": "pre-ADR-0063 copy kept until its scheduled drop",
 	"ops.cold_export":                    "this environment's own historian cold-export ledger (ADR-0065)",
 	"ops.cold_export_exempt":             "this environment's own cold-export exemptions (ADR-0065)",
 }
