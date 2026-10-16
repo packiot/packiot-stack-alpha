@@ -234,12 +234,32 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 			// tenant may read it. Fail-closed — a missing/forged/unauthorized claim
 			// silently keeps the home cid, so a normal operator can never cross
 			// tenants. See auth_operator_superadmin.go.
+			escalated := false
 			if superAdmin != nil {
 				if target, ok := superAdmin.resolveTarget(r.Context(), r, cid); ok {
 					cid = target
+					escalated = true
 				}
 			}
-			next.ServeHTTP(w, r.WithContext(withCustomerID(r.Context(), cid)))
+			ctx := withCustomerID(r.Context(), cid)
+			// PRODT-172 operator line grants: the operator nginx stamps
+			// X-Operator-Channel and forwards the user's Cognito token in
+			// X-Operator-Authorization, so the tablet's reads carry WHICH USER is
+			// reading. Absent header ⇒ byte-identical to before (operator_grants.go).
+			if r.Header.Get(operatorChannelHeader) != "" {
+				p, status := resolveOperatorPrincipal(r.Context(), r, bearer, superAdmin, cid, escalated)
+				switch status {
+				case 0:
+					ctx = withOperatorPrincipal(ctx, p)
+				case http.StatusForbidden:
+					writeJSONError(w, http.StatusForbidden, errBodyForbidden)
+					return
+				default:
+					unauthorized(w)
+					return
+				}
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		// 2) Else fall back to the Firebase Bearer token (front4 SPA). The
@@ -290,6 +310,14 @@ func authMiddleware(keys map[string]int, exempt map[string]bool, bearer bearerRe
 				ctx = withUserRole(ctx, cid)
 			} else if id.hasRole {
 				ctx = withUserRole(ctx, id.userRole)
+				// PRODT-172 review: the SAME user reading read-api's public host
+				// directly with their own Bearer (no tablet nginx, no channel header)
+				// gets the same line grant. Only an actual permissions.operator.lines
+				// restriction narrows anything (dbLoadLineGrants: super_user or no
+				// such array ⇒ unrestricted); a role-less user stays unrestricted here.
+				ctx = withOperatorPrincipal(ctx, operatorPrincipal{
+					customerID: id.customerID, userRole: id.userRole, hasRole: true,
+				})
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

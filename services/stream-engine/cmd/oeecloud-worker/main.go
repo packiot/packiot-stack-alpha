@@ -528,6 +528,12 @@ func main() {
 				Enterprises:     config.CSVInts(cfg.CPACEventEnterprises),
 				ThresholdDefSec: cfg.CPACStopThresholdDefaultSec,
 				TargetTable:     cfg.CPACEventTargetTable,
+				// CPACK's OEE is line-lead (each tp=3 line derives from its
+				// lead_machine; COUNTERS_ONLY_LINE_LEAD_ENTERPRISES). Its line
+				// stops follow the same source: L3's own line row has been empty
+				// since 2026-09-01 (swapped meter roles), so the line's own-row
+				// rule minted no L3 stop at all.
+				LineLead: true,
 			},
 			time.Duration(cfg.CPACEventIntervalMin)*time.Minute, logger, jobObs)
 	}

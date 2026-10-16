@@ -23,6 +23,9 @@ jobs:
   # commit's own run owns the deploy. Manual dispatches always deploy.
   gate:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read     # run history + jobs (last DEPLOYED commit)
+      contents: read    # compare API
     outputs:
       deploy: ${{ steps.check.outputs.deploy }}
     steps:
@@ -37,7 +40,40 @@ jobs:
           if [ "$tip" != "${{ github.sha }}" ] && [ "$status" = "ahead" ]; then
             echo "::notice::Superseded by ${tip}: that commit's own deploy run owns staging; skipping this one."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only skip (PRODT-178: back-to-back docs deploys recreated edge-api/read-api → 502s). Compare
+          # against the LAST COMMIT ACTUALLY DEPLOYED (a run whose `deploy` job succeeded), never the push's
+          # `before`: a code commit superseded above was never deployed, so its files stay in this diff and
+          # this run deploys them. Docs = docs/** except docs/clients/** (mounted into containers) + top-level
+          # *.md; docs/wiki + docs/api are published by build-wiki.yml, not by this deploy. Any doubt deploys.
+          # FAIL-OPEN (fix 2026-10-16): this step runs under `bash -e`, so the docs-only check lives in a function
+          # whose every failure (API error, missing permission, empty grep) ends in "deploy". The first version
+          # ended a command substitution with a no-match grep (exit 1) and failed EVERY gate for ~45 min.
+          docs_only() {
+            local last="" row ok cmp st n code
+            for row in $(gh api "repos/${{ github.repository }}/actions/workflows/deploy-staging.yml/runs?branch=staging&status=completed&per_page=30" \
+                           --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
+              ok=$(gh api "repos/${{ github.repository }}/actions/runs/${row%%:*}/jobs" \
+                     --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length') || return 1
+              if [ "$ok" -gt 0 ]; then last=${row#*:}; break; fi
+            done
+            [ -n "$last" ] || { echo "no deployed baseline found"; return 1; }
+            cmp=$(gh api "repos/${{ github.repository }}/compare/${last}...${{ github.sha }}") || return 1
+            st=$(jq -r .status <<<"$cmp"); n=$(jq '.files | length' <<<"$cmp")
+            # every changed path that is NOT docs (docs/** minus docs/clients/**, plus top-level *.md)
+            code=$(jq -r '.files[].filename
+                          | select(((startswith("docs/") and (startswith("docs/clients/") | not))
+                                    or test("^[^/]+\\.md$")) | not)' <<<"$cmp") || return 1
+            echo "last deployed: ${last}  status: ${st}  files: ${n}  non-docs: $(printf '%s' "$code" | grep -c . || true)"
+            [ "$st" = "ahead" ] && [ "$n" -gt 0 ] && [ "$n" -lt 300 ] && [ -z "$code" ] && echo "${last:0:8} ${n}"
+          }
+          if res=$(docs_only) && [ -n "$(tail -n1 <<<"$res" | grep -E '^[0-9a-f]{8} [0-9]+$' || true)" ]; then
+            echo "$res" | head -n -1
+            echo "::notice::Docs-only since the last deployed commit $(tail -n1 <<<"$res" | cut -d' ' -f1) ($(tail -n1 <<<"$res" | cut -d' ' -f2) files): skipping the deploy."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
           else
+            echo "${res:-docs-only check failed or not docs-only}"
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           fi
 

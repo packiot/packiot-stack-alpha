@@ -50,6 +50,7 @@ business data (the only writes are per-user layout JSON).
 | `/v1/operator-po-list` | GET | tenant | `v_operator_po_list_setup_4` |
 | `/v2/operator-po-list?equipment=` | GET | tenant | `serving.operator_po_list_by_equipment($2::int[])` (ADR-0061 P3) |
 | `/v2/events-timeline`, `/v2/pending-downtime`, `/v2/downtime-reasons` (`?equipment=`) | GET | tenant | `serving.*_by_equipment($2::int[])`; identity = `id_equipment`, ≤ 500 ids |
+| `/v2/events-window?equipment=` | GET | tenant | `serving.operator_events_window_by_equipment($2::int[])`: the enterprise's pending/history windows and their starts (PRODT-170) |
 | `/v1/operator-po-details` | GET | tenant | `v_operator_po_details_3` |
 | `/v1/operator-entities` | GET | tenant | `v_operator_entities_2` |
 | `/v1/entities-per-user-role` | GET | tenant | `v_entities_per_user_role_operator` |

@@ -195,6 +195,12 @@ var endpoints = []endpoint{
 	{path: "/v2/pending-downtime",
 		sql:   `SELECT * FROM serving.pending_downtime_by_equipment($2::int[]) WHERE id_enterprise = $1`,
 		class: routeTenantScoped, args: equipmentIDsArg},
+	// PRODT-170 (RN-18): the enterprise's pending/history windows (kind, hours, start) per equipment — the SAME
+	// starts the two lists above filter with (db/migrations/t-prodt170-operator-events-windows), so the operator can
+	// say which stops it shows ("since 23:10 — current production day").
+	{path: "/v2/events-window",
+		sql:   `SELECT * FROM serving.operator_events_window_by_equipment($2::int[]) WHERE id_enterprise = $1`,
+		class: routeTenantScoped, args: equipmentIDsArg},
 	// v2 downtime-reasons: one row per requested machine/line, no register join (same LINE-ONLY rule as v1).
 	{path: "/v2/downtime-reasons",
 		sql:   `SELECT * FROM serving.downtime_reasons_by_equipment($2::int[]) WHERE id_enterprise = $1`,
@@ -434,7 +440,20 @@ func makeHandler(pool *pgxpool.Pool, ep endpoint, logger *slog.Logger) http.Hand
 		// is the RLS co-enforcer. Global (non-scoped) routes need no tenant + run
 		// the plain path below.
 		if scoped {
-			payload, err := runQueryJSON(ctx, pool, cid, sql, args)
+			// PRODT-172: operator line grants (operator_grants.go). A tablet request
+			// for a line the user is not granted is refused BEFORE the query runs;
+			// tenant-wide lists are narrowed to the permitted equipment. No operator
+			// principal (every non-tablet caller) ⇒ sql/args unchanged.
+			runSQL, runArgs, status, body := enforceLineGrants(ctx, pool, ep.path, cid, sql, args)
+			if status != 0 {
+				failed.Add(1)
+				if status >= http.StatusInternalServerError {
+					logger.Warn("line grant lookup failed", slog.String("path", ep.path))
+				}
+				writeJSONError(w, status, body)
+				return
+			}
+			payload, err := scopedQueryJSON(ctx, pool, cid, runSQL, runArgs)
 			if err != nil {
 				failed.Add(1)
 				logger.Warn("query failed", slog.String("path", ep.path), slog.String("err", err.Error()))
