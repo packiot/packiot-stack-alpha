@@ -12,6 +12,9 @@
 #   build succeeds, 00-roles.sql creates prod_reflector_ro + prod_reflector with the migration's shape;
 #   no phase reports "role … does not exist"; compare-catalog TOTAL 0; compare-acl TOTAL 0;
 #   tenant 5 extract → load → verify fingerprints identical (fingerprint-diff.py) and ent 5 keeps code 'bispharma'.
+# 2026-10-16: the fixture is staging's TimescaleDB-FREE shape (ADR-0063 end state; see the fixture comment) and the gates
+# add: no timescaledb in the target DB, ops.pc_state + staging's retention catalog travel (hot_raw → forever), staging's
+# cold-tier manifest and `__old` objects do not, catch-all rows survive, partitions exist ahead, 0 ERRORs in any phase.
 # Data lives under ${SELFTEST_DIR:-/var/tmp}; KEEP=1 keeps it (and prints the path). Containers are always removed.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -30,26 +33,63 @@ done
 psrc() { docker exec -i "$SRC" psql -U postgres -X -v ON_ERROR_STOP=1 -d packiot_analytics "$@"; }
 
 # ── mini staging: fixture + the REAL migrations under test ───────────────────────────────────────────────────────────
-docker exec "$SRC" psql -U postgres -Xqc 'CREATE DATABASE packiot_analytics'
+docker exec "$SRC" psql -U postgres -Xqc 'CREATE DATABASE packiot_analytics TEMPLATE template0'
 # staging's search_path (= xplant.sh `create`): catalog.sql prints regclass text, which depends on it
 docker exec "$SRC" psql -U postgres -Xqc "ALTER DATABASE packiot_analytics SET search_path = \"\$user\", gold, silver, bronze, identity, config, ops, serving, customer_reports, core, public"
+# TS-FREE staging (ADR-0063 end state, 2026-10-16): no timescaledb in the database (the image still ships it, like both real
+# servers; template1 carries it, hence TEMPLATE template0 — as xplant.sh `create` does on prod), native RANGE partitions
+# with catch-alls + ops.pc_state, former caggs as plain tables the rollup tick writes, a view over one of them, staging's
+# own retention catalog (kinds 'plain', cold_copy) and cold-tier manifest, and a staging-only `__old` table with indexes.
 psrc -q <<'SQL'
-CREATE EXTENSION IF NOT EXISTS timescaledb;
-CREATE SCHEMA core; CREATE SCHEMA silver; CREATE SCHEMA ops;
+CREATE SCHEMA core; CREATE SCHEMA silver; CREATE SCHEMA ops; CREATE SCHEMA serving;
 CREATE ROLE readapi_ro LOGIN;                       -- a role build.py already knew (control)
 CREATE TABLE core.enterprises (id_enterprise integer PRIMARY KEY, nm_enterprise text NOT NULL, api_key text, active boolean DEFAULT true);
 CREATE TABLE core.equipments (id_equipment serial PRIMARY KEY, id_enterprise integer NOT NULL REFERENCES core.enterprises,
                               nm_equipment text, production_speed numeric CHECK (production_speed >= 0));
-CREATE TABLE silver.equipment_events (ts_event timestamptz NOT NULL, id_equipment integer NOT NULL, status integer);
-SELECT FROM create_hypertable('silver.equipment_events', 'ts_event', chunk_time_interval => INTERVAL '1 day');
-CREATE MATERIALIZED VIEW silver.ca_events_1h WITH (timescaledb.continuous) AS
-  SELECT time_bucket('1 hour', ts_event) AS bucket, id_equipment, count(*) AS n FROM silver.equipment_events GROUP BY 1, 2 WITH NO DATA;
-CREATE TABLE ops.retention_policy (relation text PRIMARY KEY, tier text, keep interval);
+CREATE TABLE ops.retention_policy (relation text PRIMARY KEY, kind text NOT NULL CHECK (kind IN ('hypertable','cagg','plain')),
+  time_expr text NOT NULL, keep interval, tier text NOT NULL CHECK (tier IN ('hot_raw','hot_agg','business','ops')),
+  purge_order int NOT NULL DEFAULT 100, cold_copy text, rationale text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+SQL
+for m in t-ts-c3-partition-tooling t-ts-c4-ts-optional t-adr0065-p0-cold-export-gate; do   # the real partition tooling
+  psrc -q < "$REPO/db/migrations/$m/01-up.sql" || fail "migration $m did not apply to the fixture"
+done
+psrc -q <<'SQL'
+-- native partitions as ops.pc_swap leaves them: parent + regular partitions + [MINVALUE, first) / [last, MAXVALUE)
+CREATE TABLE silver.equipment_events (ts_event timestamptz NOT NULL, id_equipment integer NOT NULL, id_enterprise integer,
+  status integer CHECK (status >= 0), PRIMARY KEY (id_equipment, ts_event)) PARTITION BY RANGE (ts_event);
+CREATE TABLE silver.equipment_values (ts_value timestamptz NOT NULL, id_equipment integer NOT NULL, id_enterprise integer,
+  net_production_incr real, PRIMARY KEY (id_equipment, ts_value)) PARTITION BY RANGE (ts_value);
+CREATE INDEX equipment_values_ent_ts ON silver.equipment_values (id_enterprise, ts_value);
+SELECT ops.pc_add_partitions('silver.equipment_events', interval '1 month', now() - interval '60 days', now() + interval '60 days');
+SELECT ops.pc_add_partitions('silver.equipment_values', interval '7 days', now() - interval '30 days', now() + interval '60 days');
+CREATE TABLE silver.equipment_events_pmin PARTITION OF silver.equipment_events FOR VALUES FROM (MINVALUE) TO ('2000-01-01');
+INSERT INTO ops.pc_state (rel, twin, capture, time_col, key_cols, step, swapped_at, old_name) VALUES
+  ('silver.equipment_events', 'silver.equipment_events__p', 'silver.equipment_events__cc', 'ts_event', '{id_equipment,ts_event}', '1 month', now(), 'silver.equipment_events__ts'),
+  ('silver.equipment_values', 'silver.equipment_values__p', 'silver.equipment_values__cc', 'ts_value', '{id_equipment,ts_value}', '7 days', now(), 'silver.equipment_values__ts');
+-- a former cagg (ADR-0063 B2: plain table the rollup tick writes) + the ADR-0065 P3a view over it + its staging-only __old
+CREATE TABLE silver.equipment_categorical_1min (ts_value timestamptz NOT NULL, id_equipment integer NOT NULL, id_enterprise integer,
+  n integer, max_speed real, PRIMARY KEY (id_equipment, ts_value));
+CREATE VIEW silver.equipment_metrics_1min AS SELECT ts_value AS bucket, id_equipment, id_enterprise, max_speed FROM silver.equipment_categorical_1min;
+CREATE TABLE silver.equipment_metrics_1min__old (bucket timestamptz, id_equipment integer, id_enterprise integer, max_speed real);
+CREATE INDEX equipment_metrics_1min_b ON silver.equipment_metrics_1min__old (bucket);   -- keeps its pre-rename name
+INSERT INTO ops.retention_policy (relation, kind, time_expr, keep, tier, cold_copy, rationale) VALUES
+  ('silver.equipment_values', 'plain', 'ts_value', '90 days', 'hot_raw', 'historian equipment_values (daily cold copy)', 'raw'),
+  ('silver.equipment_events', 'plain', 'ts_event', '5 years', 'hot_agg', 'historian equipment_events', 'events'),
+  ('silver.equipment_categorical_1min', 'plain', 'ts_value', '90 days', 'hot_raw', NULL, 'minute rollup');
+INSERT INTO ops.cold_export (relation, id_enterprise, period_lo, period_hi, uri, rows, verified_at)
+  VALUES ('silver.equipment_values', 5, date_trunc('day', now()) - interval '3 days', date_trunc('day', now()) - interval '2 days', 's3://staging/x', 24, now());
+-- the two housekeeping procedures the `policies` phase calls (real bodies live in their migrations)
+CREATE PROCEDURE serving.job_refresh_downtime_events_resolved(job_id int, config jsonb) LANGUAGE plpgsql AS $$ BEGIN END $$;
+CREATE PROCEDURE ops.job_data_invariants(job_id int DEFAULT NULL, config jsonb DEFAULT NULL) LANGUAGE plpgsql AS $$ BEGIN END $$;
 GRANT USAGE ON SCHEMA core, silver TO readapi_ro;
-GRANT SELECT ON core.enterprises, core.equipments, silver.equipment_events, silver.ca_events_1h TO readapi_ro;
+GRANT SELECT ON core.enterprises, core.equipments, silver.equipment_events, silver.equipment_values,
+                silver.equipment_categorical_1min, silver.equipment_metrics_1min TO readapi_ro;
 INSERT INTO core.enterprises VALUES (3, 'CPACK', 'k3'), (5, 'Bispharma-Staging', 'k5'), (1000000, 'Packiot Admin', 'ka');
 INSERT INTO core.equipments (id_enterprise, nm_equipment, production_speed) VALUES (5, 'L1', 110), (5, 'L2', 90), (3, 'C1', 50);
-INSERT INTO silver.equipment_events SELECT now() - make_interval(hours => g), 1 + g % 3, g % 4 FROM generate_series(1, 200) g;
+INSERT INTO silver.equipment_events SELECT now() - make_interval(hours => g), 1 + g % 3, CASE WHEN g % 3 = 2 THEN 3 ELSE 5 END, g % 4 FROM generate_series(1, 200) g;
+INSERT INTO silver.equipment_events VALUES ('1999-06-01', 1, 5, 1);   -- lands in the lower catch-all
+INSERT INTO silver.equipment_values SELECT now() - make_interval(hours => g), 1 + g % 3, CASE WHEN g % 3 = 2 THEN 3 ELSE 5 END, 1.5 FROM generate_series(1, 500) g;
+INSERT INTO silver.equipment_categorical_1min SELECT date_trunc('minute', now()) - make_interval(mins => g), 1 + g % 3, CASE WHEN g % 3 = 2 THEN 3 ELSE 5 END, 1, 100 FROM generate_series(1, 300) g;
 SQL
 for m in t-enterprise-codes t-prod-reflector-roles; do
   psrc -q < "$REPO/db/migrations/$m/01-up.sql" || fail "migration $m did not apply to the fixture"
@@ -72,7 +112,7 @@ for r in prod_reflector_ro prod_reflector; do grep -q "CREATE ROLE $r NOLOGIN" "
 # ── extract on the mini staging, then the window's phases on the clean server ────────────────────────────────────────
 psrc -q -f - < "$W/tenant/extract.sql" > "$W/extract.out" || fail 'extract failed'
 docker cp "$SRC:/tmp/tenant5" "$W/tenant5" >/dev/null
-(XPLANT_DIR="$W/out" PGC="$TGT" TENANT_DIR="$W/tenant5" bash "$W/out/xplant.sh" roles create pre hyper views tload post checks logic grants tverify) \
+(XPLANT_DIR="$W/out" PGC="$TGT" TENANT_DIR="$W/tenant5" bash "$W/out/xplant.sh" roles create pre hyper views tload post checks data logic grants tverify policies) \
   | tee "$W/xplant.log"
 grep -h 'ERROR:' "$W"/out/*.out | grep -i 'role .* does not exist' && fail 'a phase hit a missing role'
 grep -q '!! ABORT' "$W/xplant.log" && fail 'xplant aborted'
@@ -95,4 +135,21 @@ got=$(ptgt -c "SELECT rolname || ':' || rolcanlogin || ':' || (rolpassword IS NU
 got=$(ptgt -c "SELECT has_table_privilege('prod_reflector_ro', 'core.enterprises', 'SELECT'), has_table_privilege('prod_reflector_ro', 'core.enterprises', 'UPDATE'),
                       has_column_privilege('prod_reflector', 'core.enterprises', 'api_key', 'UPDATE')")
 [ "$got" = 't|f|f' ] || fail "prod_reflector grants on target: $got"
-echo "SELFTEST OK — clean-server build with prod-reflector GRANTs + enterprise codes: roles, catalog, ACL and tenant gates pass"
+# ── TS-free gates (ADR-0063 end state) ───────────────────────────────────────────────────────────────────────────────
+got=$(ptgt -c "SELECT count(*) FROM pg_extension WHERE extname = 'timescaledb'"); [ "$got" = 0 ] || fail "target database has timescaledb"
+got=$(ptgt -c "SELECT string_agg(rel || ':' || step, ',' ORDER BY rel) FROM ops.pc_state WHERE swapped_at IS NOT NULL")
+[ "$got" = 'silver.equipment_events:1 mon,silver.equipment_values:7 days' ] || fail "ops.pc_state on target: $got"
+got=$(ptgt -c "SELECT string_agg(relation || '=' || coalesce(keep::text, 'forever') || ':' || kind, ',' ORDER BY relation) FROM ops.retention_policy")
+[ "$got" = 'silver.equipment_categorical_1min=forever:plain,silver.equipment_events=5 years:plain,silver.equipment_values=forever:plain' ] \
+  || fail "retention catalog on target (want staging's, hot_raw forever): $got"
+got=$(ptgt -c "SELECT count(*) FROM ops.cold_export"); [ "$got" = 0 ] || fail "staging's cold-tier manifest travelled ($got rows)"
+got=$(ptgt -c "SELECT count(*) FROM pg_class WHERE relname LIKE '%\_\_old' OR relname = 'equipment_metrics_1min_b'"); [ "$got" = 0 ] || fail "staging-only __old objects on target ($got)"
+got=$(ptgt -c "SELECT count(*) FROM silver.equipment_values_pmax"); [ "$got" = 0 ] || fail "rows in the upper catch-all ($got)"
+got=$(ptgt -c "SELECT count(*) FROM silver.equipment_events WHERE ts_event < '2000-01-01'"); [ "$got" = 1 ] || fail "lower catch-all row lost ($got)"
+got=$(ptgt -c "SELECT count(*) FROM silver.equipment_metrics_1min WHERE id_enterprise <> 5"); [ "$got" = 0 ] || fail "view sees other tenants ($got)"
+grep -qE 'partitioned relations without a future partition \(want 0\) *\| *0$' "$W/out/10-policies.sql.out" || { cat "$W/out/10-policies.sql.out"; fail 'policies: partitions ahead'; }
+grep -qE 'raw partitioned relations with a keep \(want 0\) *\| *0$' "$W/out/10-policies.sql.out" || fail 'policies: raw retention still armed'
+for f in pre post 04t-tenant-load 06-checks 07-data 08-logic 10-policies 12t-tenant-verify; do
+  e=$(grep -c 'ERROR:' "$W/out/$f.sql.out" 2>/dev/null || true); [ "${e:-0}" = 0 ] || { grep 'ERROR:' "$W/out/$f.sql.out" | head -5; fail "$f had $e errors"; }
+done
+echo "SELFTEST OK — TS-free clean-server build: roles, catalog, ACL, tenant fingerprints, partitions, retention, no timescaledb"

@@ -7,7 +7,7 @@ import json, re, sys
 S, N = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
 # pg_temp_N.*: a live engine's SESSION temp tables (stream-engine #1786 keeps snapshots in temp tables) show up in
 # staging's pg_class while it runs — not schema (Bispharma rehearsal 2026-10-15: 42 of them).
-sto = lambda o: bool(re.search(r'(^|\.)(_bkp|ops\._|ops\.bf|ops\.sandbox|ops\.mirror_replay_cursor)', o)) or o.startswith(('hdb_catalog', 'pg_temp_', 'pg_toast_temp_'))
+sto = lambda o: o.endswith('__old') or bool(re.search(r'(^|\.)(_bkp|ops\._|ops\.bf|ops\.sandbox|ops\.mirror_replay_cursor)', o)) or o.startswith(('hdb_catalog', 'pg_temp_', 'pg_toast_temp_'))
 def acl(a):  # drop the grantor (…/postgres) and the owner's own entry (a NULL ACL = the owner's implicit privileges)
     return sorted(y for y in (re.sub(r'/[^/]+$', '', x) for x in (a or [])) if not y.startswith('postgres='))
 tot = 0

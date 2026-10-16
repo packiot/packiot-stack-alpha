@@ -8,7 +8,8 @@
   cat-stg.json      scripts/promotion/transplant/catalog.sql run on staging      (READ ONLY)
   cat-prod.json     the same query run on the prod DB                            (READ ONLY)
 Writes <workdir>/out/: pre.sql 02-hypertables-caggs.sql 03-hyper-keys.sql views.sql 04-data-copy.sql 05-repairs.sql
-post.sql 06-checks.sql 07-data.sql [07b-cpack-config.sql 07b-cpack-config-diff.sql] 08-logic.sql 90-comments-grants.sql 10-policies.sql 11-refresh.sql (+ xplant.sh copied).
+post.sql 06-checks.sql 07-data.sql [07b-cpack-config.sql 07b-cpack-config-diff.sql] 08-logic.sql 90-comments-grants.sql 10-policies.sql 11-refresh.sql
+00-roles.sql 00-joblog.sql 01-extensions.sql (+ xplant.sh copied). TimescaleDB-optional: a TS-free staging (ADR-0063) yields a TS-free target.
 
 Method and every rule below: docs/adr/reference/production-promotion-transplant-runbook.md. Each rule names the rehearsal
 finding (2026-10-08, isolated clone of the prod DB) that made it necessary.
@@ -31,14 +32,22 @@ def staging_only(s, n):
     runs ent 3's CPAC deriver in SHADOW mode like staging (CPAC_EVENT_ENTERPRISES=3, live list empty), and it writes
     that table — without it the deriver fails every tick. It is created empty (no prod source). ops.mirror_replay_cursor
     stays excluded: the prod legacy-replicator creates it IF NOT EXISTS and must COLD-start (BACKFILL_SINCE), so
-    staging's cursor row must never travel."""
-    return (n.startswith('_bkp') or (s == 'ops' and (n.startswith('_') or n.startswith('bf') or n.startswith('sandbox')))
+    staging's cursor row must never travel. `<table>__old` = a pre-swap copy kept on staging for a week (ADR-0065 P3a
+    silver.equipment_metrics_1min__old, 2026-10-16) — rollback material for staging only."""
+    return (n.startswith('_bkp') or n.endswith('__old') or (s == 'ops' and (n.startswith('_') or n.startswith('bf') or n.startswith('sandbox')))
             or (s, n) in {('ops', 'mirror_replay_cursor')})
 
 
-CAGGS = {(c['s'], c['n']): c for c in S['caggs']}
+CAGGS = {(c['s'], c['n']): c for c in (S['caggs'] or [])}   # json_agg of nothing = null (TS-free staging)
 HYPERTABLES = [t for t in S['tables'] if t.get('ht') and not staging_only(t['s'], t['n'])]
 HT_NAMES = {f"{t['s']}.{t['n']}" for t in HYPERTABLES}
+# ADR-0063 (2026-10-15): staging dropped TimescaleDB — hypertables became native RANGE-partitioned tables (ops.pc_*) and
+# the caggs plain tables written by the rollup tick. With no extension on staging, HYPERTABLES/CAGGS are empty and every
+# TimescaleDB step below generates nothing; the partitions travel in pre-data like any table (pg_dump: CREATE TABLE +
+# TABLE ATTACH). The target DB then never gets CREATE EXTENSION timescaledb (xplant.sh `create` reads 01-extensions.sql).
+STAGING_TS = 'timescaledb' in (S.get('extensions') or []) or bool(HYPERTABLES or CAGGS)
+PARTITIONS = {(t['s'], t['n']) for t in S['tables'] if t.get('parent')}
+PARTITIONED = [t for t in S['tables'] if t.get('part') and not staging_only(t['s'], t['n'])]
 # column renames between prod and staging that a name-based copy would otherwise lose (t224, t243)
 COLUMN_RENAMES = {('core', 'production_orders'): [('oee_q', 'oee_quality'), ('oee_a', 'oee_availability'), ('oee_p', 'oee_performance')],
                   ('core', 'topic_routing'): [('id_topic_route', 'id_packml_register')]}
@@ -62,6 +71,9 @@ POST = {'INDEX', 'CONSTRAINT', 'FK CONSTRAINT', 'TRIGGER', 'ROW SECURITY', 'POLI
 MULTI = ['FK CONSTRAINT', 'SEQUENCE OWNED BY', 'SEQUENCE SET', 'DEFAULT ACL', 'ROW SECURITY', 'COMMENT - SCHEMA', 'ACL - SCHEMA',
          'COMMENT - EXTENSION', 'EXTENSION -', 'SCHEMA -', 'MATERIALIZED VIEW', 'INDEX ATTACH', 'TABLE ATTACH', 'TABLE DATA']
 pre, views, post, fns, cagg_acl = [], [], [], [], []
+# pg_dump labels a view's ACL/COMMENT "ACL <schema> TABLE <view>": classify it by the catalog, or its GRANT runs in pre.sql
+# before the view exists (selftest 2026-10-16: GRANT on silver.equipment_metrics_1min, a view since ADR-0065 P3a)
+VIEW_NAMES = {(v['s'], v['n']) for v in (S['views'] or []) if v['kind'] == 'v'}
 for line in toc:
     m = re.match(r'^(\d+); \d+ \d+ (.+)$', line.rstrip('\n'))
     if not m:
@@ -72,19 +84,24 @@ for line in toc:
     sch = tail[0] if tail else ''
     name = ' '.join(tail[1:-1]) if len(tail) > 2 else (tail[1] if len(tail) > 1 else '')
     obj = name.split(' ')[-1] if typ in ('COMMENT', 'ACL') else name.split(' ')[0]
+    # the object a COMMENT/ACL is ON: "FUNCTION f(a text, b int)" → f (an arg list has spaces, so `obj` is its last
+    # word); "COLUMN tbl.col" → tbl (2026-10-16 dry run on the real TS-free staging: comments on staging-only bf_/sandbox_
+    # functions and on a bi view's columns slipped through as pre.sql errors)
+    _b = re.match(r'^(?:MATERIALIZED VIEW|[A-Z]+) "?([^"(\s]+)', name) if typ in ('COMMENT', 'ACL') else None
+    base = (_b.group(1).split('.')[0] if name.startswith('COLUMN ') else _b.group(1)) if _b else obj.strip('"')
     if re.match(r'^(_timescaledb|timescaledb_)', sch) or ('timescaledb' in rest and typ.startswith('EXTENSION')):
         continue
     if typ in ('SCHEMA -', 'COMMENT - SCHEMA', 'ACL - SCHEMA') and re.search(r'(_timescaledb|timescaledb_)', rest):
         continue
-    if staging_only(sch, obj.strip('"')) or staging_only(sch, name.split(' ')[0].strip('"')):
+    if staging_only(sch, obj.strip('"')) or staging_only(sch, name.split(' ')[0].strip('"')) or staging_only(sch, base):
         continue
     if (sch, obj) in CAGGS or (sch, name.split(' ')[0]) in CAGGS:
         if typ in ('ACL', 'COMMENT'):
             cagg_acl.append(line)   # 2026-10-14 rehearsal: skipping these lost every cagg GRANT (readapi_ro, stream_engine…)
         continue
-    if typ in POST:
-        post.append(line)
-    elif typ == 'VIEW' or (typ in ('COMMENT', 'ACL') and name.startswith('VIEW ')):
+    if typ in POST or (typ == 'COMMENT' and name.startswith(('CONSTRAINT ', 'INDEX ', 'TRIGGER ', 'POLICY '))):
+        post.append(line)   # a comment on a post-data object runs after it exists (FK comments, 2026-10-16 dry run)
+    elif typ == 'VIEW' or (typ in ('COMMENT', 'ACL') and (name.startswith('VIEW ') or (sch, base) in VIEW_NAMES)):
         views.append(line)
     else:
         pre.append(line)
@@ -176,9 +193,15 @@ rl += ["COMMIT;",
        "  FROM pg_authid r LEFT JOIN pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0",
        f" WHERE r.rolname IN ({', '.join(repr(r) for r in list(ROLES) + list(CLEAN_SERVER_ROLES))}) ORDER BY 2;"]
 write('00-roles.sql', '\n'.join(rl) + '\n')
-write('00-joblog.sql', "\\set ON_ERROR_STOP 1\n"
-      "ALTER SYSTEM SET timescaledb.enable_job_execution_logging = 'on';\nSELECT pg_reload_conf();\n"
-      "SELECT pg_sleep(1);\nSELECT 'job_logging', current_setting('timescaledb.enable_job_execution_logging');\n")
+if STAGING_TS:
+    write('00-joblog.sql', "\\set ON_ERROR_STOP 1\n"
+          "ALTER SYSTEM SET timescaledb.enable_job_execution_logging = 'on';\nSELECT pg_reload_conf();\n"
+          "SELECT pg_sleep(1);\nSELECT 'job_logging', current_setting('timescaledb.enable_job_execution_logging');\n")
+else:   # no TimescaleDB jobs to log: the server setting is left alone (the old DB keeps whatever it had)
+    write('00-joblog.sql', "SELECT 'job_logging', 'skipped: staging has no timescaledb (ADR-0063)';\n")
+# xplant.sh `create`: the extensions the target database needs BEFORE pre.sql (pre.sql carries the others from the dump)
+write('01-extensions.sql', ("CREATE EXTENSION IF NOT EXISTS timescaledb;\n" if STAGING_TS else "") +
+      "SELECT 'extensions', string_agg(extname || ' ' || extversion, ', ' ORDER BY extname) FROM pg_extension;\n")
 
 # ── 2. hypertables + caggs WITH NO DATA (dependency order). Rehearsal: create_hypertable's default index collided with
 #       staging's own → create_default_indexes => false.
@@ -214,21 +237,29 @@ hyper, rest = [], []
 for b in blocks[1:]:
     m = re.search(r'^(?:ALTER TABLE(?: ONLY)?|CREATE (?:UNIQUE )?INDEX \S+ ON(?: ONLY)?)\s+([\w.]+)', b, re.M)
     tgt = m.group(1) if m else ''
+    if '.' in tgt and staging_only(*tgt.split('.', 1)):
+        continue
     if tgt in HT_NAMES:
         b = re.sub(r'ALTER TABLE ONLY ' + re.escape(tgt) + r'\b', 'ALTER TABLE ' + tgt, b)
     (hyper if tgt in HT_NAMES and 'FOREIGN KEY' not in b else rest).append(b)
 write('03-hyper-keys.sql', blocks[0] + ''.join(hyper))
 _restore = ''.join(f"SELECT public.set_chunk_time_interval('{t['s']}.{t['n']}'::regclass, INTERVAL '{t['ht']['chunk']}');\n"
                    for t in HYPERTABLES if f"{t['s']}.{t['n']}" in HISTORY_CHUNK)
-_restore += ("SELECT 'chunks', hypertable_schema || '.' || hypertable_name, num_chunks FROM timescaledb_information.hypertables "
-             "ORDER BY 3 DESC;   -- review: > ~300 chunks on a table queried with per-row time bounds = the OOM trap above\n")
+if HYPERTABLES:
+    _restore += ("SELECT 'chunks', hypertable_schema || '.' || hypertable_name, num_chunks FROM timescaledb_information.hypertables "
+                 "ORDER BY 3 DESC;   -- review: > ~300 chunks on a table queried with per-row time bounds = the OOM trap above\n")
+if PARTITIONED:   # native partitions: count per parent (= staging's at dump time; partition_maintain adds ahead in `policies`)
+    _restore += ("SELECT 'partitions', inhparent::regclass, count(*) FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+                 "WHERE c.relkind = 'r' AND inhparent IN (" + ', '.join(f"'{t['s']}.{t['n']}'::regclass" for t in PARTITIONED) +
+                 ") GROUP BY 2 ORDER BY 2;\n")
 write('post.sql', blocks[0] + ''.join(rest) + _restore)
 
 # ── 4. data copy from the old DB via postgres_fdw. CHECKs dropped first (re-added NOT VALID + VALIDATE after repairs).
 #       production_orders does ADR-0062 P1 inline (text backfill, D5 by business key, po_uuid from ts_creation).
 # `or []`: a CLEAN target server (Bispharma go-live) has no tables — 04-data-copy is then unused (the tenant load replaces it)
 pt = {t['n']: t for t in (P['tables'] or []) if t['s'] == 'public'}
-checks = [c for c in S['constraints'] if c['type'] == 'c' and not staging_only(c['s'], c['tbl'])]
+# a partition's CHECKs are inherited from its parent (dropping one on a partition fails: "cannot drop inherited constraint")
+checks = [c for c in S['constraints'] if c['type'] == 'c' and not staging_only(c['s'], c['tbl']) and (c['s'], c['tbl']) not in PARTITIONS]
 out = ["\\set ON_ERROR_STOP 0", "CREATE EXTENSION IF NOT EXISTS postgres_fdw;", "DROP SERVER IF EXISTS old_db CASCADE;",
        "CREATE SERVER old_db FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname 'packiot', fetch_size '50000');",
        "CREATE USER MAPPING FOR CURRENT_USER SERVER old_db;",
@@ -238,7 +269,7 @@ out += [f'ALTER TABLE {c["s"]}."{c["tbl"]}" DROP CONSTRAINT IF EXISTS "{c["n"]}"
 out.append("SET session_replication_role = replica;")
 report = {'new_no_source': [], 'not_null_no_default_no_source': [], 'type_change': [], 'prod_column_dropped': []}
 for t in sorted(S['tables'], key=lambda t: (0 if t.get('ht') else 1, t['s'], t['n'])):
-    if staging_only(t['s'], t['n']):
+    if staging_only(t['s'], t['n']) or t.get('parent'):   # partitions are filled through their parent
         continue
     src = pt.get(TABLE_RENAMES.get(t['n'], t['n']))
     if not src:
@@ -320,6 +351,10 @@ PRUNE_CATALOG_SQL = """
 -- (t-drop-ca-equipment-boxes-1s, ADR-0063 A1) dropped together with its catalog row. The transplanted schema never has it,
 -- so apply_retention() aborted on it and left the hot_agg/business policies unapplied. The catalog follows the schema:
 DELETE FROM ops.retention_policy WHERE to_regclass(relation) IS NULL;
+-- ADR-0063: a database without timescaledb has no hypertables/caggs; their rows become 'plain' (= what ops.pc_swap
+-- does on conversion). apply_retention() skips plain rows; partitioned ones are dropped by ops.partition_maintain().
+UPDATE ops.retention_policy SET kind = 'plain', updated_at = now()
+ WHERE kind IN ('hypertable', 'cagg') AND NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb');
 """
 RAW_RETENTION_OFF_SQL = """
 -- PROD_RAW_RETENTION=off (build.py): keep raw history forever on prod until a cold tier exists.
@@ -329,8 +364,10 @@ UPDATE ops.retention_policy
  WHERE tier = 'hot_raw' AND keep IS NOT NULL;
 CALL ops.apply_retention();   -- removes any raw retention policy; adds none for hot_raw
 SELECT 'raw retention policies (want 0)', count(*)
-  FROM timescaledb_information.jobs j JOIN ops.retention_policy p ON p.relation = j.hypertable_schema || '.' || j.hypertable_name
- WHERE j.proc_name = 'policy_retention' AND p.tier = 'hot_raw';
+  FROM ops.ts_retention_live() l JOIN ops.retention_policy p ON p.relation = l.relation WHERE p.tier = 'hot_raw';
+-- native partitions: ops.partition_maintain() drops past retention_policy.keep — no raw relation may have one
+SELECT 'raw partitioned relations with a keep (want 0)', count(*)
+  FROM ops.pc_state s JOIN ops.retention_policy p ON p.relation = s.rel WHERE p.tier = 'hot_raw' AND p.keep IS NOT NULL;
 """
 # TRANSPLANT_MODE=tenant (Bispharma go-live 2026-10-15: a CLEAN prod + ONE tenant copied from staging by
 # scripts/promotion/bispharma/tenant_extract.py). The tenant's rows ARE staging's — every business backfill above already
@@ -338,11 +375,17 @@ SELECT 'raw retention policies (want 0)', count(*)
 # t-ideal-speed-best-demonstrated re-deriving one Bispharma machine's production_speed (110 → 241) and, through it, its
 # line's production_targets. The t244 descriptor INSERTs would add OTHER tenants' rows. So tenant mode keeps only the
 # platform catalogs the tenant copy does not carry (ops.retention_policy) and drops everything else.
+# TS-free staging (2026-10-16): the tenant copy now CARRIES ops.retention_policy (staging's current catalog — kinds 'plain'
+# after ADR-0063 C3, cold_copy per ADR-0065) and ops.pc_state; re-seeding it from t-retention-catalog would write the
+# pre-ADR-0063 kinds back. Tenant mode then only prunes and applies PROD_RAW_RETENTION to the copied catalog.
 TRANSPLANT_MODE = os.environ.get('TRANSPLANT_MODE', 'prod').strip().lower()
 assert TRANSPLANT_MODE in ('prod', 'tenant'), f'TRANSPLANT_MODE must be prod|tenant, got {TRANSPLANT_MODE!r}'
 if TRANSPLANT_MODE == 'tenant':
-    PHASE_D = [f for f in PHASE_D if f.startswith(('t-plc-link-minutes-retention/', 't-retention-catalog/'))]
+    PHASE_D = [] if not STAGING_TS else [f for f in PHASE_D if f.startswith(('t-plc-link-minutes-retention/', 't-retention-catalog/'))]
 parts = ["\\set ON_ERROR_STOP 0"]
+if TRANSPLANT_MODE == 'tenant' and not STAGING_TS:
+    parts += ["\\echo ===== retention catalog (copied from staging by the tenant load)", PRUNE_CATALOG_SQL,
+              RAW_RETENTION_OFF_SQL if PROD_RAW_RETENTION == 'off' else 'CALL ops.apply_retention();']
 for f in PHASE_D:
     body = subprocess.run(['git', 'show', f'origin/staging:db/migrations/{f}'], check=True, capture_output=True, text=True).stdout
     body = body.replace('\\set ON_ERROR_STOP 1', '\\set ON_ERROR_STOP 0')
@@ -391,7 +434,7 @@ write('90-comments-grants.sql', '\n'.join(_g) + '\n')
 
 # ── 10/11. policies (no retention policy added here; raw retention governed by PROD_RAW_RETENTION in phase D)
 #          + month-windowed catch-up refresh
-shutil.copy(os.path.join(HERE, '10-policies.sql'), os.path.join(OUT, '10-policies.sql'))
+shutil.copy(os.path.join(HERE, '10-policies.sql' if STAGING_TS else '10-housekeeping.sql'), os.path.join(OUT, '10-policies.sql'))
 months = [f'{y}-{m:02d}-01' for y in range(2021, 2028) for m in range(1, 13)]
 lines = ["\\set ON_ERROR_STOP 0", "SELECT 'refresh start', now();"]
 for k in order:
@@ -407,3 +450,5 @@ for f in os.listdir(OUT):
         os.remove(os.path.join(OUT, f))
 print('built', sorted(os.listdir(OUT)))
 print('copy report:', {k: len(v) for k, v in report.items()})
+print('staging timescaledb:', STAGING_TS, '| hypertables', len(HYPERTABLES), 'caggs', len(CAGGS), '| partitioned', len(PARTITIONED),
+      'partitions', len(PARTITIONS))

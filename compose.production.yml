@@ -140,8 +140,10 @@ services:
     command:
       - |
         set -e
-        echo "== extensions in ${POSTGRES_DB} (timescaledb auto-created by image; pg_cron best-effort) =="
-        psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
+        # ADR-0063 end state (2026-10-16): the go-live database is TimescaleDB-FREE (staging dropped the extension
+        # 2026-10-15; the transplant never creates it). The server image keeps the library only for the pre-promotion
+        # DB / rollback, so this one-shot must NOT create it — it runs on every deploy against ${POSTGRES_DB}.
+        echo "== extensions in ${POSTGRES_DB} (no timescaledb — ADR-0063; pg_cron best-effort) =="
         # pg_cron requires shared_preload_libraries — tolerate absence so a missing
         # preload never fails the deploy (F3 single-flow does rollups in Go).
         psql -c "CREATE EXTENSION IF NOT EXISTS pg_cron;" \
@@ -979,6 +981,10 @@ services:
       BRONZE_RAW_APPEND: "true"
       # Descriptor-driven box→production bridge (inert without box descriptors).
       BOXES_BRIDGE_ENABLED: "true"
+      # ADR-0063 B2 (2026-10-16): the rollup tick is THE minute/hour rollup (the caggs are gone; the go-live DB is
+      # TimescaleDB-free). Default ON here — unlike staging, where it was switched on after the backfill — because the prod
+      # DB is born with the rollup tables loaded (go-live-bispharma.md §2.1): without it no minute/hour/gold ever computes.
+      ROLLUP_SHADOW_ENABLED: ${ROLLUP_SHADOW_ENABLED:-true}
       # Legacy customer-report ports for ents 6/13 (Neopac): NO such tenant on the
       # new-stack prod, and shift06 is delete-and-reload — kept OFF on purpose
       # (staging runs them as port proofs). Intervals/flags pinned for parity.
