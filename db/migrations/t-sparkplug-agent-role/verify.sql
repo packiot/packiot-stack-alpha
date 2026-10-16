@@ -18,7 +18,8 @@ SELECT 'V3 session defaults: app.tenant_id=-1,statement_timeout=30s',
 -- Table privileges: exactly this set (relation:privilege), nothing else.
 WITH want(rel, privs) AS (VALUES ('core.client_descriptors', 'r'), ('silver.plc_link_minutes', 'arw')),
 have AS (
-  SELECT c.oid::regclass::text AS rel,
+  SELECT format('%s.%s', c.relnamespace::regnamespace, c.relname) AS rel,   -- qualified: regclass::text drops
+         -- the schema when it is on the search_path (core/silver are, on packiot_analytics and packiot)
          string_agg(DISTINCT CASE a.privilege_type WHEN 'SELECT' THEN 'r' WHEN 'INSERT' THEN 'a'
                     WHEN 'UPDATE' THEN 'w' WHEN 'DELETE' THEN 'd' ELSE lower(a.privilege_type) END, ''
                     ORDER BY CASE a.privilege_type WHEN 'SELECT' THEN 'r' WHEN 'INSERT' THEN 'a'
