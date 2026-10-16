@@ -178,7 +178,6 @@
 2	services/sparkplug-decoder/internal/s7/mapping.go
 3	services/sparkplug-decoder/internal/s7/mapping_test.go
 3	services/sparkplug-decoder/internal/s7/poller.go
-1	services/sparkplug-decoder/internal/secrets/secrets.go
 1	services/sparkplug-decoder/internal/sparkplug/fixtures_test.go
 1	services/sparkplug-decoder/internal/transforms/calc_production_counters/calc.go
 3	services/sparkplug-decoder/internal/transforms/calc_production_counters/decision_tree.go
