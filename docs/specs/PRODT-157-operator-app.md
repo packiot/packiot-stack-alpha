@@ -259,7 +259,7 @@ The endpoints are listed above. Known contract issues to fix under this Epic:
 ## Risks and rollback
 
 - **Hiding pending stops by window** leaves them permanently unclassified in reports. Mitigation proposed: a grace period after shift change and a supervisor view of unjustified stops.
-- **Line-only Events (RN-16) empties L3** until AC-37 is met.
+- ~~**Line-only Events (RN-16) empties L3** until AC-37 is met.~~ Resolved 2026-10-16: L3 has line stops (see OQ-02).
 - **CPACK-Staging data from 8 Oct 2026** carries test writes made before the mirror block; do not use it as a clean baseline for L3 to L6.
 - Rollback: every change ships behind the sprint release; the PO staleness gate is already feature-flagged per tenant.
 
@@ -267,6 +267,14 @@ The endpoints are listed above. Known contract issues to fix under this Epic:
 
 - **OQ-01**: One line per PO: not enforced today; left open until ADR-0023 decides whether a PO may run on several lines. Owner: Vinícius.
 - **OQ-02**: What produces C-PACK L3 line-level stops now that the legacy mirror no longer does (AC-37)? Deprioritised; blocks RN-16 on L3. Owner: Vinícius.
+  - **Answered 2026-10-16 (PRODT-176 spike, staging data, read-only):** the premise no longer holds. L3 (equipment 48)
+    has line-level stops every day since 3 Oct — 14 to 30 a day (17 on 16 Oct, last at 16:29 UTC), from the legacy
+    mirror path. The empty days seen on 7 Oct match the legacy oeecloud VM migration (cutover 5 Oct) and the switch of
+    C-PACK events to PubSub (6–7 Oct); those days were back-filled. **AC-37 is met today** and RN-16 does not empty L3.
+  - **Residual risk:** the new-stack C-PACK event deriver (shadow mode, `silver.equipment_events_cpac_shadow`) produces
+    line stops for every L-line except L3 since 3 Oct (164 L3 rows in total, all older). If the legacy path breaks
+    again nothing covers L3. Follow-up before C-PACK's own go-live: find why the deriver stopped emitting for L3
+    (lead machine 58 L3-BREYER) and make it cover L3.
 
 This spec stays `in-review` until both are answered.
 
