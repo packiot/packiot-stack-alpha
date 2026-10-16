@@ -62,6 +62,12 @@ token>` is verified against the pool's JWKS and mapped to `id_enterprise` throug
 accepted (#159). Fail-closed: no or invalid credential → 401, no DB access.
 **Super-admin escalation** (`OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED`): an allowlisted, live super user
 carrying `x-operator-superadmin-token` may read another active tenant with `?idEnterprise=`.
+**Operator line grants** (`operator_grants.go`, PRODT-172): when the operator nginx sends `X-Operator-Channel`
+with its fixed key, the user's token in `X-Operator-Authorization: Bearer …` must verify (else 401) and belong to
+the key's tenant (else 403). The operator reads are then limited to the role's `permissions.operator.lines` plus
+their descendants (super_user or no such array = every line; no role = nothing): `?equipment=` / `?topic(s)=`
+routes 403 `LINE_NOT_PERMITTED` before querying, `/v1/operator-po-list|details` drop other lines' rows.
+Without the header nothing changes; a super-admin escalation is unrestricted.
 
 ### Messaging
 
@@ -144,7 +150,7 @@ golden (`cmd/refdata-api/testdata/contract.golden.json`; refresh with
 |---|---|
 | `cmd/refdata-api/main.go` | boot, pool, fixed endpoint table, flags `--healthcheck`, `--dump-openapi`, `--dump-contract` |
 | `cmd/refdata-api/routes.go` | the one place routes are mounted |
-| `cmd/refdata-api/auth.go`, `auth_cognito.go`, `auth_firebase.go`, `auth_operator_superadmin.go` | tenant middleware, route classes, Bearer verification, super-admin escalation |
+| `cmd/refdata-api/auth.go`, `auth_cognito.go`, `auth_firebase.go`, `auth_operator_superadmin.go`, `operator_grants.go` | tenant middleware, route classes, Bearer verification, super-admin escalation, operator line grants |
 | `cmd/refdata-api/query.go`, `datasets.go`, `coverage.go` | composable query API, named datasets, coverage floors |
 | `cmd/refdata-api/historian.go`, `historian_split.go` | historian gateway reads |
 | `cmd/refdata-api/internal.go` | `/internal/resolve-device` |

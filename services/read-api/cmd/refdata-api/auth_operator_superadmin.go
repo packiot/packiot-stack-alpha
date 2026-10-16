@@ -144,6 +144,26 @@ func (a *operatorSuperAdminAuth) resolveTarget(ctx context.Context, r *http.Requ
 	return target, true
 }
 
+// isCrossTenantSuperAdmin reports whether the Cognito token belongs to a
+// cross-tenant super-admin by the SAME checks resolveTarget applies (verified
+// token with a verified email, on the allowlist, live super_user) — without
+// naming a target. Used by the operator line grants (operator_grants.go) when a
+// super-admin is on a tablet of another tenant without escalating. Fail-closed.
+func (a *operatorSuperAdminAuth) isCrossTenantSuperAdmin(ctx context.Context, tokenStr string) bool {
+	if a == nil || a.cognito == nil || tokenStr == "" {
+		return false
+	}
+	vc, err := a.cognito.VerifyClaims(ctx, tokenStr)
+	if err != nil || vc.email == "" || !vc.emailVerified {
+		return false
+	}
+	user := strings.ToLower(strings.TrimSpace(vc.email))
+	if user == "" || !a.allowlist[user] {
+		return false
+	}
+	return a.isLiveSuperUser(ctx, user)
+}
+
 // dbSuperUserCheck is the production live-super_user closure — the authority is
 // user_roles.super_user, never the token body. Mirrors edge-api's
 // OperatorSuperAdminVerifier.verify DB query. Any error (incl. no such user)

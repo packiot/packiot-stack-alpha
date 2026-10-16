@@ -579,6 +579,9 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // ── The document ─────────────────────────────────────────────────────────────
 
+// operatorGrantNote is appended to the operator routes that enforce line grants.
+const operatorGrantNote = "\n\n**Operator line grants:** with `X-Operator-Channel` set (operator tablet), the user's role limits which lines it may read (`user_roles.permissions.operator.lines` plus their descendants; super_user or no such array = every line)."
+
 const tenantNote = "\n\n**Tenant scoping:** the server binds the caller's tenant (resolved from the credential) as `$1` and drops every other tenant's rows; query parameters only narrow within that tenant. Read-only; 15 s query timeout. The route is mounted without a method restriction, so any HTTP method behaves like GET."
 
 const infoDescription = "Packiot read plane: the Hasura-replacement operator reads, the composable query API " +
@@ -593,6 +596,10 @@ const infoDescription = "Packiot read plane: the Hasura-replacement operator rea
 	"- **Operator super-admin (dark unless OPERATOR_SUPERADMIN_CROSS_TENANT_ENABLED)** — a verified super-admin may read another tenant by " +
 	"sending `x-operator-superadmin-token: <cognito-id-token>` plus `?idEnterprise=<target>` alongside the normal credential; any failed check " +
 	"silently keeps the home tenant.\n" +
+	"- **Operator line grants (PRODT-172)** — the operator nginx adds `X-Operator-Channel: tablet` and forwards the user's token as " +
+	"`X-Operator-Authorization: Bearer <cognito-id-token>` next to its fixed `X-Api-Key`. With the channel header set, that token must verify " +
+	"(else 401) and belong to the key's tenant (else 403 `{\"error\":\"forbidden\"}`), and the operator reads are limited to the lines in the " +
+	"user's role (`user_roles.permissions.operator.lines`, plus everything under them; no such array = every line). Without the header nothing changes.\n" +
 	"- **Base URLs** — see `servers`: `https://refdata.staging.packiot.app` (staging), `https://refdata.prod.packiot.app` (production, " +
 	"behind CloudFront), `http://localhost:9104` (local dev). `/openapi.json` and `/metrics` are not routed publicly; fetch the spec from the portal.\n" +
 	"- **Content types** — request bodies are `application/json` (≤ 64 KB; longer bodies are cut at 64 KB and then fail to parse). " +
@@ -646,6 +653,17 @@ func buildOpenAPISpec() (map[string]any, error) {
 			resp["500"] = errResp("The query or row decoding failed.", `{"error":"query failed"}`, `{"error":"row scan failed"}`, `{"error":"rows error"}`)
 		} else {
 			resp["500"] = errResp("The query failed or timed out (15 s).", `{"error":"query failed"}`)
+		}
+		// PRODT-172 operator line grants (operator_grants.go): only on operator-tablet
+		// requests (X-Operator-Channel set by the operator nginx).
+		switch lineGrantPolicies[ep.path] {
+		case grantEquipmentParam, grantTopicParam:
+			desc += operatorGrantNote + " A requested line (or a topic routed to one) outside the user's grant is refused with 403 before any data is read."
+			resp["403"] = errResp("Operator-tablet request only: the operator token belongs to another tenant, or a requested line is not granted to the user.",
+				errBodyForbidden, errBodyLineNotPermitted)
+		case grantFilterRows:
+			desc += operatorGrantNote + " Only rows whose `id_equipment` is granted to the user are returned."
+			resp["403"] = errResp("Operator-tablet request only: the operator token belongs to another tenant.", errBodyForbidden)
 		}
 		op := tenantOp(tag, doc.summary, desc, params, nil, resp)
 		if doc.supersededBy != "" {
