@@ -34,6 +34,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -141,6 +142,18 @@ def put_secret(a, exists, payload):
         os.unlink(path)
 
 
+def _norm_settings(row: str) -> list:
+    """Postgres prints a time GUC in its largest exact unit (statement_timeout 120s → '2min'), so compare those as
+    seconds; every other field (role name, on/off) compares as text. Found at the 2026-10-16 go-live: prod-reflector-ro
+    was provisioned correctly but the check reported '2min' != '120s'."""
+    units = {"ms": 0.001, "s": 1, "min": 60, "h": 3600, "d": 86400}
+    out = []
+    for v in row.split("|"):
+        m = re.fullmatch(r"(\d+)(ms|s|min|h|d)", v.strip())
+        out.append(int(m.group(1)) * units[m.group(2)] if m else v)
+    return out
+
+
 def main():
     sys.stdout.reconfigure(line_buffering=True)  # step lines before any ERROR on stderr
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -211,7 +224,7 @@ def main():
     cols = ", ".join(["current_user"] + [f"current_setting('{n}')" for n in names])
     got = psql(a, a.db_host, role, current["password"], f"SELECT {cols};")
     want = "|".join([role] + [spec["settings"][n] for n in names])
-    if got != want:
+    if _norm_settings(got) != _norm_settings(want):
         die(f"login check returned {got!r}; want {want!r}")
     fp = hashlib.sha256(current["password"].encode()).hexdigest()[:12]
     defaults = ", ".join("%s=%s" % (n, spec["settings"][n]) for n in names)
