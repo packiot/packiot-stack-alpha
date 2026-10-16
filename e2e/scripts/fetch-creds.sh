@@ -29,6 +29,11 @@ json="$(aws secretsmanager get-secret-value --secret-id "$SECRET" --region "$REG
     .clients.sandbox as $s |
     "OPERATOR_SBX_URL=\($s.operatorUrl)",
     "SANDBOX_USER=\($s.user)","SANDBOX_PASSWORD=\($s.password)","SANDBOX_ENTERPRISE_ID=\($s.enterpriseId)"'
+  # read-api (refdata) query keys of CPACK + the sandbox twin → the read-api parity specs
+  # (sandbox-front4 parity, sandbox-reset guarantee); empty when the secret lacks them (specs then skip/fail loudly)
+  echo "$json" | jq -r '
+    "REFDATA_KEY_CPACK=\(.clients.cpack.refdataKey // "")",
+    "REFDATA_KEY_SBX=\(.clients.sandbox.refdataKey // "")"'
   # Bispharma client view (ent 5, pt-BR) → demo-rehearsal spec (read-only)
   echo "$json" | jq -r '
     (.clients.bispharma // empty) as $b |
