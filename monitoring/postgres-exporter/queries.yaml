@@ -382,3 +382,73 @@ pg_data_invariant_check:
     - datname: { usage: LABEL, description: "Database" }
     - check_id: { usage: LABEL, description: "Invariant id" }
     - seconds: { usage: GAUGE, description: "Seconds this check took in the latest in-DB invariant run" }
+
+# ── ADR-0065 data lifecycle (replaces the TimescaleDB chunk/compression panels on a database without
+# TimescaleDB). pg_partition_lifecycle reads only the catalog (safe in every auto-discovered DB, emits rows
+# only for RANGE-partitioned time tables); the ops.* queries use the query_to_xml guard (no row where the
+# relation does not exist). ──
+pg_partition_lifecycle:
+  cache_seconds: 300
+  query: |
+    WITH b AS (
+      SELECT n.nspname AS schema, p.relname AS tbl, c.reltuples,
+             pg_get_expr(c.relpartbound, c.oid) AS bound,
+             substring(pg_get_expr(c.relpartbound, c.oid) from $$FROM \('([^']+)'\)$$)::timestamptz AS lo,
+             substring(pg_get_expr(c.relpartbound, c.oid) from $$TO \('([^']+)'\)$$)::timestamptz AS hi
+        FROM pg_partitioned_table pt
+        JOIN pg_class p ON p.oid = pt.partrelid JOIN pg_namespace n ON n.oid = p.relnamespace
+        JOIN pg_inherits i ON i.inhparent = p.oid JOIN pg_class c ON c.oid = i.inhrelid
+       WHERE pt.partstrat = 'r' AND n.nspname NOT LIKE 'pg\_%')
+    SELECT current_database() AS datname, schema, tbl AS "table",
+           count(*) FILTER (WHERE bound !~ 'MINVALUE|MAXVALUE') AS partitions,
+           coalesce(extract(epoch FROM max(hi) FILTER (WHERE bound !~ 'MAXVALUE') - now()) / 86400, 0) AS days_ahead,
+           coalesce(extract(epoch FROM now() - min(lo) FILTER (WHERE bound !~ 'MINVALUE')) / 86400, 0) AS oldest_days,
+           greatest(coalesce(sum(reltuples) FILTER (WHERE bound ~ 'MINVALUE|MAXVALUE'), 0), 0) AS catchall_rows
+      FROM b GROUP BY schema, tbl
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - schema: { usage: LABEL, description: "Schema" }
+    - table: { usage: LABEL, description: "Partitioned table" }
+    - partitions: { usage: GAUGE, description: "Regular range partitions" }
+    - days_ahead: { usage: GAUGE, description: "Days until the newest regular partition ends (want ≥ 14)" }
+    - oldest_days: { usage: GAUGE, description: "Age in days of the oldest regular partition's lower bound" }
+    - catchall_rows: { usage: GAUGE, description: "Estimated rows in the MINVALUE/MAXVALUE catch-alls (want 0)" }
+
+pg_cold_export:
+  cache_seconds: 300
+  query: |
+    SELECT current_database() AS datname, x.relation, x.verified, x.unverified, x.lag_days
+      FROM (SELECT xmlelement(name r, query_to_xml($$
+              SELECT relation, count(verified_at) AS verified, count(*) - count(verified_at) AS unverified,
+                     coalesce(extract(epoch FROM date_trunc('day', now() - interval '48 hours')
+                                               - max(period_hi) FILTER (WHERE verified_at IS NOT NULL)) / 86400, 999) AS lag_days
+                FROM ops.cold_export GROUP BY relation$$, true, true, '')) AS q
+              FROM (SELECT 1) one WHERE to_regclass('ops.cold_export') IS NOT NULL) s,
+           XMLTABLE('/r/row' PASSING s.q COLUMNS relation text PATH 'relation', verified float8 PATH 'verified',
+                    unverified float8 PATH 'unverified', lag_days float8 PATH 'lag_days') x
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - relation: { usage: LABEL, description: "Hot relation archived to Parquet" }
+    - verified: { usage: GAUGE, description: "Verified tenant-day files in the manifest" }
+    - unverified: { usage: GAUGE, description: "Written but not (yet) verified files — re-exported next run" }
+    - lag_days: { usage: GAUGE, description: "Days between the newest closed day and the newest verified export (want ≤ 1)" }
+
+pg_partition_drop_blocked:
+  query: |
+    SELECT current_database() AS datname,
+           (xpath('/row/n/text()', query_to_xml('SELECT count(*) AS n FROM ops.partition_drop_blocked', false, true, '')))[1]::text::int AS partitions,
+           (xpath('/row/a/text()', query_to_xml($$SELECT coalesce(extract(epoch FROM now() - min(first_blocked)) / 86400, 0)::float8 AS a FROM ops.partition_drop_blocked$$, false, true, '')))[1]::text::float8 AS oldest_days
+      FROM (SELECT 1) one WHERE to_regclass('ops.partition_drop_blocked') IS NOT NULL
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - partitions: { usage: GAUGE, description: "Partitions past retention kept because their cold copy is missing/unverified" }
+    - oldest_days: { usage: GAUGE, description: "Days the oldest blocked partition has been waiting for its export" }
+
+pg_rollup_invalidation:
+  query: |
+    SELECT current_database() AS datname,
+           (xpath('/row/n/text()', query_to_xml('SELECT count(*) AS n FROM silver.rollup_invalidation', false, true, '')))[1]::text::int AS backlog
+      FROM (SELECT 1) one WHERE to_regclass('silver.rollup_invalidation') IS NOT NULL
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - backlog: { usage: GAUGE, description: "Late-data minute ranges waiting for rollup_tick to re-roll (want small)" }

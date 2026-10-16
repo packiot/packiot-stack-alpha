@@ -319,6 +319,45 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "catalog purge (job 1033) logged {{ $value }} errors in 24h — SELECT * FROM ops.retention_run WHERE error IS NOT NULL"
+      # ADR-0065 data lifecycle (partitions → cold export → verified manifest → gated drop). The gate is fail-safe
+      # (an unexported partition is KEPT), so these alerts are about the disk growing and the archive falling behind,
+      # never about data already lost.
+      - alert: PartitionCoverageLow
+        expr: pg_partition_lifecycle_days_ahead < 14
+        for: 1h
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.schema }}.{{ $labels.table }} has only {{ $value | humanize }} days of partitions ahead — pg_cron analytics-partition-maintain (03:20) is not running; inserts past the last bound land in the catch-all"
+      - alert: PartitionCatchallRows
+        expr: pg_partition_lifecycle_catchall_rows > 0
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.schema }}.{{ $labels.table }} catch-all partitions hold ~{{ $value }} rows — out-of-range timestamps (clock skew?) or missing partitions; they also slow 'latest before T' lookups"
+      - alert: ColdExportLagging
+        expr: pg_cold_export_lag_days > 3
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.relation }}: newest verified cold export is {{ $value | humanize }} days behind — historian-cold-export.service (01:30) failing? journalctl -u historian-cold-export"
+      - alert: ColdExportUnverified
+        expr: pg_cold_export_unverified > 0
+        for: 26h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.relation }}: {{ $value }} exported files still unverified after a full day — the read-back keeps mismatching the hot slice"
+      - alert: PartitionDropBlockedLong
+        expr: pg_partition_drop_blocked_oldest_days > 7
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value | humanize }} days a partition past retention has waited for its verified cold copy — disk grows until the export covers it; SELECT * FROM ops.partition_drop_blocked"
+      - alert: RollupInvalidationBacklog
+        expr: pg_rollup_invalidation_backlog > 20000
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} late-data ranges waiting in silver.rollup_invalidation — rollup_tick is not draining (stream-engine rollupshadow)"
       - alert: PostgresDown
         expr: pg_up == 0
         for: 2m
