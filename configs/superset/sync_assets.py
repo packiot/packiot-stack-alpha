@@ -46,6 +46,38 @@ STAGED = pathlib.Path("/tmp/assets")
 RUNTIME_PARAMS = {"datasource", "dashboards", "slice_id"}
 
 
+# A connection whose password placeholder was not injected (its env var is unset: e.g. no historian gateway on prod,
+# HIST_GW_SVC_PASSWORD) cannot be imported — Superset test-connects it and the whole command fails. Same rule as
+# sync_databases.py's SKIP: such a connection, the datasets on it and the charts on those datasets are skipped in the
+# import AND in the drift check (prod go-live 2026-10-16: historian_union → "could not translate host name hist-gateway").
+PLACEHOLDERS = ("XXXXXXXXXXXX", "YYYYYYYYYYYY")
+
+
+def _skipped() -> tuple[set[str], set[str], set[str]]:
+    """(relative paths to leave out, dataset uuids, chart uuids) for every unwired connection."""
+    paths, db_uuids, ds_uuids, ch_uuids = set(), set(), set(), set()
+    for f in sorted(STAGED.joinpath("databases").glob("*.yaml")):
+        y = yaml.safe_load(f.read_text())
+        if any(p in y.get("sqlalchemy_uri", "") for p in PLACEHOLDERS):
+            paths.add(str(f.relative_to(STAGED))); db_uuids.add(str(y.get("uuid")))
+            print(f"[sync_assets] SKIP database {y.get('database_name')}: password placeholder not injected (env unset)")
+    for f in sorted(STAGED.joinpath("datasets").rglob("*.yaml")):
+        y = yaml.safe_load(f.read_text())
+        if str(y.get("database_uuid")) in db_uuids:
+            paths.add(str(f.relative_to(STAGED))); ds_uuids.add(str(y.get("uuid")))
+            print(f"[sync_assets] SKIP dataset {y.get('table_name')} (on a skipped connection)")
+    for f in sorted(STAGED.joinpath("charts").rglob("*.yaml")):
+        y = yaml.safe_load(f.read_text())
+        if str(y.get("dataset_uuid")) in ds_uuids:
+            paths.add(str(f.relative_to(STAGED))); ch_uuids.add(str(y.get("uuid")))
+            print(f"[sync_assets] SKIP chart {y.get('slice_name')} (on a skipped dataset)")
+    return paths, ds_uuids, ch_uuids
+
+
+SKIP_PATHS: set[str] = set()
+SKIP_UUIDS: set[str] = set()
+
+
 def _contents(kinds: tuple[str, ...], model_type: str) -> dict[str, str]:
     """The importer's input: {path relative to the bundle root: yaml text} + a metadata.yaml whose
     `type` matches the command (the dashboard bundle's metadata says Dashboard and would be rejected)."""
@@ -58,7 +90,8 @@ def _contents(kinds: tuple[str, ...], model_type: str) -> dict[str, str]:
     }
     for kind in kinds:
         for f in sorted(STAGED.joinpath(kind).rglob("*.yaml")):
-            out[str(f.relative_to(STAGED))] = f.read_text()
+            if str(f.relative_to(STAGED)) not in SKIP_PATHS:
+                out[str(f.relative_to(STAGED))] = f.read_text()
     return out
 
 
@@ -72,6 +105,8 @@ def _verify() -> list[str]:
     drift = []
     for f in sorted(STAGED.joinpath("datasets").rglob("*.yaml")):
         y = yaml.safe_load(f.read_text())
+        if str(y.get("uuid")) in SKIP_UUIDS:
+            continue
         t = db.session.query(SqlaTable).filter(SqlaTable.uuid == y["uuid"]).one_or_none()
         if t is None:
             drift.append(f"dataset {y['table_name']}: missing")
@@ -85,6 +120,8 @@ def _verify() -> list[str]:
                          f"metrics differ {sorted(k for k in want_m.keys() | have_m.keys() if want_m.get(k) != have_m.get(k))}")
     for f in sorted(STAGED.joinpath("charts").rglob("*.yaml")):
         y = yaml.safe_load(f.read_text())
+        if str(y.get("uuid")) in SKIP_UUIDS:
+            continue
         s = db.session.query(Slice).filter(Slice.uuid == y["uuid"]).one_or_none()
         if s is None:
             drift.append(f"chart {y['slice_name']}: missing")
@@ -146,6 +183,9 @@ def main() -> int:
         if not STAGED.joinpath("datasets").is_dir():
             print(f"[sync_assets] {STAGED}/datasets missing — run import_bundle.py first", file=sys.stderr)
             return 1
+        global SKIP_PATHS, SKIP_UUIDS
+        SKIP_PATHS, ds_skip, ch_skip = _skipped()
+        SKIP_UUIDS = ds_skip | ch_skip
         # Datasets first (charts resolve their dataset by uuid), each with the databases they reference.
         for label, command, kinds, model_type in (
             ("datasets", ImportDatasetsCommand, ("databases", "datasets"), "SqlaTable"),
