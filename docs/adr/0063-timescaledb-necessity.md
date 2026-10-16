@@ -1,6 +1,6 @@
 # ADR-0063 — Is TimescaleDB still needed in the analytics database?
 
-**Status:** Proposed · **Date:** 2026-10-14 (rewritten the same day) · **Scope:** the new stack's
+**Status:** Accepted — in progress (Phase A done; B1/B4 live on staging 2026-10-15; B2 gated; C started) · **Date:** 2026-10-14 (rewritten the same day; §13 added 2026-10-15) · **Scope:** the new stack's
 analytics database (`packiot_analytics` on staging; the production target built by the transplant in
 [`production-promotion-transplant-runbook.md`](reference/production-promotion-transplant-runbook.md)).
 The legacy database, back4 and legacy oeecloud are out of scope (read-only, not touched).
@@ -399,3 +399,60 @@ Saved outside the repo (scratchpad `ts-evidence/` and `tsa-ev/`), produced by re
   added. Each one deepens the coupling Phase B removes.
 - "A cagg with a −infinity watermark or an unconsumed invalidation backlog is a defect" belongs
   in the data invariants until Phase C.
+
+---
+
+## 13. As built, and the Phase C design (2026-10-15)
+
+The user asked to carry the work through to "TimescaleDB is no more". The order in §9 is unchanged for
+production (promote with TimescaleDB first); everything below runs on staging first.
+
+### 13.1 Phase B as built: twins + rename instead of per-reader repoints
+
+Every cagg the engine and its readers use is a plain `GROUP BY` over `silver.equipment_values` (the
+1-hour categorical one over the 1-minute one). Only `time_bucket` (→ `date_bin`) and `last()`
+(→ `array_agg(… ORDER BY ts DESC)[1]`) are TimescaleDB-specific. So instead of §8's repoint of ~15
+readers behind flags, each cagg got a **twin** with the identical name `+ __next`, built from the
+cagg itself (`CREATE TABLE AS … WITH NO DATA`: same column names *and* types). The cutover is
+`DROP` the cagg + `RENAME` the twin in one transaction; **readers change nothing**.
+
+| Step | PR | State (2026-10-15) |
+|---|---|---|
+| B1 twins, `silver.rollup_tick()`/`rollup_refresh()`, invalidation triggers (rows older than 15 min), backfill procedure, diff | #1805, #1808 (names resolved at runtime) | applied on staging; backfilled 91 days in 12 min; 24-hour diff 145,761 buckets/target, **0** |
+| Scheduler: stream-engine `internal/rollupshadow` (every minute, `ROLLUP_SHADOW_ENABLED`) | #1805 | on (staging) |
+| Gate as data: hourly `R1_rollup_twin_vs_truth` (warn, must be 0) / `R2_cagg_vs_truth` (info) in `ops.data_invariant_result`, source `rollup-shadow` | #1810 | recording; first hour R1 = 0 |
+| B2 cutover, **gated in SQL** (≥ 160 hourly R1 rows in 7 days, none failing, else `RAISE`) | #1811 | merged; earliest ~2026-10-22 |
+| B4 deriver reads `equipment_values` (715/715 identical events in a golden test) | #1807 | live |
+| B4 drop `ca_discrete_changes_1s` (−27 s refresh / 15 min, −4.8 % DB time) | #1809 | applied (engine down 4 s) |
+| Go-live extract skips the twins (derived) | #1806 (release branch) | merged |
+
+Proven on TimescaleDB 2.27.0-pg15 with staging's real definitions: `compress_chunk` fires **no**
+row trigger, an insert into a compressed chunk **does** (both needed by the invalidation design);
+late inserts, repair `UPDATE`s and `DELETE`s are drained to twin = truth while the cagg stays stale
+(`cagg_vs_truth` > 0: the reason for Phase B, now measured hourly).
+
+**B5 (new, after B2): consolidate.** Pre-aggregation stays necessary (the engine's minute grain is
+29.6 % of DB time *with* it; raw is ~12× more rows). Five tables are more than the need:
+`equipment_metrics_1min` equals the categorical minute table summed per minute (+ `max_speed`), and
+`agg_equipment_values_1min/_1hour` carry 0.3 % of DB time. Measure a week of reads, then fold.
+
+### 13.2 Phase C design
+
+| Decision | Choice | Why |
+|---|---|---|
+| Target image | **our own `postgres:16` + pg_cron** (like `db/Dockerfile` builds pg_cron today), digest-pinned, same on dev/staging/prod | prod's stock TimescaleDB image has no pg_cron; Phase C replaces the image anyway |
+| Housekeeping scheduler | **pg_cron** for the three `add_job` actions (`purge_analytics_plain` — staging only, prod excludes it by design; `serving.job_refresh_downtime_events_resolved` 2 min; `ops.job_data_invariants` 30 min), partition creation and retention | runs as the owner; top-level `CALL` may `COMMIT` (`job_data_invariants` does, so it cannot be `SECURITY DEFINER` for the engine's least-privilege role) |
+| Engine-owned schedule | the rollup tick only | it is the engine's input, refreshed right before it reads |
+| Partitioning | native `PARTITION BY RANGE`, BRIN on time | — |
+| Partition size | `silver.equipment_values` daily; `bronze.*_raw` and `silver.plc_link_minutes` weekly; `silver.equipment_events` monthly (5-year retention) | partitions ≈ query windows; a few hundred at most |
+| Conversion | copy into a partitioned twin with a **change-capture trigger** (PK of every row inserted/updated/deleted during the copy), then a short window: stop writers, replay the captured keys, rename-swap, recreate dependent views (they bind by OID), grants, RLS, triggers, comments | `equipment_events` rows are UPDATEd after insert (closes, justifications); copy-by-time alone would lose those |
+| Order | the 4 hypertables without caggs first (`equipment_events`, `plc_link_minutes`, both bronze), `equipment_values` after B2 | caggs pin `equipment_values` to TimescaleDB until B2 |
+| Drop | `DROP EXTENSION timescaledb` after 30 days with no TimescaleDB call in `pg_stat_statements`, then the image swap | §8 exit criterion |
+
+Live code coupling left (small): stream-engine `start_background_workers()` at boot (delete with the
+extension); `time_bucket` in the box reports (**C1 #1812**: `date_bin` with TimescaleDB's
+2000-01-03 origin, 0 mismatches; month buckets forbidden by CHECK); the
+`timescaledb.max_tuples_decompressed_per_dml_transaction` GUC in `rollup/history.go` (a harmless
+unknown custom setting after the drop; remove with it); ops scripts that call `decompress_chunk` /
+`refresh_continuous_aggregate`; dev seed extract/load; `restore-db.sh`; `db_init.sh`.
+

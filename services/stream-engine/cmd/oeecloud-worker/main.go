@@ -37,6 +37,7 @@ import (
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/pocontrol"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/reports"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollup"
+	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/rollupshadow"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/secrets"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/shiftresolver"
 	"github.com/packiot/packiot-stack-alpha/services/stream-engine/internal/sparkplug"
@@ -158,12 +159,17 @@ func main() {
 		// stream_engine role the worker calls the narrow SECURITY DEFINER wrapper
 		// public.ensure_timescaledb_workers() instead (db/migrations/t-stream-engine-role:
 		// no arguments, does only this, EXECUTE granted to stream_engine alone).
+		//
+		// ADR-0063: a database without the timescaledb extension (staging after C4)
+		// has no scheduler to start — skip instead of warning on every start.
 		q := `SELECT _timescaledb_functions.start_background_workers()`
-		var super bool
+		var super, hasTS bool
 		if err := analyticsPool.QueryRow(ctx, `SELECT current_setting('is_superuser') = 'on'`).Scan(&super); err == nil && !super {
 			q = `SELECT public.ensure_timescaledb_workers()`
 		}
-		if _, err := analyticsPool.Exec(ctx, q); err != nil {
+		if err := analyticsPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')`).Scan(&hasTS); err == nil && !hasTS {
+			logger.Info("packiot_analytics has no timescaledb extension — no background workers to start")
+		} else if _, err := analyticsPool.Exec(ctx, q); err != nil {
 			logger.Warn("could not start shadow TimescaleDB background workers — cagg refresh may lag",
 				slog.String("err", err.Error()))
 		} else {
@@ -491,6 +497,12 @@ func main() {
 	// obd port — the box→production bridge (descriptor-driven).
 	if cfg.BoxesBridgeEnabled {
 		go reports.LoopBoxesBridge(ctx, bgDests, time.Minute, logger, jobObs)
+	}
+
+	// ADR-0063 Phase B — keep the plain-table twins of the caggs current (shadow; nothing reads
+	// them until the cutover migration). SQL: db/migrations/t-ts-b1-rollup-shadow.
+	if cfg.RollupShadowEnabled {
+		go rollupshadow.Loop(ctx, bgDests, time.Minute, logger, jobObs)
 	}
 
 	// ADR-0014 — the label-adapter boxes pipeline (descriptor-driven).

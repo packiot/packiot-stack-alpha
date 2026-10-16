@@ -220,8 +220,10 @@ type Config struct {
 	Boxes13ReportEnabled   bool
 	Boxes13IntervalMinutes int
 	BoxesBridgeEnabled     bool
-	UnsRefreshEnabled      bool
-	UnsIntervalMinutes     int
+	// ADR-0063 Phase B: tick the plain-table twins of the caggs (silver.rollup_tick()). Shadow only.
+	RollupShadowEnabled bool
+	UnsRefreshEnabled   bool
+	UnsIntervalMinutes  int
 
 	// UnsCurrentMetricsEnabled — the equipment_live_metrics
 	// deriver (the table froze post-10.9: its ingest writer's routing
@@ -497,6 +499,7 @@ func Load() (*Config, error) {
 		POControlEnabled:                 getenv("PO_CONTROL_ENABLED", "false") == "true",
 		Boxes13ReportEnabled:             getenv("BOXES13_REPORT_ENABLED", "false") == "true",
 		BoxesBridgeEnabled:               getenv("BOXES_BRIDGE_ENABLED", "false") == "true",
+		RollupShadowEnabled:              getenv("ROLLUP_SHADOW_ENABLED", "false") == "true",
 		UnsRefreshEnabled:                getenv("UNS_REFRESH_ENABLED", "false") == "true",
 		UnsIntervalMinutes:               getenvInt("UNS_INTERVAL_MINUTES", 5),
 		UnsCurrentMetricsEnabled:         getenv("UNS_CURRENT_METRICS_ENABLED", "false") == "true",

@@ -25,7 +25,6 @@ BEGIN
   RAISE NOTICE 'inserted % rows', n;
 END $$;
 COMMIT;
-CALL refresh_continuous_aggregate('silver.ca_discrete_changes_1s',     '2026-08-27 17:00+00', '2026-09-01 01:00+00');
 CALL refresh_continuous_aggregate('silver.ca_equipment_boxes_1s',      '2026-08-27 17:00+00', '2026-09-01 01:00+00');
 CALL refresh_continuous_aggregate('silver.agg_equipment_values_1min',  '2026-08-27 17:00+00', '2026-09-01 01:00+00');
 CALL refresh_continuous_aggregate('silver.equipment_metrics_1min',     '2026-08-27 17:00+00', '2026-09-01 01:00+00');

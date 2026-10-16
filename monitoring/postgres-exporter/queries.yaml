@@ -382,3 +382,117 @@ pg_data_invariant_check:
     - datname: { usage: LABEL, description: "Database" }
     - check_id: { usage: LABEL, description: "Invariant id" }
     - seconds: { usage: GAUGE, description: "Seconds this check took in the latest in-DB invariant run" }
+
+# ── ADR-0065 data lifecycle (replaces the TimescaleDB chunk/compression panels on a database without
+# TimescaleDB). pg_partition_lifecycle reads only the catalog (safe in every auto-discovered DB, emits rows
+# only for RANGE-partitioned time tables); the ops.* queries use the query_to_xml guard (no row where the
+# relation does not exist). ──
+pg_partition_lifecycle:
+  cache_seconds: 300
+  query: |
+    WITH b AS (
+      SELECT n.nspname AS schema, p.relname AS tbl, c.reltuples,
+             pg_get_expr(c.relpartbound, c.oid) AS bound,
+             substring(pg_get_expr(c.relpartbound, c.oid) from $$FROM \('([^']+)'\)$$)::timestamptz AS lo,
+             substring(pg_get_expr(c.relpartbound, c.oid) from $$TO \('([^']+)'\)$$)::timestamptz AS hi
+        FROM pg_partitioned_table pt
+        JOIN pg_class p ON p.oid = pt.partrelid JOIN pg_namespace n ON n.oid = p.relnamespace
+        JOIN pg_inherits i ON i.inhparent = p.oid JOIN pg_class c ON c.oid = i.inhrelid
+       WHERE pt.partstrat = 'r' AND n.nspname NOT LIKE 'pg\_%')
+    SELECT current_database() AS datname, schema, tbl AS "table",
+           count(*) FILTER (WHERE bound !~ 'MINVALUE|MAXVALUE') AS partitions,
+           coalesce(extract(epoch FROM max(hi) FILTER (WHERE bound !~ 'MAXVALUE') - now()) / 86400, 0) AS days_ahead,
+           coalesce(extract(epoch FROM now() - min(lo) FILTER (WHERE bound !~ 'MINVALUE')) / 86400, 0) AS oldest_days,
+           greatest(coalesce(sum(reltuples) FILTER (WHERE bound ~ 'MINVALUE|MAXVALUE'), 0), 0) AS catchall_rows
+      FROM b GROUP BY schema, tbl
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - schema: { usage: LABEL, description: "Schema" }
+    - table: { usage: LABEL, description: "Partitioned table" }
+    - partitions: { usage: GAUGE, description: "Regular range partitions" }
+    - days_ahead: { usage: GAUGE, description: "Days until the newest regular partition ends (want ≥ 14)" }
+    - oldest_days: { usage: GAUGE, description: "Age in days of the oldest regular partition's lower bound" }
+    - catchall_rows: { usage: GAUGE, description: "Estimated rows in the MINVALUE/MAXVALUE catch-alls (want 0)" }
+
+pg_cold_export:
+  cache_seconds: 300
+  query: |
+    SELECT current_database() AS datname, x.relation, x.verified, x.unverified, x.lag_days
+      FROM (SELECT xmlelement(name r, query_to_xml($$
+              SELECT relation, count(verified_at) AS verified, count(*) - count(verified_at) AS unverified,
+                     coalesce(extract(epoch FROM date_trunc('day', now() - interval '48 hours')
+                                               - max(period_hi) FILTER (WHERE verified_at IS NOT NULL)) / 86400, 999) AS lag_days
+                FROM ops.cold_export GROUP BY relation$$, true, true, '')) AS q
+              FROM (SELECT 1) one WHERE to_regclass('ops.cold_export') IS NOT NULL) s,
+           XMLTABLE('/r/row' PASSING s.q COLUMNS relation text PATH 'relation', verified float8 PATH 'verified',
+                    unverified float8 PATH 'unverified', lag_days float8 PATH 'lag_days') x
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - relation: { usage: LABEL, description: "Hot relation archived to Parquet" }
+    - verified: { usage: GAUGE, description: "Verified tenant-day files in the manifest" }
+    - unverified: { usage: GAUGE, description: "Written but not (yet) verified files — re-exported next run" }
+    - lag_days: { usage: GAUGE, description: "Days between the newest closed day and the newest verified export (want ≤ 1)" }
+
+pg_partition_drop_blocked:
+  query: |
+    SELECT current_database() AS datname,
+           (xpath('/row/n/text()', query_to_xml('SELECT count(*) AS n FROM ops.partition_drop_blocked', false, true, '')))[1]::text::int AS partitions,
+           (xpath('/row/a/text()', query_to_xml($$SELECT coalesce(extract(epoch FROM now() - min(first_blocked)) / 86400, 0)::float8 AS a FROM ops.partition_drop_blocked$$, false, true, '')))[1]::text::float8 AS oldest_days
+      FROM (SELECT 1) one WHERE to_regclass('ops.partition_drop_blocked') IS NOT NULL
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - partitions: { usage: GAUGE, description: "Partitions past retention kept because their cold copy is missing/unverified" }
+    - oldest_days: { usage: GAUGE, description: "Days the oldest blocked partition has been waiting for its export" }
+
+pg_rollup_invalidation:
+  query: |
+    SELECT current_database() AS datname,
+           (xpath('/row/n/text()', query_to_xml('SELECT count(*) AS n FROM silver.rollup_invalidation', false, true, '')))[1]::text::int AS backlog
+      FROM (SELECT 1) one WHERE to_regclass('silver.rollup_invalidation') IS NOT NULL
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - backlog: { usage: GAUGE, description: "Late-data minute ranges waiting for rollup_tick to re-roll (want small)" }
+
+# ── Rollup freshness (ADR-0063 B2: the rollups are plain tables kept by silver.rollup_tick — equipment_metrics_1min
+# is a VIEW over equipment_categorical_1min since ADR-0065 P3a, so it is not polled here; replaces
+# pg_timescaledb_cagg_seconds_since_last_success). lag = now − newest bucket; index-only scans (0.35 ms on
+# staging). Emits rows only where the rollups are PLAIN tables (relkind 'r'); a TimescaleDB cagg (a view, prod
+# until its go-live) is skipped — a real-time cagg max() would be expensive. ──
+pg_rollup_freshness:
+  query: |
+    SELECT current_database() AS datname, x.tbl AS "table", x.grain, x.lag AS lag_seconds
+      FROM (SELECT xmlelement(name r, query_to_xml($$
+              SELECT 'equipment_categorical_1min' AS tbl, '1min' AS grain, extract(epoch FROM now() - max(ts_value))::float8 AS lag FROM silver.equipment_categorical_1min WHERE ts_value > now() - interval '1 day'
+              UNION ALL SELECT 'agg_equipment_values_1min', '1min', extract(epoch FROM now() - max(ts_value))::float8 FROM silver.agg_equipment_values_1min WHERE ts_value > now() - interval '1 day'
+              UNION ALL SELECT 'equipment_categorical_1hour', '1hour', extract(epoch FROM now() - max(ts_value))::float8 FROM silver.equipment_categorical_1hour WHERE ts_value > now() - interval '2 days'
+              UNION ALL SELECT 'agg_equipment_values_1hour', '1hour', extract(epoch FROM now() - max(ts_value))::float8 FROM silver.agg_equipment_values_1hour WHERE ts_value > now() - interval '2 days'$$, true, true, '')) AS q
+              FROM (SELECT 1) one
+             WHERE (SELECT relkind FROM pg_class WHERE oid = to_regclass('silver.equipment_categorical_1min')) = 'r') s,
+           XMLTABLE('/r/row' PASSING s.q COLUMNS tbl text PATH 'tbl', grain text PATH 'grain', lag float8 PATH 'lag') x
+     WHERE x.lag IS NOT NULL
+  metrics:
+    - datname: { usage: LABEL, description: "Database" }
+    - table: { usage: LABEL, description: "Rollup table (silver.*)" }
+    - grain: { usage: LABEL, description: "1min | 1hour" }
+    - lag_seconds: { usage: GAUGE, description: "Seconds since the newest bucket (1min: want < 900; 1hour: up to ~1 h by design)" }
+
+# ── pg_cron housekeeping (ADR-0063 C2; replaces pg_timescaledb_jobs). pg_cron lives in the `postgres` database
+# (cron.database_name), which auto-discovery scrapes; the guard keeps every other DB silent. ──
+pg_cron_job:
+  query: |
+    SELECT current_database() AS datname, x.jobname, x.failed_24h, x.succeeded_24h, x.last_run_age_seconds
+      FROM (SELECT xmlelement(name r, query_to_xml($$
+              SELECT j.jobname, count(d.*) FILTER (WHERE d.status = 'failed') AS failed_24h,
+                     count(d.*) FILTER (WHERE d.status = 'succeeded') AS succeeded_24h,
+                     coalesce(extract(epoch FROM now() - max(d.start_time)), 999999)::float8 AS last_run_age_seconds
+                FROM cron.job j LEFT JOIN cron.job_run_details d ON d.jobid = j.jobid AND d.start_time > now() - interval '24 hours'
+               WHERE j.active GROUP BY j.jobname$$, true, true, '')) AS q
+              FROM (SELECT 1) one WHERE to_regclass('cron.job_run_details') IS NOT NULL) s,
+           XMLTABLE('/r/row' PASSING s.q COLUMNS jobname text PATH 'jobname', failed_24h float8 PATH 'failed_24h',
+                    succeeded_24h float8 PATH 'succeeded_24h', last_run_age_seconds float8 PATH 'last_run_age_seconds') x
+  metrics:
+    - datname: { usage: LABEL, description: "Database (pg_cron's home)" }
+    - jobname: { usage: LABEL, description: "pg_cron job" }
+    - failed_24h: { usage: GAUGE, description: "Failed runs in the last 24 h (want 0)" }
+    - succeeded_24h: { usage: GAUGE, description: "Succeeded runs in the last 24 h" }
+    - last_run_age_seconds: { usage: GAUGE, description: "Seconds since the job last started" }

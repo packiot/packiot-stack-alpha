@@ -26,7 +26,9 @@ set -euo pipefail
 if [ -z "${AUTHENTIK_DB_PASSWORD:-}" ]; then
     echo "[authentik-db-init] WARNING: AUTHENTIK_DB_PASSWORD not set — skipping"
     echo "[authentik-db-init]   authentik-server WILL fail to start. Set the env var on the postgres service."
-    exit 0
+    # the entrypoint SOURCES non-executable *.sh files: `exit` would end the whole entrypoint (container exits
+    # mid-init); `return` ends only this script (falls back to exit when run directly)
+    return 0 2>/dev/null || exit 0
 fi
 
 echo "[authentik-db-init] Creating authentik role + database..."
