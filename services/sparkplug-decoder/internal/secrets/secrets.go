@@ -2,10 +2,9 @@
 // Same shape + same CREDS_SOURCE=env dev escape hatch as
 // services/oeecloud-worker/internal/secrets (ADR-0009 reuse rule).
 //
-// DB credentials are intentionally NOT fetched here — the Phase 2
-// skeleton does not talk to Postgres. If a future phase needs DB access
-// (e.g. tenant discovery from packml_register instead of client.yaml),
-// port FetchDBCreds verbatim from oeecloud-worker. Do NOT invent a new
+// DB credentials: FetchDBDSN reads the provision-db-role.py secret shape
+// ({host, port, user, password, name}) — the sparkplug-agent's least-privilege
+// login (t-sparkplug-agent-role, AGENT_DB_SECRET_ID). Do NOT invent a new
 // secrets shape.
 //
 // TODO(ADR-0009 Phase 2): provision the
@@ -156,6 +155,35 @@ func fetchAMQPCredsFromEnv(host string, port int) (*AMQPCreds, error) {
 		Host:     host,
 		Port:     port,
 	}, nil
+}
+
+// FetchDBDSN reads a least-privilege DB login secret — the {host, port, user,
+// password, name} shape scripts/ops/provision-db-role.py writes to
+// packiot/<env>/<service>-db-creds — and returns a postgres DSN with proper
+// percent-encoding. A missing host/user/password/name fails closed; port
+// defaults to 5432. The password only ever lives in the returned string.
+func FetchDBDSN(ctx context.Context, region, secretID, appName string) (string, error) {
+	raw, err := fetchSecretJSON(ctx, region, secretID)
+	if err != nil {
+		return "", err
+	}
+	host, user, pass, name := pick(raw, "host"), pick(raw, "user", "username"), pick(raw, "password"), pick(raw, "name", "dbname")
+	if host == "" || user == "" || pass == "" || name == "" {
+		return "", fmt.Errorf("secret %s: needs host, user, password and name", secretID)
+	}
+	port := pick(raw, "port")
+	if port == "" {
+		port = "5432"
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", fmt.Errorf("secret %s: port %q is not an integer", secretID, port)
+	}
+	u := &url.URL{Scheme: "postgres", User: url.UserPassword(user, pass), Host: host + ":" + port, Path: "/" + name}
+	q := u.Query()
+	q.Set("sslmode", "disable")
+	q.Set("application_name", appName)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // FetchJSON reads a Secrets Manager secret whose SecretString is a JSON
