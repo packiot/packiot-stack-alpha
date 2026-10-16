@@ -48,7 +48,8 @@
 #           compressed chunks match 0 rows, 10-09), lock_timeout 10s; inserted rows counted by READ-BACK
 #           (ingested_at = marker) into ops._bf_gap_<TAG>_log. Never decompress_chunk; inserts take row locks only.
 #           DRY_RUN=1: each equipment-day in a rolled-back transaction (counts only).
-#   caggs : refresh the silver continuous aggregates for every touched day (1min level before the hierarchical 1hour).
+#   caggs : refresh the silver continuous aggregates for every touched day (1min level before the hierarchical 1hour);
+#           on a database without TimescaleDB (ADR-0063): silver.rollup_refresh(FROM_TS, TO_TS) instead.
 #   twin  : ops.sbx_mirror_silver_day(lo, hi, NULL) per day, exactly the gap window (p_decompress=false), then caggs.
 #   holes : (opt-in, not in all) fill legacy's own outage holes from counter movement — see HOLES below.
 #   edge  : zero the first post-gap increments that are the outage catch-up (now duplicated by the backfill): unbacked
@@ -265,6 +266,12 @@ merge(){
 
 caggs(){
   local d0 d1 d
+  # ADR-0063 (2026-10-15): without TimescaleDB the rollups are plain tables kept by silver.rollup_refresh
+  # (minute + hour, whole buckets around the window) — refresh exactly the gap instead of whole days.
+  if [ "$(PSQL -c "SELECT to_regproc('refresh_continuous_aggregate') IS NULL")" = t ]; then
+    log "rollups refreshed: $(P "SELECT silver.rollup_refresh('${FROM_TS}'::timestamptz, '${TO_TS}'::timestamptz)") rows (${FROM_TS} → ${TO_TS})"
+    return
+  fi
   d0=$(date -u -d "${FROM_TS%+*}" +%F); d1=$(date -u -d "${TO_TS%+*}" +%F)
   d="$d0"
   while [[ ! "$d" > "$d1" ]]; do

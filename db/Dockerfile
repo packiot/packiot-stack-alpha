@@ -1,20 +1,15 @@
-# Base image PINNED (ADR-0063 Phase A4, 2026-10-14) to the exact image staging runs:
-# timescale/timescaledb:2.27.0-pg15 (PostgreSQL 15.17, Alpine 3.22). The digest is the
-# multi-arch index that `docker images --digests` shows for the base on the staging DB
-# host (built 2026-05-18 from `latest-pg15`, which then pointed here). `latest-pg15` has
-# since moved to TimescaleDB 2.28.3 / PostgreSQL 15.18, so an unpinned rebuild would
-# have upgraded the extension silently. Change this only together with an
-# `ALTER EXTENSION timescaledb UPDATE` plan (ADR-0063 "Version alignment").
-ARG TIMESCALE_IMAGE=timescale/timescaledb:2.27.0-pg15@sha256:3f77046809de51aacf70719c3662f05e0bf9d29c0c7f9d8bda6bb57a0c6fe400
+# Plain PostgreSQL + pg_cron (ADR-0063 end state, 2026-10-15): staging has no TimescaleDB objects left, so the
+# base is the official image, pinned to the SAME PostgreSQL 15.17 on Alpine 3.22 (musl) the timescale image ran —
+# same major version (the data directory is reused as is), same libc (collation behaviour unchanged), same
+# postgres uid (70). The digest is the multi-arch index of postgres:15.17-alpine3.22 (2026-10-15).
+# Every extension the databases use besides pg_cron is contrib and ships in this image:
+# btree_gist, dblink, pg_stat_statements, unaccent, pgcrypto (auto_explain is a contrib module too).
+ARG PG_IMAGE=postgres:15.17-alpine3.22@sha256:7af9362ab71f1909fd7ab33e1bb29609aea9b2ff91dbf9ffb354ea88385bd3de
 
-# Stage 1 — compile pg_cron from source against the timescale image headers.
-# The timescale image is Alpine-based (no apk pg_cron package).
-FROM ${TIMESCALE_IMAGE} AS builder
+# Stage 1 — compile pg_cron against this image's own server headers (pg_config in /usr/local/bin).
+FROM ${PG_IMAGE} AS builder
 
-RUN apk add --no-cache \
-        build-base \
-        postgresql15-dev \
-        git
+RUN apk add --no-cache build-base git
 
 ARG PGCRON_VERSION=v1.6.5
 RUN git clone --depth 1 --branch ${PGCRON_VERSION} \
@@ -22,33 +17,23 @@ RUN git clone --depth 1 --branch ${PGCRON_VERSION} \
 
 COPY clang-19-stub.sh /usr/local/bin/clang-19
 WORKDIR /pg_cron
-# PG15 bakes CLANG=clang-19 into Makefile.global; Alpine only ships clang≤16
-# and clang-16 rejects GCC-only flags as errors. pg_cron is a background
-# worker — JIT bitcode (.bc) files are never used at runtime. The stub
-# creates empty .bc output files so pgxs completes; only the .so matters.
+# PG15 bakes CLANG=clang-19 into Makefile.global for JIT bitcode; pg_cron is a background worker and its .bc
+# files are never used at runtime. The stub creates empty .bc outputs so pgxs completes; only the .so matters.
 RUN chmod +x /usr/local/bin/clang-19 \
     && mkdir -p /usr/lib/llvm19/bin \
     && printf '#!/bin/sh\nexit 0\n' > /usr/lib/llvm19/bin/llvm-lto \
     && chmod +x /usr/lib/llvm19/bin/llvm-lto \
-    && make && make install
+    && make PG_CONFIG=/usr/local/bin/pg_config && make PG_CONFIG=/usr/local/bin/pg_config install
 
-# Stage 2 — clean runtime image with pg_cron extension copied in.
-FROM ${TIMESCALE_IMAGE}
+# Stage 2 — the official image plus pg_cron's library, control and SQL files only.
+FROM ${PG_IMAGE}
 
-COPY --from=builder \
-    /usr/local/lib/postgresql/pg_cron.so \
-    /usr/local/lib/postgresql/pg_cron.so
+COPY --from=builder /usr/local/lib/postgresql/pg_cron.so /usr/local/lib/postgresql/pg_cron.so
+COPY --from=builder /usr/local/share/postgresql/extension/pg_cron* /usr/local/share/postgresql/extension/
 
-COPY --from=builder \
-    /usr/local/share/postgresql/extension/ \
-    /usr/local/share/postgresql/extension/
-
-# shared_preload_libraries (timescaledb,pg_cron,pg_stat_statements — timescaledb
-# MUST stay first) and cron.database_name are passed via the docker run -c "..."
-# flags in db_init.sh / compose, NOT baked into the image. The timescale base
-# image reads only $PGDATA/postgresql.conf, not /etc/postgresql/postgresql.conf.d,
-# so conf.d drop-ins are ignored. Because -c is the postmaster command line, it
-# overrides postgresql.conf and postgresql.auto.conf — ALTER SYSTEM cannot change
-# the preload set on a running cluster; edit db_init.sh and recreate the container.
+# shared_preload_libraries (pg_cron,pg_stat_statements,auto_explain) and cron.database_name=postgres are passed
+# via the docker run -c "..." flags in terraform/staging/user_data/db_init.sh, NOT baked into the image. -c is the
+# postmaster command line: it overrides postgresql.conf and postgresql.auto.conf, so ALTER SYSTEM cannot change the
+# preload set on a running cluster — edit db_init.sh and recreate the container.
 
 COPY docker-entrypoint-initdb.d/ /docker-entrypoint-initdb.d/

@@ -58,9 +58,9 @@ type Dest = flows.Dest
 // StateCurrent/Count LEAF topics in packml_register. For them BuildEventMint
 // never fires (no KindStateCurrent metric resolves) AND they are status_type=0,
 // so BOTH the per-sample minter and this deriver skip them → 0 equipment_events
-// → no downtimes/availability/OEE. Because ca_discrete_changes_1s already
-// carries their `state` keyed by id_equipment (resolved from the row itself, no
-// leaf topic needed), the SAME gaps-and-islands derivation mints correct
+// → no downtimes/availability/OEE. Because equipment_values already carries
+// their `state` keyed by id_equipment (resolved from the row itself, no leaf
+// topic needed), the SAME gaps-and-islands derivation mints correct
 // interval events for them. We opt those enterprises in by id via $3, restricted
 // to tp_equipment=1 MACHINES (lines aggregate from members — deriving line
 // events from a wide-row would double-count, cf. the two-writer line bug). The
@@ -68,16 +68,28 @@ type Dest = flows.Dest
 // (cleaner) passes so a minted OPEN event always has a cleaner in the same scope
 // — never an orphan open row that running_time counts to now() (the int-overflow
 // class from the EventMint↔deriver scope-mismatch bug).
+// STREAM SOURCE (ADR-0063 B4, 2026-10-15): the per-second state stream is read from
+// equipment_values directly, not from the ca_discrete_changes_1s cagg (27 s refresh
+// every 15 min, 4.8 % of DB time, this deriver its only reader). It is the same
+// stream: time_bucket('1 second') = date_trunc('second'); the bucket-start filter
+// is kept exactly (the raw-time bound is only there for chunk exclusion); and rows
+// with a NULL state are dropped because they only forward-fill the previous state
+// and can never start a transition — so the same events come out under the SAME
+// (id_equipment, ts_event) keys. Proven by deriver_raw_golden_test.go against the
+// old cagg-based CTE.
 const transitionsCTE = `
 WITH stream AS (
-    SELECT ca.ts_value AS ts_event, ca.id_equipment, ca.id_enterprise, ca.state,
-           count(ca.state) OVER (PARTITION BY ca.id_equipment ORDER BY ca.ts_value) AS grp
-      FROM %[3]s.ca_discrete_changes_1s ca
-      JOIN %[2]s.equipments e ON e.id_equipment = ca.id_equipment
-     WHERE ca.ts_value > now() - interval '25 hours'
-       AND ((e.status_type = 4 AND e.tp_equipment > 0)
-            OR (e.id_enterprise = ANY($3) AND e.tp_equipment = 1))
-       AND NOT (e.id_area = ANY($1)) AND NOT (e.id_enterprise = ANY($2))
+    SELECT r.ts_event, r.id_equipment, r.id_enterprise, r.state,
+           count(r.state) OVER (PARTITION BY r.id_equipment ORDER BY r.ts_event) AS grp
+      FROM (SELECT DISTINCT date_trunc('second', ev.ts_value) AS ts_event, ev.id_equipment, ev.id_enterprise, ev.state
+              FROM %[3]s.equipment_values ev
+              JOIN %[2]s.equipments e ON e.id_equipment = ev.id_equipment
+             WHERE ev.ts_value > now() - interval '25 hours' - interval '1 second'
+               AND date_trunc('second', ev.ts_value) > now() - interval '25 hours'
+               AND ev.state IS NOT NULL
+               AND ((e.status_type = 4 AND e.tp_equipment > 0)
+                    OR (e.id_enterprise = ANY($3) AND e.tp_equipment = 1))
+               AND NOT (e.id_area = ANY($1)) AND NOT (e.id_enterprise = ANY($2))) r
 ), filled AS (
     SELECT ts_event, id_equipment, id_enterprise,
            first_value(state) OVER (PARTITION BY id_equipment, grp ORDER BY ts_event) AS status

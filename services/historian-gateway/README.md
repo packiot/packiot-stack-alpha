@@ -134,6 +134,8 @@ No dev slice and no tests in this directory. The nearest check is the integrity 
 |---|---|
 | `docker-entrypoint-initdb.d/10-historian-gateway.sh` | first-boot init: extensions, FDW server and foreign tables, S3 secret, cold views, boundaries, unions, roles |
 | `apply-hardening.sh` | bring a running gateway to the `historian_svc` / `historian_readers` role state |
+| `docker-entrypoint-initdb.d/20-f3-cold.sql` | ADR-0065 P2: `cold.equipment_values_f3` (analytics cold export, `silver/equipment_values/…/f3.parquet`), `f3_union_boundary`, `live.cold_export`, and the 3-branch `silver.equipment_values` union (hot ≥ F3 boundary · legacy copy · F3 archive). First boot runs it after `10-…`; on a running gateway apply it by hand (idempotent): `docker exec -i hist-gateway sh -c 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < docker-entrypoint-initdb.d/20-f3-cold.sql`. Needs the analytics grant `t-adr0065-p2-histgw-cold-export`. Test: `test/f3-cold.test.sh` |
+| `refresh-f3-cutover.sql` | recomputes `f3_union_boundary` from the manifest; run by `historian-cold-export.sh` after every nightly export (no-op until `20-f3-cold.sql` is applied) |
 | `refresh-equipment_values-cutover.sql`, `refresh-ee-cutover.sql`, `refresh-po-cutover.sql` | recompute the per-enterprise boundaries (run after every append) |
 | `../../compose.historian-gateway.yml` | the container definition |
 | `../../terraform/staging/historian-gateway.tf` | IAM user and read-only bucket policy |
