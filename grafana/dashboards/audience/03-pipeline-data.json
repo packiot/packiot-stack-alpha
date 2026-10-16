@@ -48,13 +48,13 @@
     },
     { "id": 200, "type": "row", "title": "② Rollup & freshness", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 } },
     {
-      "id": 5, "type": "timeseries", "title": "Rollup freshness — cagg refresh lag (analytics only)",
-      "description": "pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"} per continuous aggregate. Filtered to the LIVE analytics DB — the packiot(F1) caggs are a frozen corpse (~48-day lag, ADR-0032) and are intentionally excluded. A climbing silver cagg = the medallion rollup is falling behind.",
+      "id": 5, "type": "timeseries", "title": "Rollup freshness — newest bucket lag (analytics)",
+      "description": "pg_rollup_freshness_lag_seconds{datname=\"packiot_analytics\"} per rollup table (plain tables kept by silver.rollup_tick since ADR-0063 B2; 1-hour rollups lag up to ~1 h by design). Filtered to the LIVE analytics DB — the packiot(F1) caggs are a frozen corpse (~48-day lag, ADR-0032) and are intentionally excluded. A climbing silver cagg = the medallion rollup is falling behind.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 4, "showPoints": "never" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 900 }, { "color": "red", "value": 3600 } ] } }, "overrides": [] },
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"}", "legendFormat": "{{schema}}.{{cagg}}", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "pg_rollup_freshness_lag_seconds{datname=\"packiot_analytics\"}", "legendFormat": "{{table}} ({{grain}})", "refId": "A" } ]
     },
     {
       "id": 6, "type": "stat", "title": "runtime-rollup ticks / s",
@@ -66,22 +66,22 @@
       "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(rate(oeecloud_worker_job_ticks_total{exported_job=~\"runtime-rollup.*\"}[15m]))", "refId": "A" } ]
     },
     {
-      "id": 7, "type": "stat", "title": "TimescaleDB bg-jobs failing (analytics)",
-      "description": "count of pg_timescaledb_jobs_last_run_success == 0 on packiot_analytics — background jobs whose last run failed. 0 = healthy. Scoped to the live DB (the F1 corpse carries failing legacy jobs).",
+      "id": 7, "type": "stat", "title": "Scheduled jobs failing (pg_cron, 24 h)",
+      "description": "sum of pg_cron_job_failed_24h — failed runs of the analytics housekeeping jobs (partition maintenance, purge, downtime cache, invariants) in the last 24 h. 0 = healthy. Was the TimescaleDB job status (ADR-0063 C2 moved the jobs to pg_cron).",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 14 },
       "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(pg_timescaledb_jobs_last_run_success{datname=\"packiot_analytics\"} == bool 0)", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "sum(pg_cron_job_failed_24h)", "refId": "A" } ]
     },
     {
-      "id": 8, "type": "stat", "title": "Silver cagg lag (max, analytics)",
-      "description": "max cagg refresh lag on packiot_analytics — the worst-case rollup staleness in one number.",
+      "id": 8, "type": "stat", "title": "Silver rollup lag (max, 1-min, analytics)",
+      "description": "max newest-bucket lag of the 1-min rollups on packiot_analytics — the worst-case rollup staleness in one number.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 18 },
       "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 900 }, { "color": "red", "value": 3600 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"})", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_rollup_freshness_lag_seconds{datname=\"packiot_analytics\", grain=\"1min\"})", "refId": "A" } ]
     },
     {
       "id": 9, "type": "stat", "title": "Outbox depth / oldest age",
