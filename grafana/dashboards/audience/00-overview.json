@@ -67,13 +67,13 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "Rollup freshness (max cagg lag)",
-      "description": "max(pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"}) — worst-case staleness of the medallion rollup. Replaces the retired mirror_worker_cursor_lag_seconds tile (mirror-worker-go scrape is disabled). Analytics DB only; the F1 corpse is excluded.",
+      "title": "Rollup freshness (max lag, 1-min rollups)",
+      "description": "max(pg_rollup_freshness_lag_seconds{datname=\"packiot_analytics\", grain=\"1min\"}) — worst-case staleness of the minute rollups (plain tables kept by silver.rollup_tick since ADR-0063; was the TimescaleDB cagg lag). Replaces the retired mirror_worker_cursor_lag_seconds tile (mirror-worker-go scrape is disabled). Analytics DB only; the F1 corpse is excluded.",
       "datasource": { "type": "prometheus", "uid": "packiot-prometheus" },
       "gridPos": { "h": 5, "w": 4, "x": 12, "y": 7 },
       "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 900 }, { "color": "red", "value": 3600 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_timescaledb_cagg_seconds_since_last_success{datname=\"packiot_analytics\"})", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "packiot-prometheus" }, "expr": "max(pg_rollup_freshness_lag_seconds{datname=\"packiot_analytics\", grain=\"1min\"})", "refId": "A" } ]
     },
     {
       "id": 6,
