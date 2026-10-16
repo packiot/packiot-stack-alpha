@@ -215,7 +215,12 @@ services:
         # hardcoded overwrite=False), and it runs as the minter, which has no can_write
         # once scoped. sync_assets.py below is what makes the YAML win on every boot.
         python /app/pythonpath/import_bundle.py
-        superset import-dashboards -p /tmp/superset-bundle.zip -u "$${SUPERSET_GUESTTOKEN_ADMIN_USER}"
+        # As an ADMIN (same identity order as sync_assets.py): bootstrap_guest_role.py above has just scoped the
+        # minter off Admin, so on a FRESH metadata DB the minter could not create the datasets ("Dataset doesn't
+        # exist and user doesn't have permission to create datasets" — prod go-live 2026-10-16). Staging never hit
+        # it because its datasets predate the scoping.
+        superset import-dashboards -p /tmp/superset-bundle.zip \
+          -u "$${SUPERSET_ASSET_SYNC_USER:-$${SUPERSET_ADMIN_USER:-$${SUPERSET_GUESTTOKEN_ADMIN_USER}}}"
         # Apply EVERY database asset (URI + safety flags), dashboard-referenced or not —
         # see configs/superset/sync_databases.py (historian_union was never imported).
         python /app/pythonpath/sync_databases.py
