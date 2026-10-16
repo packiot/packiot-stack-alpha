@@ -84,6 +84,7 @@ CREATE PROCEDURE ops.job_data_invariants(job_id int DEFAULT NULL, config jsonb D
 GRANT USAGE ON SCHEMA core, silver TO readapi_ro;
 GRANT SELECT ON core.enterprises, core.equipments, silver.equipment_events, silver.equipment_values,
                 silver.equipment_categorical_1min, silver.equipment_metrics_1min TO readapi_ro;
+COMMENT ON CONSTRAINT equipments_production_speed_check ON core.equipments IS 'speed is never negative';   -- a CHECK comment must survive the load
 INSERT INTO core.enterprises VALUES (3, 'CPACK', 'k3'), (5, 'Bispharma-Staging', 'k5'), (1000000, 'Packiot Admin', 'ka');
 INSERT INTO core.equipments (id_enterprise, nm_equipment, production_speed) VALUES (5, 'L1', 110), (5, 'L2', 90), (3, 'C1', 50);
 INSERT INTO silver.equipment_events SELECT now() - make_interval(hours => g), 1 + g % 3, CASE WHEN g % 3 = 2 THEN 3 ELSE 5 END, g % 4 FROM generate_series(1, 200) g;
@@ -142,6 +143,8 @@ got=$(ptgt -c "SELECT string_agg(rel || ':' || step, ',' ORDER BY rel) FROM ops.
 got=$(ptgt -c "SELECT string_agg(relation || '=' || coalesce(keep::text, 'forever') || ':' || kind, ',' ORDER BY relation) FROM ops.retention_policy")
 [ "$got" = 'silver.equipment_categorical_1min=forever:plain,silver.equipment_events=5 years:plain,silver.equipment_values=forever:plain' ] \
   || fail "retention catalog on target (want staging's, hot_raw forever): $got"
+got=$(ptgt -c "SELECT obj_description(oid, 'pg_constraint') FROM pg_constraint WHERE conname = 'equipments_production_speed_check'")
+[ "$got" = 'speed is never negative' ] || fail "CHECK constraint comment lost on target: '$got'"
 got=$(ptgt -c "SELECT count(*) FROM ops.cold_export"); [ "$got" = 0 ] || fail "staging's cold-tier manifest travelled ($got rows)"
 got=$(ptgt -c "SELECT count(*) FROM pg_class WHERE relname LIKE '%\_\_old' OR relname = 'equipment_metrics_1min_b'"); [ "$got" = 0 ] || fail "staging-only __old objects on target ($got)"
 got=$(ptgt -c "SELECT count(*) FROM silver.equipment_values_pmax"); [ "$got" = 0 ] || fail "rows in the upper catch-all ($got)"

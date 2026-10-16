@@ -6,8 +6,9 @@ user's: merging `release/prod-promotion-2026-10` into `production` deploys.
 
 **2026-10-16 — adapted to TimescaleDB-free staging** (ADR-0063 end state, ADR-0065): the new prod database is born
 **without TimescaleDB** (native partitions, the rollup tick, housekeeping from host timers). The rehearsal above ran on the
-TimescaleDB shape; the TS-free path is proven by `selftest-clean-server.sh` (§2.2) and needs one more clone rehearsal
-before the go. Changes are marked **(TS-free)** below.
+TimescaleDB shape; the TS-free path is proven by `selftest-clean-server.sh` (§2.2) and by a clone rehearsal on the prod
+server shape with real data ([2026-10-16 report](go-live-bispharma-rehearsal-2026-10-16-ts-free.md): every gate 0,
+`roles`→`seqfloor` 198 s, refresh 0.26 s, rollback 5.3 s). Changes are marked **(TS-free)** below.
 
 **Scope (user decisions, 2026-10-15):**
 - Production goes live for **Bispharma only**.
@@ -250,7 +251,7 @@ peering id, +1 route.
 | 3 | **Staging extract** (READ ONLY, one REPEATABLE READ snapshot), streamed to S3 `promotion-rehearsal/<date>/` (a go-live prefix of the same bucket), then to the DB host | 55 s extract + 56 s upload + 10 s download |
 | 4 | `xplant.sh roles … seqfloor` (§2.2) | 155 s on r7g.large (of which `tload` 109 s, `seqfloor` 28 s) |
 | 5 | Gates (§2.3): fingerprint and purity diff, compare-catalog, compare-acl | ~1 min |
-| 6 | **Swap**: terminate connections; `packiot → packiot_pre_promotion`; `packiot_next → packiot`; `start_background_workers()` **in `packiot_pre_promotion` only** (TS-free: the new `packiot` has no timescaledb, the call would fail there); read back `current_database()` and the extension versions (`packiot`: no timescaledb) | 68 ms SQL |
+| 6 | **Swap**: `ALTER DATABASE … WITH ALLOW_CONNECTIONS false` on both (TimescaleDB workers reconnect otherwise), terminate connections; `packiot → packiot_pre_promotion`; `packiot_next → packiot`; `start_background_workers()` **in `packiot_pre_promotion` only** (TS-free: the new `packiot` has no timescaledb, the call would fail there); read back `current_database()` and the extension versions (`packiot`: no timescaledb) | 68 ms SQL |
 | 7 | `XPLANT_DB=packiot xplant.sh refresh` in the background. **(TS-free)** only `serving.downtime_events_resolved` is rebuilt (no caggs; the rollup tables travelled) — seconds, not minutes. Shred `/root/tenant5` | 438–563 s (TS shape) |
 | 7a | **(TS-free) Housekeeping timers** on the DB host: copy `scripts/ops/analytics-housekeeping.sh`, `scripts/ops/install-analytics-housekeeping.sh` and `systemd/analytics-housekeeping@*` keeping the repo layout (with the xplant bundle), then `sudo bash scripts/ops/install-analytics-housekeeping.sh` → 3 timers listed. Check: `systemctl start analytics-housekeeping@partition-maintain` → exit 0 | — |
 | 8 | `provision-db-role.py --env production --db-name packiot --db-host 10.20.10.89 --admin-host 10.20.10.89` on the prod app host for stream-engine, legacy-replicator and operator-gateway (10-14 item 7), **and `--service readapi-ro`**. The transplant creates `readapi_ro` LOGIN *without* a password; this applies terraform's `internal-keys.readapi_ro_password` (= `READAPI_RO_PASSWORD` in `.env`) and logs in with it. Without it read-api, and so every dashboard, fails auth after step 10 (found 2026-10-15; the rehearsal set it in a clone-only script). `superset_ro` needs nothing: it is server-level and already has its password | — |
@@ -282,7 +283,7 @@ Bispharma never left staging: staging's box instance, staging's cloud and the st
 | Box | `uninstall-prod.sh` (stops `packiot-prod` only) | yes: 10.4 s; staging instance untouched |
 | Prod services | `docker compose -f compose.production.yml stop` | yes |
 | Housekeeping timers (TS-free) | **First**: `sudo bash scripts/ops/install-analytics-housekeeping.sh --disable` on the DB host — they would otherwise run against the old DB once it is `packiot` again | — |
-| Prod DB | Rename `packiot → packiot_bispharma_rolled_back` and `packiot_pre_promotion → packiot`. Then, to restore the old runtime too, stop the 2.27 container and `docker start timescaledb-2252`. The rolled-back DB opens only under the 2.27 image | yes: 22 ms SQL, image back in 2.3 s, **5.9 s total**; old layout served, `authentik`/`superset` intact |
+| Prod DB | Rename `packiot → packiot_bispharma_rolled_back` and `packiot_pre_promotion → packiot`. Then, to restore the old runtime too, stop the 2.27 container and `docker start timescaledb-2252`. The rolled-back DB opens only under the 2.27 image | yes: 22 ms SQL, image back in 2.3 s, **5.9 s total**; old layout served, `authentik`/`superset` intact. TS-free (10-16): 5.3 s; the rolled-back DB now also opens under the old image |
 | Staging mirror | Remove `PROD_MIRROR_ENTERPRISES` from staging's `/opt/packiot/.env`; recreate `edge-api barcode-service stream-engine prod-reflector` → staging is the master again (writes reopen, its engine resumes ent 5 from the next hour, the reflector idles). Everything production did until then is already on staging. Optional: `UPDATE core.enterprises SET nm_enterprise = 'Bispharma-Staging' WHERE id_enterprise = 5` on staging; peering terraform back to off later | inert-by-default proven in tests; switch is config only |
 | Users | Back to the staging URLs (`front.staging`, `operator-bispharma.staging`), which accept writes again once the mirror is off | — |
 
