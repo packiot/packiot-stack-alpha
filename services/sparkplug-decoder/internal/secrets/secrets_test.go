@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -127,5 +128,50 @@ func TestFetchAMQPCreds_SMMissingFieldsStillErrors(t *testing.T) {
 	_, err := FetchAMQPCreds(context.Background(), "us-east-1", "some/secret", "rabbitmq", 5672)
 	if err == nil || !strings.Contains(err.Error(), "secret some/secret: missing username or password") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestFetchDBDSN_ProvisionShape(t *testing.T) {
+	// provision-db-role.py writes port as a JSON number and the hex password; a password with URL
+	// metacharacters must still round-trip through percent-encoding.
+	stubSM(t, map[string]any{"host": "10.20.10.89", "port": float64(5432), "user": "sparkplug_agent",
+		"password": "p@ss/w:rd?#", "name": "packiot"}, nil)
+	dsn, err := FetchDBDSN(context.Background(), "us-east-1", "packiot/production/sparkplug-agent-db-creds", "sparkplug-agent-register")
+	if err != nil {
+		t.Fatalf("FetchDBDSN: %v", err)
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse %q: %v", dsn, err)
+	}
+	pw, _ := u.User.Password()
+	if u.User.Username() != "sparkplug_agent" || pw != "p@ss/w:rd?#" || u.Host != "10.20.10.89:5432" || u.Path != "/packiot" {
+		t.Fatalf("dsn fields wrong: user=%q host=%q path=%q pwok=%v", u.User.Username(), u.Host, u.Path, pw == "p@ss/w:rd?#")
+	}
+	if u.Query().Get("application_name") != "sparkplug-agent-register" || u.Query().Get("sslmode") != "disable" {
+		t.Fatalf("query wrong: %s", u.RawQuery)
+	}
+}
+
+func TestFetchDBDSN_MissingFieldsFailClosed(t *testing.T) {
+	for _, drop := range []string{"host", "user", "password", "name"} {
+		raw := map[string]any{"host": "h", "user": "u", "password": "p", "name": "n"}
+		delete(raw, drop)
+		stubSM(t, raw, nil)
+		if _, err := FetchDBDSN(context.Background(), "r", "s", "a"); err == nil {
+			t.Fatalf("missing %s: want an error", drop)
+		}
+	}
+	stubSM(t, map[string]any{"host": "h", "user": "u", "password": "p", "name": "n", "port": "x"}, nil)
+	if _, err := FetchDBDSN(context.Background(), "r", "s", "a"); err == nil {
+		t.Fatal("non-integer port: want an error")
+	}
+}
+
+func TestFetchDBDSN_PasswordNotInError(t *testing.T) {
+	stubSM(t, map[string]any{"host": "h", "user": "u", "password": "s3cr3t-value"}, nil) // no name
+	_, err := FetchDBDSN(context.Background(), "r", "s", "a")
+	if err == nil || strings.Contains(err.Error(), "s3cr3t-value") {
+		t.Fatalf("want an error without the password, got %v", err)
 	}
 }

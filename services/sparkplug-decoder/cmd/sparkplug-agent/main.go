@@ -1769,12 +1769,17 @@ func installRegisterTagMap(ctx context.Context, cfg *agentcfg.Config, prof *tena
 }
 
 // registerDSN builds a postgres DSN. AGENT_REGISTER_DSN wins if set (a full
-// URL); otherwise it is assembled from DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/
-// DB_NAME with proper percent-encoding — the same DB_* convention the sibling
-// services use.
+// URL); then AGENT_DB_SECRET_ID (the least-privilege login from Secrets
+// Manager, register_dsn_secret.go — a fetch error is returned, never a silent
+// fallback to DB_*); otherwise it is assembled from DB_HOST/DB_PORT/DB_USER/
+// DB_PASSWORD/DB_NAME with proper percent-encoding — the same DB_* convention
+// the sibling services use.
 func registerDSN() (string, error) {
 	if v := os.Getenv("AGENT_REGISTER_DSN"); v != "" {
 		return v, nil
+	}
+	if dsn, ok, err := secretRegisterDSN(); ok {
+		return dsn, err
 	}
 	user := os.Getenv("DB_USER")
 	pass := os.Getenv("DB_PASSWORD")
