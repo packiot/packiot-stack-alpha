@@ -1,0 +1,278 @@
+# Alerting rules for PRODUCTION (loaded by prometheus.production.yml). Staging's are rules.yml.
+#
+# Derived from rules.yml on 2026-10-16. Kept: every rule whose signal production emits (or emits once a
+# profile-gated service is enabled — those rules are inert until then). Left out, on purpose:
+#   * staging-only mechanisms: FlowWriteImbalance (F1/shadow legs), ProdMirror* (ADR-0064 reflector runs on
+#     staging), DbBoxMetricsMissing (no Alloy relay on production), the Backup* rules (no backup textfile
+#     metrics reach production's Prometheus yet), the TimescaleDB cagg/job rules (production is TimescaleDB-free),
+#     the flip-readiness recording rule (no bake metrics).
+#   * datname="packiot_analytics" → "packiot": production's single database.
+# When you change a shared rule in rules.yml, change it here too.
+groups:
+  - name: packiot-production
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.job }} not scrapeable for 5m (crashed or wedged)"
+
+      - alert: EngineJobErrorStreak
+        expr: sum by (exported_job) (increase(oeecloud_worker_job_ticks_total{outcome="error"}[15m])) > 2
+        labels: {severity: page}
+        annotations:
+          summary: "engine job {{ $labels.exported_job }} failed >2 ticks in 15m — check stream-engine logs"
+
+      - alert: StreamEngineJobStalled
+        expr: |
+          sum by (exported_job) (increase(oeecloud_worker_job_ticks_total{outcome="ok",
+            exported_job=~"po-runtime-refresh|runtime-rollup|runtime-rollup-hour-backfill|events-deriver|cpac-events-deriver|events-close-stale|uns-current-metrics|boxes-bridge"}[15m])) < 1
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "engine job {{ $labels.exported_job }} had no successful tick in 15m"
+
+      - alert: EngineStalled
+        expr: sum(increase(oeecloud_worker_job_ticks_total[15m])) < 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "NO engine job ticked in 15m — scheduler wedged (jobs.Loop) or worker half-dead"
+          runbook_url: "https://grafana.prod.packiot.app/d/aud-debug-ingest"
+
+      - alert: IngestSilent
+        expr: sum(increase(oeecloud_worker_amqp_deliveries_total[10m])) < 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "no AMQP deliveries in 10m — upstream chain dark (edge box → sparkplug-agent-shared → rabbitmq)"
+          runbook_url: "https://grafana.prod.packiot.app/d/aud-debug-ingest"
+
+      - alert: WritePathDry
+        expr: sum(increase(oeecloud_worker_batch_writes_total[15m])) < 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "deliveries arriving but nothing written in 15m — resolver/DB path broken; see 13-database-reach board"
+          runbook_url: "https://grafana.prod.packiot.app/d/aud-debug-ingest"
+
+      - alert: ClientIngestStopped
+        expr: |
+          (sum by (tenant) (increase(oeecloud_worker_batch_writes_total{result="ok"}[15m])) < 1)
+          and
+          (sum by (tenant) (increase(oeecloud_worker_batch_writes_total{result="ok"}[6h] offset 15m)) > 100)
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "client {{ $labels.tenant }} stopped ingesting — 0 writes in 15m (was active in the prior 6h)"
+          runbook_url: "https://grafana.prod.packiot.app/d/aud-debug-ingest?var-tenant={{ $labels.tenant }}"
+
+  - name: packiot-production-pipeline
+    rules:
+      - alert: BatchWriteErrors
+        expr: sum(increase(oeecloud_worker_batch_writes_total{result="error"}[15m])) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Worker batch statements erroring"
+      - alert: OeeUnroutableMessages
+        expr: rabbitmq_detailed_queue_messages{queue="oee-unroutable-q"} > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "oee-unroutable-q holds {{ $value }} msgs — a tenant's SparkPlug data is hitting no `oee` binding (unprovisioned tenant or routing-key drift); caught by the alternate-exchange, not dropped"
+      - alert: PackmlUnroutableTopic
+        expr: sum by (tenant) (rate(packml_unresolved_topic_total[10m])) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is publishing a SparkPlug topic with no active packml_register row for 15m — its equipment_values are silently empty. Check onboarding / apply-register and the packml_register.active flag; the offending topic is in the stream-engine `topic not registered, skipping` log (sampled 1/32)."
+      - alert: BirthBindVerifyMismatch
+        expr: sum by (tenant, result) (increase(oeecloud_worker_birthbind_verify_total{result=~"mismatch_.*"}[15m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "tenant {{ $labels.tenant }}: {{ $value }} counter metrics' birth-bound identity disagrees with packml_register ({{ $labels.result }}, 15m) — fix the binding or the register row before the switch; the 7-day zero-mismatch clock restarts."
+      - alert: BirthBoundQuarantine
+        expr: sum by (tenant) (increase(oeecloud_worker_birthbound_resolve_total{result="quarantined"}[10m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "tenant {{ $labels.tenant }} is switched to birth-bound ids and {{ $value }} counter metrics were quarantined in 10m (not written). Check the edge box's NBIRTH (dk_ keys, EMIT_DEFINITIVE_BIRTH) or roll back via BIRTHBOUND_SWITCHED_ENTERPRISES."
+      # sparkplug-decoder (edge-transformer job) — inert until the client-ingest profile is on.
+      - alert: MQTTDisconnected
+        expr: edge_transformer_mqtt_connected == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "sparkplug-decoder lost Mosquitto — MQTT ingestion is down"
+      - alert: TransformerOutboxBacklog
+        expr: outbox_depth > 1000
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "sparkplug-decoder outbox holds {{ $value }} rows for 10m — drain slow or broker refusing (board 10)"
+      - alert: TransformerOutboxStale
+        expr: outbox_oldest_age_seconds > 900
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "oldest outbox row >15min old — drain wedged; data is durable but NOT flowing (board 10)"
+      - alert: TransformerPublishNacked
+        expr: increase(edge_transformer_shadowpub_nacked_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "RabbitMQ nacked decoder publishes in the last 15m — broker pressure or topology drift"
+      - alert: TransformerMqttDrops
+        expr: increase(edge_transformer_mqtt_dropped_events_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "sparkplug-decoder dropped MQTT events — decode failures or backpressure (board 10/11)"
+      - alert: SparkplugSeqGapStream
+        expr: increase(edge_transformer_sparkplug_seq_gaps_total[30m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "SparkPlug sequence gaps streaming ({{ $value }} in 30m) — message loss upstream of the decoder"
+      # legacy-replicator — inert until the legacy-replicator profile is on.
+      - alert: ShadowMirrorFailures
+        expr: increase(shadow_mirror_failed_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.job }} replay failures — operator-action parity hole (board 12)"
+      - alert: ReplicatorReplayGaps
+        expr: sum by (table) (increase(shadow_mirror_update_noop_total{job="legacy-replicator"}[30m])) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "legacy-replicator: zero-row UPDATEs on {{ $labels.table }} for 30m — operator-action replay gap (topology drift / unresolved id-map)"
+      - alert: POStalenessGateRejectingWrites
+        expr: sum by (route) (rate(http_request_duration_seconds_count{job="edge-api", route=~"/api/production-orders/.*", status="409"}[5m])) > 0
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "PO staleness gate returning 409 on {{ $labels.route }} for 10m — it may be rejecting LEGITIMATE writes (STALE_HEAD/RANGE_CONFLICT/BEYOND_HORIZON). Check board v2-po-staleness-gate."
+
+  - name: packiot-production-host-and-db
+    rules:
+      # App host only (node-exporter). The DB host has no metrics path to this Prometheus yet.
+      - alert: HostDiskFilling
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.15
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }} root filesystem <15% free — the 2026-06-22 incident class; prune images/build cache"
+      - alert: HostDiskHigh
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.20
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }} root filesystem >80% used — plan a resize or prune"
+      # The app host has 7.8 GB and no swap headroom to speak of; staging swap-died on this box class.
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }} has <10% memory available for 15m — find the hog: topk(5, container_memory_working_set_bytes{name!=\"\"})"
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "postgres-exporter cannot reach the production DB (packiot) — everything downstream is about to page"
+      - alert: PostgresConnectionsHigh
+        # DB max_connections=200 (terraform/production/database.tf). >160 = 80%.
+        expr: sum(pg_stat_database_numbackends) > 160
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} DB backends (>80% of max_connections=200) — connection leak or pgbouncer bypass growing"
+      - alert: RetentionPolicyDrift
+        expr: pg_retention_drift_rows > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "ops.retention_drift has {{ $value }} rows — live retention differs from the catalog; SELECT * FROM ops.retention_drift"
+      - alert: RetentionPurgeErrors
+        expr: pg_retention_purge_errors_24h > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "catalog purge logged {{ $value }} errors in 24h — SELECT * FROM ops.retention_run WHERE error IS NOT NULL"
+      # ADR-0065 data lifecycle. Production runs partition maintenance + the invariants from systemd timers on
+      # the DB host (analytics-housekeeping@*.timer) and the cold export on the app host.
+      - alert: PartitionCoverageLow
+        expr: pg_partition_lifecycle_days_ahead < 14
+        for: 1h
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.schema }}.{{ $labels.table }} has only {{ $value | humanize }} days of partitions ahead — partition maintenance (analytics-housekeeping@partition-maintain.timer, DB host) is not running; inserts past the last bound land in the catch-all"
+      - alert: PartitionCatchallRows
+        expr: pg_partition_lifecycle_catchall_rows > 0
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.schema }}.{{ $labels.table }} catch-all partitions hold ~{{ $value }} rows — out-of-range timestamps (clock skew?) or missing partitions"
+      - alert: ColdExportLagging
+        expr: pg_cold_export_lag_days > 3
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.relation }}: newest verified cold export is {{ $value | humanize }} days behind — journalctl -u historian-cold-export (app host)"
+      - alert: ColdExportUnverified
+        expr: pg_cold_export_unverified > 0
+        for: 26h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.relation }}: {{ $value }} exported files still unverified after a full day — the read-back keeps mismatching the hot slice"
+      - alert: PartitionDropBlockedLong
+        expr: pg_partition_drop_blocked_oldest_days > 7
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value | humanize }} days a partition past retention has waited for its verified cold copy — disk grows until the export covers it; SELECT * FROM ops.partition_drop_blocked"
+      - alert: RollupInvalidationBacklog
+        expr: pg_rollup_invalidation_backlog > 20000
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} late-data ranges waiting in silver.rollup_invalidation — rollup_tick is not draining (stream-engine rollupshadow)"
+      # ── Standing data invariants (ops.data_invariant_latest, written every 30 min by
+      # analytics-housekeeping@data-invariants.timer on the DB host). Same filter as staging: only
+      # severity critical / warn alert; `info` checks (e.g. a known dead PLC in L2) never page. ──
+      - alert: DataInvariantCritical
+        expr: pg_data_invariant_ok{datname="packiot",severity="critical"} == 0
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "data invariant {{ $labels.check_id }} failing for enterprise {{ $labels.ent }} (observed {{ with printf `pg_data_invariant_observed{datname=\"packiot\",check_id=\"%s\",ent=\"%s\"}` $labels.check_id $labels.ent | query }}{{ . | first | value }}{{ end }}) — SELECT * FROM ops.data_invariant_latest WHERE NOT ok"
+      - alert: DataInvariantWarn
+        expr: pg_data_invariant_ok{datname="packiot",severity="warn"} == 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "data invariant {{ $labels.check_id }} failing for enterprise {{ $labels.ent }} — SELECT * FROM ops.data_invariant_latest WHERE NOT ok"
+      - alert: DataInvariantsStale
+        expr: pg_data_invariant_run_age_seconds{datname="packiot"} > 5400 or absent(pg_data_invariant_run_age_seconds{datname="packiot"})
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "the data-invariant run has not completed for >90 min (analytics-housekeeping@data-invariants.timer on the DB host, or postgres-exporter cannot read ops.*) — the invariants are blind"
+      - alert: DataInvariantsSlow
+        expr: avg_over_time(pg_data_invariant_observed{datname="packiot",check_id="Z_invariants_run"}[3h]) > 400
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "data-invariant battery averages {{ $value | humanize }} s per run (budget 600 s) — split the slowest checks: topk(5, pg_data_invariant_check_seconds)"
+      # hist-gateway — inert until the historian profile is on (blackbox-historian is DNS-discovered).
+      - alert: HistorianGatewayDown
+        expr: probe_success{instance="hist-gateway:5432"} == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "historian-gateway (ev_all hot+cold union) unreachable >5m — Superset/tools cold queries fail"
+      - alert: PublicEndpointDown
+        expr: probe_success{job="blackbox"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }} has not answered for 5m (blackbox http_2xx; a login redirect counts as up)"

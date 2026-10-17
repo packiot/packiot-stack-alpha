@@ -33,8 +33,9 @@
 #       (all synthetic / CPACK-specific ingest) ; mirror-worker-go (prod IS the
 #       source, nothing to mirror) ; shadow-mirror (no F1→F3 cross-DB bridge in a
 #       single-flow DB — edge-api writes F3 directly, roadmap §5) ; edge-nodered
-#       (per-factory, ADR-0005) ; barcode-service / tempo / alertmanager /
-#       *-exporter / cadvisor / blackbox (nice-to-have, port after the data path).
+#       (per-factory, ADR-0005) ; barcode-service / tempo.
+#     (alertmanager, postgres/node/redis/blackbox exporters and cadvisor were ported 2026-10-16 —
+#      production alerting; see the "Alerting + exporters" block.)
 #   - INCLUDES the migrated data/read/PO plane (roadmap §1.1 blockers):
 #       mosquitto · edge-transformer · ingest-shim · oeecloud-worker ·
 #       refdata-api · app-redis · operator-adapter.
@@ -79,6 +80,7 @@ volumes:
   grafana-data:
   loki-data:
   prom-data:
+  alertmanager-data:         # alertmanager silences + notification log
   rabbitmq-data:
   mosquitto-data:            # ADR-0011 P0-2: retained NBIRTHs survive broker restart
   edge_transformer_outbox:   # ADR-0011 P2: SQLite outbox survives container restart
@@ -93,6 +95,7 @@ volumes:
 # .19 operator        .20 oeecloud-worker   .22 prometheus
 # .23 edge-transformer  .24 mosquitto       .26 refdata-api        .27 hist-gateway
 # .29 ingest-shim     .30 db-init-bootstrap .31 operator-adapter   .35 app-redis
+# .11 blackbox-exporter .28 postgres-exporter .32 alertmanager .33 node-exporter .34 cadvisor .37 redis-exporter
 #
 # DELIBERATELY ABSENT vs staging (see header):
 # .4  edge-nodered · .11 simulator/plc-sim · .21 mirror-worker-go · .25 shadow-mirror
@@ -663,14 +666,19 @@ services:
       options: {max-size: "5m", max-file: "2"}
 
   # ── Prometheus ────────────────────────────────────────────────────────────────
+  # PRODUCTION config = monitoring/prometheus/prometheus.production.yml (+ rules.production.yml). Until 2026-10-16
+  # this mounted staging's prometheus.yml as a single FILE: env=staging on every series, rules never loaded, no
+  # Alertmanager, 11/22 targets permanently down. Now a DIRECTORY bind mount like staging (inode trap #39: a
+  # single-file bind keeps the old inode after a git checkout); deploy-production.yml POSTs /-/reload after
+  # `up -d`, so config/rule edits need no recreate. config_rev bumped: the command changed (new config file).
   prometheus:
     image: prom/prometheus:v3.1.0
     container_name: prometheus
     restart: unless-stopped
     labels:
-      - "config_rev=2026-07-27-production-f3native"
+      - "config_rev=2026-10-16-production-alerting"
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
+      - --config.file=/etc/prometheus/prometheus.production.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=15d
       - --storage.tsdb.retention.size=2GB
@@ -683,7 +691,7 @@ services:
       packiot-net:
         ipv4_address: 172.18.0.22
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus:/etc/prometheus:ro
       - prom-data:/prometheus
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
@@ -694,6 +702,162 @@ services:
     logging:
       driver: json-file
       options: {max-size: "5m", max-file: "2"}
+
+  # ── Alerting + exporters (2026-10-16: production had NO working alerting) ──────
+  # Same images/versions as compose.staging.yml. Budget on the 7.8 GB app host (~4.2 GB available): the six
+  # containers below are capped at 1.0 GB together (typical use ~250 MB) and 1.6 CPUs.
+  #
+  # alertmanager: routes rules.production.yml to Slack (monitoring/alertmanager/alertmanager.production.yml,
+  # messages titled ":factory: PRODUCTION"). NOT profile-gated (unlike staging): alertmanager v0.27 reads
+  # slack_api_url_file only when it sends, so it starts and holds alerts (UI, silences) without the webhook.
+  # The webhook is a SECRET: deploy-production.yml writes it from Secrets Manager packiot/production/app
+  # .slack_api_url to /opt/packiot/alerting/slack_api_url (outside the CI workspace, so a checkout's git clean
+  # never deletes it); absent key → warning, deploy continues, notifications fail until the key exists.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.production.yml
+      - --storage.path=/alertmanager
+    volumes:
+      # DIRECTORY bind mounts (inode trap #41); deploy-production.yml POSTs /-/reload after `up -d`.
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
+      - /opt/packiot/alerting:/etc/alertmanager-secrets:ro
+      - alertmanager-data:/alertmanager
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.32
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 128m
+    cpus: 0.2
+
+  # postgres-exporter: the production DB (`packiot` on the r7g DB host), as the least-privilege login
+  # postgres_exporter (db/migrations/t-postgres-exporter-role; NOT the admin — scripts/ci/check-db-least-priv.py).
+  # Carries the in-DB data invariants (ops.data_invariant_latest → DataInvariant* rules) and the ADR-0065
+  # lifecycle gauges. Single DB, no auto-discovery: the role has CONNECT on packiot only.
+  # Password: deploy-production.yml writes packiot/production/postgres-exporter-db-creds .password (created on
+  # the host by scripts/ops/provision-db-role.py) to /opt/packiot/postgres-exporter/password. The exporter EXITS
+  # when DATA_SOURCE_PASS_FILE is missing, so the entrypoint waits for the file instead of crash-looping; until
+  # then the target is down and ScrapeTargetDown says so (a deliberate nag that provisioning is incomplete).
+  # queries.yaml is read only at startup: deploy-production.yml restarts it when monitoring/postgres-exporter/
+  # changed (same as staging).
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until [ -s /etc/pgexporter-secrets/password ]; do
+          echo "waiting for /etc/pgexporter-secrets/password (packiot/production/postgres-exporter-db-creds, written at deploy)"
+          sleep 60
+        done
+        exec /bin/postgres_exporter
+    environment:
+      DATA_SOURCE_URI: "${POSTGRES_HOST_UPSTREAM}:5432/packiot?sslmode=disable"
+      DATA_SOURCE_USER: postgres_exporter
+      DATA_SOURCE_PASS_FILE: /etc/pgexporter-secrets/password
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "false"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/pgexporter/queries.yaml
+    volumes:
+      - ./monitoring/postgres-exporter:/etc/pgexporter:ro
+      - /opt/packiot/postgres-exporter:/etc/pgexporter-secrets:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.28
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 128m
+    cpus: 0.3
+
+  # node-exporter: app-host CPU / memory / DISK (the 2026-06-22 disk-full incident class).
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.33   # staging's .27 is hist-gateway here
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 64m
+    cpus: 0.2
+
+  # redis-exporter: app-redis (read-api cache) — memory, evictions, hit/miss.
+  redis-exporter:
+    # non-alpine tag = the multi-arch manifest (the -alpine one is amd64-only; crashlooped on staging's arm64).
+    image: oliver006/redis_exporter:v1.62.0
+    platform: linux/arm64
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://app-redis:6379
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.37
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 64m
+    cpus: 0.1
+
+  # blackbox-exporter: synthetic uptime of the public URLs + internal health endpoints (PublicEndpointDown).
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.11
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 64m
+    cpus: 0.1
+
+  # cadvisor: per-CONTAINER CPU/memory (which container is the hog when HostMemoryLow fires).
+  # --housekeeping_interval=30s (default 1s) + --docker_only keep its own CPU small; node-exporter covers the host.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      packiot-net:
+        ipv4_address: 172.18.0.34
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 256m
+    cpus: 0.5
 
   # ── oauth2-proxy (ADR-0034 §C — Cognito forward-auth, replaces Authentik) ─────
   # Nginx `auth_request` gate for the internal admin UIs (grafana/hasura/adminer/

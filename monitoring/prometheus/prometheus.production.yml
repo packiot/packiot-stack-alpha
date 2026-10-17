@@ -1,0 +1,167 @@
+# Prometheus config for PRODUCTION (compose.production.yml). Staging uses prometheus.yml next to this file.
+#
+# Why a separate file (2026-10-16 audit): production mounted staging's prometheus.yml, so every series and
+# alert carried env=staging, rules.yml was never mounted (0 rules loaded), there was no alertmanager, and 11 of
+# 22 targets were permanently down (staging-only services, exporters production never deployed). This file
+# scrapes only what production runs:
+#   * always-on services → static targets (a down target pages ScrapeTargetDown);
+#   * PROFILE-GATED services (client-ingest, ingest-shim, legacy-replicator, historian in COMPOSE_PROFILES of
+#     /opt/packiot/.env) → dns_sd_configs on their compose name. Docker's embedded DNS only resolves a service
+#     whose container exists, so a profile that is off yields ZERO targets (no permanently-down series, no
+#     page) and enabling the profile makes the target appear without editing this file.
+#   * NOT scraped (staging-only): analytics-sync, prod-reflector (ADR-0064: staging mirrors production, not the
+#     reverse), mirror-worker-go (retired), staging's public URLs, the DB-box Alloy relay (production has no
+#     alloy gateway).
+#
+# Same mount + reload model as staging: ./monitoring/prometheus is a DIRECTORY bind mount (inode trap #39) and
+# deploy-production.yml POSTs /-/reload after `up -d`.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  # Attached to every alert sent to Alertmanager and shown in the Slack message (alertmanager.production.yml).
+  external_labels:
+    env: production
+    cluster: packiot-production
+
+rule_files:
+  - /etc/prometheus/rules.production.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # stream-engine. job name + target alias kept as staging's (oeecloud-worker) so the shared dashboards'
+  # job="oeecloud-worker" selectors work; the prod service carries the alias (compose.production.yml).
+  - job_name: oeecloud-worker
+    static_configs:
+      - targets: ['oeecloud-worker:9101']
+    metric_relabel_configs:
+      - source_labels: [routing_key]
+        regex: 'sparkplug\.data\.(.+)'
+        target_label: tenant
+        replacement: '${1}'
+      - source_labels: [routing_key]
+        regex: 'sparkplug\.data'
+        target_label: tenant
+        replacement: 'legacy'
+
+  # The multi-tenant cloud agent — every production client's HTTPS ingest front door (Bispharma).
+  - job_name: sparkplug-agent-shared
+    static_configs:
+      - targets: ['sparkplug-agent-shared:9103']
+
+  - job_name: read-api
+    static_configs:
+      - targets: ['read-api:9104']
+
+  - job_name: edge-api
+    static_configs:
+      - targets: ['edge-api:8080']
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ['rabbitmq:15692']
+
+  - job_name: rabbitmq-detailed
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count, queue_metrics]
+    static_configs:
+      - targets: ['rabbitmq:15692']
+
+  # ── Exporters (compose.production.yml, 2026-10-16) ──
+  # DB: the production database `packiot` on the r7g DB host, as the least-privilege postgres_exporter login
+  # (db/migrations/t-postgres-exporter-role). Down until that role is provisioned — deliberately a page.
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # Synthetic uptime from outside (public URLs, through nginx + oauth2-proxy: a 302 to the login counts as up)
+  # and the two internal health endpoints the operator/front4 depend on.
+  - job_name: blackbox
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://operator.prod.packiot.app
+          - https://grafana.prod.packiot.app
+          - https://api.prod.packiot.app
+          - https://csadmin.prod.packiot.app
+          - http://edge-api:8080/health
+          - http://read-api:9104/healthz
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # ── Profile-gated services: discovered only while their container exists (see header) ──
+  # sparkplug-decoder (profile client-ingest). job name kept as edge-transformer, same as staging.
+  - job_name: edge-transformer
+    dns_sd_configs:
+      - names: ['sparkplug-decoder']
+        type: A
+        port: 9102
+
+  # ingest-shim (profile ingest-shim).
+  - job_name: ingest-shim
+    dns_sd_configs:
+      - names: ['ingest-shim']
+        type: A
+        port: 9105
+
+  # operator-gateway (profile client-ingest): /metrics on its TLS API mux, internal self-signed cert.
+  - job_name: operator-gateway
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    dns_sd_configs:
+      - names: ['operator-gateway']
+        type: A
+        port: 8443
+
+  # legacy-replicator (profile legacy-replicator).
+  - job_name: legacy-replicator
+    dns_sd_configs:
+      - names: ['legacy-replicator']
+        type: A
+        port: 9104
+
+  # hist-gateway (profile historian): tcp_connect probe. instance pinned to the name HistorianGatewayDown matches.
+  - job_name: blackbox-historian
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    dns_sd_configs:
+      - names: ['hist-gateway']
+        type: A
+        port: 5432
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: instance
+        replacement: hist-gateway:5432
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
