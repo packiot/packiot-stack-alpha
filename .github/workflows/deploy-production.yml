@@ -72,6 +72,65 @@ jobs:
         # Fails the deploy (before build/up) if any password is missing.
         run: bash scripts/render-rabbitmq-definitions.sh production
 
+      - name: Materialize monitoring secrets (Slack webhook, postgres-exporter password — non-blocking)
+        # Production alerting (2026-10-16). Two secrets become files on the HOST, outside the CI workspace (a
+        # checkout's `git clean -ffdx` would delete a gitignored file inside it), mounted read-only into the
+        # containers (compose.production.yml):
+        #   packiot/production/app                        key slack_api_url → /opt/packiot/alerting/slack_api_url
+        #                                                  (alertmanager slack_api_url_file)
+        #   packiot/production/postgres-exporter-db-creds key password      → /opt/packiot/postgres-exporter/password
+        #                                                  (DATA_SOURCE_PASS_FILE; the secret is created on the host
+        #                                                  by scripts/ops/provision-db-role.py --service postgres-exporter)
+        # NON-BLOCKING: an absent key/secret or an AWS error logs a ::warning:: and leaves any existing file as it
+        # is; the deploy continues (alertmanager holds alerts without a webhook; the exporter waits for its file).
+        # Values are never printed (masked, written via a temp file + mv, mode 0440 root:65534 = the containers'
+        # `nobody`). Output pg_pass_changed tells the restart step below to reload a rotated password.
+        id: monsecrets
+        continue-on-error: true
+        run: |
+          set +e +x -uo pipefail
+          umask 077
+          put() {   # put <dest> <value>  (builtins only: the value never reaches a process argv)
+            local dest="$1" val="$2" dir; dir=$(dirname "$dest")
+            install -d -m 0755 "$dir" || return 1
+            local tmp; tmp=$(mktemp "$dir/.tmp.XXXXXX") || return 1
+            printf '%s' "$val" > "$tmp" && chown root:65534 "$tmp" && chmod 0440 "$tmp" && mv -f "$tmp" "$dest"
+          }
+          get() {   # get <secret-id> <json-key> → value on stdout ('' when absent); rc 2 on an AWS error
+            local raw
+            raw=$(aws secretsmanager get-secret-value --secret-id "$1" --region us-east-1 \
+                    --query SecretString --output text 2>/dev/null) || return 2
+            printf '%s' "$raw" | jq -r --arg k "$2" '.[$k] // ""'
+          }
+
+          URL=$(get packiot/production/app slack_api_url); rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::could not read packiot/production/app — alertmanager keeps its current webhook file (if any)"
+          elif [ -z "$URL" ]; then
+            echo "::warning::packiot/production/app has no slack_api_url — production alerts will NOT reach Slack until it is set (then redeploy)"
+          else
+            echo "::add-mask::$URL"
+            put /opt/packiot/alerting/slack_api_url "$URL" \
+              && echo "alertmanager slack_api_url written (len ${#URL})" \
+              || echo "::warning::failed to write /opt/packiot/alerting/slack_api_url"
+          fi
+
+          F=/opt/packiot/postgres-exporter/password
+          BEFORE=$(sha256sum "$F" 2>/dev/null | cut -c1-64)
+          PW=$(get packiot/production/postgres-exporter-db-creds password); rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::packiot/production/postgres-exporter-db-creds not readable (not provisioned yet? scripts/ops/provision-db-role.py --service postgres-exporter --env production …) — postgres-exporter waits; DB + invariant alerts are blind until then"
+          elif [ -z "$PW" ]; then
+            echo "::warning::packiot/production/postgres-exporter-db-creds has no password field — postgres-exporter waits"
+          else
+            echo "::add-mask::$PW"
+            put "$F" "$PW" && echo "postgres-exporter password file written" \
+              || echo "::warning::failed to write $F"
+          fi
+          AFTER=$(sha256sum "$F" 2>/dev/null | cut -c1-64)
+          [ "$BEFORE" != "$AFTER" ] && echo "pg_pass_changed=true" >> "$GITHUB_OUTPUT" || echo "pg_pass_changed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+
       - name: Build images
         # No `-p`: the compose file pins a top-level `name: stack`, so the
         # project name is stable regardless of cwd (this workflow runs from the
@@ -92,6 +151,57 @@ jobs:
         # (restart: "no", exit 0). The Post-deploy diagnostic below gives us the
         # visibility we'd want from --wait without the false-positive failure.
         run: docker compose -f compose.production.yml -f compose.superset.yml up -d --remove-orphans
+
+      - name: Reload Prometheus config (dir-mount makes new file content visible; reload re-reads it)
+        # Same as deploy-staging.yml (task #39): ./monitoring/prometheus is a DIRECTORY bind mount, so new
+        # prometheus.production.yml / rules.production.yml content is visible in the running container, but
+        # Prometheus only re-reads it on POST /-/reload (--web.enable-lifecycle). Non-blocking.
+        continue-on-error: true
+        run: |
+          set +e
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:prometheus curlimages/curl:latest \
+                 -sf -X POST http://localhost:9090/-/reload >/dev/null 2>&1; then
+              echo "  prometheus config reloaded (attempt $i)"; exit 0
+            fi
+            sleep 3
+          done
+          echo "  prometheus reload not confirmed — config loads on next restart"
+
+      - name: Reload Alertmanager config (dir-mount + /-/reload, same as Prometheus)
+        continue-on-error: true
+        run: |
+          set +e
+          if ! docker ps --format '{{.Names}}' | grep -qx alertmanager; then
+            echo "alertmanager not running — skipping reload"; exit 0
+          fi
+          for i in $(seq 1 10); do
+            if docker run --rm --network container:alertmanager curlimages/curl:latest \
+                 -sf -X POST http://localhost:9093/-/reload >/dev/null 2>&1; then
+              echo "  alertmanager config reloaded (attempt $i)"; exit 0
+            fi
+            sleep 3
+          done
+          echo "  alertmanager reload not confirmed — config loads on next restart"
+
+      - name: Restart postgres-exporter when its queries or password changed (no hot-reload)
+        # postgres-exporter parses queries.yaml and its password file only at startup. Restart when this push
+        # touched monitoring/postgres-exporter/ (or on workflow_dispatch / unknown 'before'), or when the
+        # materialize step wrote a different password (rotation). Stateless → one missed scrape.
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+          PG_PASS_CHANGED: ${{ steps.monsecrets.outputs.pg_pass_changed }}
+        run: |
+          set +e
+          if [ "$PG_PASS_CHANGED" != "true" ] \
+             && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+             && git diff --quiet "$BEFORE" HEAD -- monitoring/postgres-exporter/; then
+            echo "postgres-exporter queries + password unchanged — no restart"
+          else
+            docker restart postgres-exporter && echo "postgres-exporter restarted (queries or password changed)"
+          fi
 
       - name: Install the ADR-0065 P1 cold exporter (script + unit + timer; idempotent)
         # Archives closed tenant-days to s3://packiot-production-historian-…/silver/… and fills the verified

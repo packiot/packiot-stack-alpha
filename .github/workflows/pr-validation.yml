@@ -44,6 +44,23 @@ jobs:
         # silent on success.
         run: docker compose -f compose.staging.yml config --no-interpolate -q
 
+      - name: Validate compose.production.yml (+ the superset overlay it deploys with)
+        run: docker compose -f compose.production.yml -f compose.superset.yml config --no-interpolate -q
+
+      - name: Prometheus + Alertmanager configs (promtool / amtool, staging + production)
+        # A broken rules/config file is only noticed when the deploy's /-/reload silently fails
+        # (continue-on-error) and the running server keeps the old config. Catch it here instead.
+        run: |
+          set -euo pipefail
+          for f in prometheus.yml prometheus.production.yml; do
+            docker run --rm -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" --entrypoint promtool \
+              prom/prometheus:v3.1.0 check config "/etc/prometheus/$f"
+          done
+          for f in alertmanager.yml alertmanager.production.yml; do
+            docker run --rm -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro" --entrypoint amtool \
+              prom/alertmanager:v0.27.0 check-config "/etc/alertmanager/$f"
+          done
+
       - name: Validate dev/ (ADR-0060 local environment)
         run: docker compose -f dev/compose.yml --env-file dev/.env.dev config -q
 

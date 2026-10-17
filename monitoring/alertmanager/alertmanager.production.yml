@@ -1,0 +1,63 @@
+# Alertmanager for PRODUCTION (compose.production.yml). Staging's is alertmanager.yml in this directory; this
+# file keeps its routing, grouping and inhibition, and makes every message unmistakably PRODUCTION:
+#   * title prefix ":factory: PRODUCTION" and the `env` label (Prometheus external_labels, prometheus.production.yml);
+#   * its own channels (#alerts-production, #alerts-production-critical). A Slack-app incoming webhook posts to
+#     the channel it was created for and ignores `channel`; a legacy webhook honours it. Either way the prefix
+#     tells production apart from staging.
+#
+# SECRET: the Slack incoming-webhook URL is never committed. deploy-production.yml writes it from Secrets
+# Manager packiot/production/app key `slack_api_url` to /opt/packiot/alerting/slack_api_url on the host, mounted
+# at /etc/alertmanager-secrets (compose.production.yml). With the key absent the file is not written and the
+# `alerting` compose profile stays off, so alertmanager is not started (Prometheus's alerts then show only in
+# its /alerts page).
+
+global:
+  resolve_timeout: 5m
+  slack_api_url_file: /etc/alertmanager-secrets/slack_api_url
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: slack-default
+
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: slack-critical
+      repeat_interval: 1h
+
+receivers:
+  - name: slack-default
+    slack_configs:
+      - channel: '#alerts-production'
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}:red_circle:{{ else }}:large_green_circle:{{ end }} :factory: PRODUCTION [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}*{{ .Labels.severity }}* ({{ .Labels.env }}) — {{ .Annotations.summary }}
+          {{ if .Annotations.description }}
+          {{ .Annotations.description }}{{ end }}
+          {{ if .Labels.surface }}surface: `{{ .Labels.surface }}` {{ end }}{{ if .Labels.tenant }}tenant: `{{ .Labels.tenant }}` {{ end }}{{ if .Labels.job }}job: `{{ .Labels.job }}`{{ end }}
+          {{ if .Annotations.runbook_url }}<{{ .Annotations.runbook_url }}|🔎 runbook / debug board>{{ end }}
+          {{ end }}
+
+  - name: slack-critical
+    slack_configs:
+      - channel: '#alerts-production-critical'
+        send_resolved: true
+        title: ':rotating_light: :factory: PRODUCTION [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}*CRITICAL* ({{ .Labels.env }}) — {{ .Annotations.summary }}
+          {{ if .Annotations.description }}{{ .Annotations.description }}{{ end }}
+          {{ if .Annotations.runbook_url }}<{{ .Annotations.runbook_url }}|🔎 runbook / debug board>{{ end }}
+          {{ end }}
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']
+  - source_matchers: ['alertname=~"IngestSilent|WritePathDry"']
+    target_matchers: ['alertname="ClientIngestStopped"']
+  # The DB is unreachable → the invariant run reads as stale too; one incident, one page.
+  - source_matchers: ['alertname="PostgresDown"']
+    target_matchers: ['alertname="DataInvariantsStale"']

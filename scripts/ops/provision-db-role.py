@@ -24,12 +24,15 @@ postgres:15-alpine on the stack network.
   provision-db-role.py --service barcode-service --rotate        # new password; then recreate the service
   provision-db-role.py --service barcode-service --env production --db-host <h> --admin-host <h>
   (services: operator-gateway, barcode-service, stream-engine, legacy-replicator, sparkplug-agent, prod-reflector,
-   prod-reflector-ro, readapi-ro)
+   prod-reflector-ro, readapi-ro, postgres-exporter)
   provision-db-role.py --service readapi-ro --env production --db-name packiot \
       --db-host 10.20.10.89 --admin-host 10.20.10.89   # go-live step 8: APPLIES terraform's password, never creates one
   provision-db-role.py --service prod-reflector-ro --env production --db-name packiot \
       --db-host 10.20.10.89 --admin-host 10.20.10.89   # ADR-0064, on the PRODUCTION app host; the staging
       # reflector reads the resulting secret packiot/production/prod-reflector-ro-db-creds over the VPC peering
+  provision-db-role.py --service postgres-exporter --env production --db-name packiot \
+      --db-host 10.20.10.89 --admin-host 10.20.10.89   # production alerting: deploy-production.yml then writes the
+      # password file postgres-exporter reads (DATA_SOURCE_PASS_FILE)
 """
 import argparse
 import base64
@@ -88,6 +91,13 @@ ROLES = {
         "migration": "t-prod-reflector-roles",
         "staging_host": STAGING_DB_HOST,
         "settings": {"default_transaction_read_only": "on", "statement_timeout": "120s"},
+    },
+    # postgres-exporter (t-postgres-exporter-role): pg_monitor + SELECT on the ops/silver relations its queries read.
+    # Direct to the DB host, like the exporter itself (compose.production.yml DATA_SOURCE_URI).
+    "postgres-exporter": {
+        "role": "postgres_exporter",
+        "staging_host": STAGING_DB_HOST,
+        "settings": {"default_transaction_read_only": "on", "statement_timeout": "30s"},
     },
     # read-api's login (t276). Its password is OWNED BY TERRAFORM (random_password → packiot/<env>/internal-keys
     # .readapi_ro_password, mirrored into READAPI_RO_PASSWORD in /opt/packiot/.env), so this script only APPLIES it to

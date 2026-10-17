@@ -18,3 +18,14 @@
   (Alertmanager → ntfy/email) — wire it only when someone commits to
   reading it; the 09-board named-cause ritual remains the correctness
   alarm.
+
+- **Production** (compose.production.yml, since 2026-10-16) has its own
+  `prometheus/prometheus.production.yml` (`env=production`; profile-gated
+  services discovered by DNS, so a disabled profile is not a down target),
+  `prometheus/rules.production.yml` (the subset of rules.yml that applies;
+  keep shared rules in sync) and `alertmanager/alertmanager.production.yml`
+  (Slack, titled ":factory: PRODUCTION"). Secrets are files on the host,
+  written by deploy-production.yml: `packiot/production/app.slack_api_url`
+  → /opt/packiot/alerting/slack_api_url and
+  `packiot/production/postgres-exporter-db-creds.password` →
+  /opt/packiot/postgres-exporter/password (role: db/migrations/t-postgres-exporter-role).

@@ -64,6 +64,14 @@ NO_DB = {
 }
 DB_LOGIN_KEYS = ("DB_USER", "DB_PASSWORD", "PG_SECRET_ID", "CREDS_SOURCE")
 
+# Exporters configured by the postgres-exporter env contract (DATA_SOURCE_*): service → (role, compose files).
+# The login must be DATA_SOURCE_USER = the literal role, the password a file (DATA_SOURCE_PASS_FILE), and no
+# DATA_SOURCE_NAME (a full DSN would carry the user and password inline). Staging's exporter still uses the admin
+# login and is not listed (yet); production's never may (t-postgres-exporter-role).
+EXPORTERS = {
+    "postgres-exporter": ("postgres_exporter", ["compose.production.yml"]),
+}
+
 # Secrets Manager ids that hold the admin login (or the legacy DB's).
 ADMIN_SECRET_IDS = {"packiot/staging/db", "packiot/production/db", "databaseCredentials"}
 ADMIN_REF = re.compile(r"\$\{?POSTGRES_(USER|PASSWORD)\b")
@@ -150,9 +158,31 @@ for path, extra in COMPOSE_FILES.items():
             errors.append(f"{where}: {flag}={env.get(flag)!r}; enabling it needs its own least-privilege DB "
                           f"role first (then move {name} from NO_DB to SERVICES)")
 
+    for name, (role, required_in) in EXPORTERS.items():
+        if path not in required_in:
+            continue
+        if name not in services:
+            errors.append(f"{path}: service {name} not found (renamed? update EXPORTERS in {__file__})")
+            continue
+        svc = services[name]
+        env = env_of(svc)
+        where = f"{path}: {name}"
+        if svc.get("env_file"):
+            errors.append(f"{where}: env_file puts .env (admin POSTGRES_* and all secrets) into the container")
+        for k, v in sorted(env.items()):
+            if ADMIN_REF.search(v):
+                errors.append(f"{where}: {k}={v} references the Postgres admin login; use the {role} role")
+        if "DATA_SOURCE_NAME" in env:
+            errors.append(f"{where}: DATA_SOURCE_NAME carries the login inline; use DATA_SOURCE_URI + "
+                          f"DATA_SOURCE_USER={role} + DATA_SOURCE_PASS_FILE")
+        if env.get("DATA_SOURCE_USER") != role:
+            errors.append(f"{where}: DATA_SOURCE_USER={env.get('DATA_SOURCE_USER')!r}; must be the literal role {role!r}")
+        if not env.get("DATA_SOURCE_PASS_FILE") or "DATA_SOURCE_PASS" in env:
+            errors.append(f"{where}: the password must come from DATA_SOURCE_PASS_FILE (not DATA_SOURCE_PASS)")
+
 if errors:
     for e in errors:
         print(f"::error::{e}")
     sys.exit(1)
-print(f"db least privilege OK: {', '.join(f'{s} as {r}' for s, (r, _) in SERVICES.items())}; "
+print(f"db least privilege OK: {', '.join(f'{s} as {r}' for s, (r, _) in {**SERVICES, **EXPORTERS}.items())}; "
       f"no DB login: {', '.join(NO_DB)}; in {len(COMPOSE_FILES)} compose files")
